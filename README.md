@@ -1,0 +1,70 @@
+# Fluid Systems Development Platform
+
+FSDP is a greenfield web platform for connected fluid-system design data. The MVP implements a thin digital thread: projects, fluid systems, a simple P&ID graph, component catalog selection, requirements traceability, BoM snapshots, and basic change impact.
+
+## Documentation
+
+- [Product requirements](docs/requirements.md): original user requirements, product goals, epics, MVP scope, deferred scope, and current implementation coverage.
+- [Architecture](docs/architecture.md): high-level system architecture and digital-thread model.
+- [Implementation guide](docs/implementation.md): repository structure, backend API, data model, frontend workflow, and verification commands.
+
+## Stack
+
+- Backend: FastAPI, SQLAlchemy, Alembic, PostgreSQL
+- Frontend: React, TypeScript, Vite, React Flow
+- Local infrastructure: Docker Compose PostgreSQL
+
+## Current MVP Capabilities
+
+- Create, select, update, and delete projects and fluid systems.
+- Create, reopen, rename, delete, edit, and save P&ID diagrams.
+- Persist React Flow graph data and normalized diagram nodes/edges.
+- Create, select, update, and delete catalog parts.
+- Place selected parts onto persisted diagram nodes as component instances.
+- Create, select, update, and delete requirements.
+- Link requirements to components.
+- Generate BoM snapshots and download CSV exports.
+- Inspect basic change impact for selected parts and components.
+
+## Local Development
+
+1. Start the database:
+
+   ```powershell
+   docker compose up -d db
+   ```
+
+2. Run backend commands from `backend/`:
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   pip install -e ".[dev]"
+   alembic upgrade head
+   uvicorn app.main:app --reload
+   ```
+
+3. Run frontend commands from `frontend/`:
+
+   ```powershell
+   npm install
+   npm run dev
+   ```
+
+The backend serves OpenAPI docs at `http://localhost:8000/docs`. The frontend expects the API at `http://localhost:8000` unless `VITE_API_BASE_URL` is set.
+
+## Verification
+
+Run backend checks from `backend/`:
+
+```powershell
+python -m pytest
+python -m ruff check .
+```
+
+Run frontend checks from `frontend/`:
+
+```powershell
+npm test
+npm run build
+```
