@@ -1,45 +1,30 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
-import ReactFlow, {
-  Background,
-  BaseEdge,
-  Controls,
-  EdgeLabelRenderer,
-  Handle,
-  NodeResizer,
-  Position,
-  addEdge,
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import {
   useEdgesState,
   useNodesState,
-  useReactFlow,
-  type Connection,
   type Edge,
   type EdgeChange,
-  type EdgeProps,
   type Node,
-  type NodeChange,
-  type NodeProps
+  type NodeChange
 } from "reactflow";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { api, bomCsvUrl } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
-import { DataTable, FormError, Panel, Select, SummaryCard, TextArea, TextInput } from "./components/ui";
+import { DataTable, FormError, Panel, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { PageLayout, PlaceholderPage } from "./pages/PageLayout";
 import { PartsCatalogPage } from "./pages/PartsCatalogPage";
+import { PidEditorPage } from "./pages/PidEditorPage";
 import { RequirementsPage } from "./pages/RequirementsPage";
 import type { BomSnapshot, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, Requirement } from "./types";
-
-type PidNodeData = {
-  label: string;
-  symbolType: string;
-  rotation: number;
-};
-
-type OrthogonalEdgeData = {
-  bendX?: number;
-  bendY?: number;
-  startX?: number;
-  endX?: number;
-};
+import {
+  DEFAULT_EDITOR_SETTINGS,
+  normalizeEdge,
+  normalizeNode,
+  type PidEdgeData,
+  type PidEditorSettings,
+  type PidNodeData,
+  type PidSymbolDefinition
+} from "./utils/pidEditor";
 
 const starterNodes: Node<PidNodeData>[] = [
   { id: "source-1", type: "pidSymbol", position: { x: 0, y: 80 }, style: { width: 140, height: 78 }, data: { label: "Tank / Source", symbolType: "source", rotation: 0 } },
@@ -47,9 +32,9 @@ const starterNodes: Node<PidNodeData>[] = [
   { id: "sink-1", type: "pidSymbol", position: { x: 460, y: 80 }, style: { width: 140, height: 78 }, data: { label: "Engine / Sink", symbolType: "sink", rotation: 0 } }
 ];
 
-const starterEdges: Edge<OrthogonalEdgeData>[] = [
-  { id: "line-1", type: "orthogonal", source: "source-1", target: "valve-1", label: "Feed line" },
-  { id: "line-2", type: "orthogonal", source: "valve-1", target: "sink-1", label: "Outlet line" }
+const starterEdges: Edge<PidEdgeData>[] = [
+  { id: "line-1", type: "pidLine", source: "source-1", target: "valve-1", label: "Feed line" },
+  { id: "line-2", type: "pidLine", source: "valve-1", target: "sink-1", label: "Outlet line" }
 ];
 
 const navItems: NavItem[] = [
@@ -65,168 +50,6 @@ const navItems: NavItem[] = [
   { path: "/settings", label: "Settings", description: "Project configuration" }
 ];
 
-function normalizePidNode(node: Node): Node<PidNodeData> {
-  const label = String(node.data?.label ?? node.id);
-  return {
-    ...node,
-    type: "pidSymbol",
-    style: {
-      width: 130,
-      height: 76,
-      ...node.style
-    },
-    data: {
-      label,
-      symbolType: String(node.data?.symbolType ?? node.type ?? "component"),
-      rotation: Number(node.data?.rotation ?? 0)
-    }
-  };
-}
-
-function normalizeOrthogonalEdge(edge: Edge): Edge<OrthogonalEdgeData> {
-  const legacyBendX = typeof edge.data?.bendX === "number" ? edge.data.bendX : undefined;
-  return {
-    ...edge,
-    type: "orthogonal",
-    data: {
-      ...edge.data,
-      bendX: legacyBendX,
-      bendY: typeof edge.data?.bendY === "number" ? edge.data.bendY : undefined,
-      startX: typeof edge.data?.startX === "number" ? edge.data.startX : legacyBendX,
-      endX: typeof edge.data?.endX === "number" ? edge.data.endX : legacyBendX
-    }
-  };
-}
-
-function PidSymbolNode({
-  id,
-  data,
-  selected,
-  onDirty
-}: NodeProps<PidNodeData> & { onDirty: () => void }) {
-  const { setNodes } = useReactFlow();
-
-  function rotateSymbol() {
-    setNodes((currentNodes) =>
-      currentNodes.map((node) =>
-        node.id === id
-          ? {
-              ...node,
-              data: {
-                ...node.data,
-                rotation: (Number(node.data?.rotation ?? 0) + 90) % 360
-              }
-            }
-          : node
-      )
-    );
-    onDirty();
-  }
-
-  return (
-    <div className="pidSymbolNode">
-      <NodeResizer isVisible={selected} minWidth={70} minHeight={44} onResizeEnd={onDirty} />
-      <Handle type="target" position={Position.Left} />
-      <Handle type="target" position={Position.Top} />
-      <div className="pidSymbolBody" style={{ transform: `rotate(${data.rotation}deg)` }}>
-        <span className={`pidGlyph ${data.symbolType}`}>{data.symbolType.slice(0, 1).toUpperCase()}</span>
-      </div>
-      <button className="rotateHandle" onClick={rotateSymbol} title="Rotate symbol 90 degrees" type="button">
-        Rotate
-      </button>
-      <div className="pidSymbolLabel">{data.label}</div>
-      <Handle type="source" position={Position.Right} />
-      <Handle type="source" position={Position.Bottom} />
-    </div>
-  );
-}
-
-function OrthogonalEdge({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  markerEnd,
-  selected,
-  data,
-  onDirty
-}: EdgeProps<OrthogonalEdgeData> & { onDirty: () => void }) {
-  const { screenToFlowPosition, setEdges } = useReactFlow();
-  const deltaX = targetX - sourceX;
-  const startX = typeof data?.startX === "number" ? data.startX : sourceX + deltaX / 3;
-  const endX = typeof data?.endX === "number" ? data.endX : sourceX + (deltaX * 2) / 3;
-  const bendY = typeof data?.bendY === "number" ? data.bendY : sourceY + (targetY - sourceY) / 2;
-  const path = `M ${sourceX},${sourceY} L ${startX},${sourceY} L ${startX},${bendY} L ${endX},${bendY} L ${endX},${targetY} L ${targetX},${targetY}`;
-
-  function beginDrag(
-    event: ReactPointerEvent<HTMLDivElement>,
-    update: (position: { x: number; y: number }) => Partial<OrthogonalEdgeData>
-  ) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    function drag(moveEvent: PointerEvent) {
-      const position = screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY });
-      setEdges((currentEdges) =>
-        currentEdges.map((edge) =>
-          edge.id === id
-            ? {
-                ...edge,
-                data: {
-                  ...edge.data,
-                  ...update(position)
-                }
-              }
-            : edge
-        )
-      );
-    }
-
-    function stopDrag() {
-      window.removeEventListener("pointermove", drag);
-      window.removeEventListener("pointerup", stopDrag);
-      onDirty();
-    }
-
-    window.addEventListener("pointermove", drag);
-    window.addEventListener("pointerup", stopDrag);
-  }
-
-  return (
-    <>
-      <BaseEdge
-        id={id}
-        markerEnd={markerEnd}
-        path={path}
-        style={{
-          stroke: selected ? "#1f5eff" : "#26364d",
-          strokeWidth: selected ? 3 : 2.4
-        }}
-      />
-      <EdgeLabelRenderer>
-        <div
-          className="edgeBendHandle vertical"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ startX: position.x, bendX: undefined }))}
-          style={{ transform: `translate(-50%, -50%) translate(${startX}px, ${(sourceY + bendY) / 2}px)` }}
-          title="Drag to move first vertical line segment"
-        />
-        <div
-          className="edgeBendHandle horizontal"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ bendY: position.y }))}
-          style={{ transform: `translate(-50%, -50%) translate(${(startX + endX) / 2}px, ${bendY}px)` }}
-          title="Drag to move horizontal line segment"
-        />
-        <div
-          className="edgeBendHandle vertical"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ endX: position.x, bendX: undefined }))}
-          style={{ transform: `translate(-50%, -50%) translate(${endX}px, ${(bendY + targetY) / 2}px)` }}
-          title="Drag to move last vertical line segment"
-        />
-      </EdgeLabelRenderer>
-    </>
-  );
-}
 
 export function App() {
   return (
@@ -266,6 +89,8 @@ function WorkspaceApp() {
   const [graphDirty, setGraphDirty] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState(starterNodes);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState(starterEdges);
+  const [editorSettings, setEditorSettings] = useState<PidEditorSettings>(DEFAULT_EDITOR_SETTINGS);
+  const [customSymbols, setCustomSymbols] = useState<PidSymbolDefinition[]>([]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -273,28 +98,10 @@ function WorkspaceApp() {
   const selectedPart = parts.find((part) => part.id === selectedPartId) ?? null;
   const selectedRequirement = requirements.find((requirement) => requirement.id === selectedRequirementId) ?? null;
   const selectedComponent = components.find((component) => component.id === selectedComponentId) ?? null;
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId);
-  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
-  const nodeTypes = useMemo(
-    () => ({
-      pidSymbol: (props: NodeProps<PidNodeData>) => (
-        <PidSymbolNode {...props} onDirty={() => setGraphDirty(true)} />
-      )
-    }),
-    []
-  );
-  const edgeTypes = useMemo(
-    () => ({
-      orthogonal: (props: EdgeProps<OrthogonalEdgeData>) => (
-        <OrthogonalEdge {...props} onDirty={() => setGraphDirty(true)} />
-      )
-    }),
-    []
-  );
 
   const graphPayload = useMemo(
     () => ({
-      graph: { nodes, edges },
+      graph: { nodes, edges, editorSettings, symbols: customSymbols },
       nodes: nodes.map((node) => ({
         external_id: node.id,
         node_type: String(node.data?.symbolType ?? node.type ?? "component"),
@@ -311,7 +118,7 @@ function WorkspaceApp() {
         properties: { label: edge.label, ...(edge.data ?? {}) }
       }))
     }),
-    [edges, nodes]
+    [customSymbols, edges, editorSettings, nodes]
   );
 
   useEffect(() => {
@@ -362,15 +169,19 @@ function WorkspaceApp() {
     if (!selectedDiagramId) {
       setComponents([]);
       setBom(null);
-      setNodes(starterNodes.map(normalizePidNode));
-      setEdges(starterEdges.map(normalizeOrthogonalEdge));
+      setNodes(starterNodes.map(normalizeNode));
+      setEdges(starterEdges.map(normalizeEdge));
+      setEditorSettings(DEFAULT_EDITOR_SETTINGS);
+      setCustomSymbols([]);
       return;
     }
     void runAction("Loaded saved diagram.", async () => {
       const diagram = await api.getDiagram(selectedDiagramId);
       setDiagramName(diagram.name);
-      setNodes((diagram.graph.nodes?.length ? diagram.graph.nodes : starterNodes).map(normalizePidNode));
-      setEdges((diagram.graph.edges?.length ? diagram.graph.edges : starterEdges).map(normalizeOrthogonalEdge));
+      setNodes((diagram.graph.nodes?.length ? diagram.graph.nodes : starterNodes).map(normalizeNode));
+      setEdges((diagram.graph.edges?.length ? diagram.graph.edges : starterEdges).map(normalizeEdge));
+      setEditorSettings({ ...DEFAULT_EDITOR_SETTINGS, ...diagram.graph.editorSettings });
+      setCustomSymbols(diagram.graph.symbols ?? []);
       setComponents(await api.listComponents(diagram.id));
       const snapshots = await api.listDiagramBoms(diagram.id);
       setBom(snapshots[0] ?? null);
@@ -428,11 +239,6 @@ function WorkspaceApp() {
     },
     [onEdgesChangeBase]
   );
-
-  function onConnect(connection: Connection) {
-    setGraphDirty(true);
-    setEdges((current) => addEdge({ ...connection, type: "orthogonal", label: "New line" }, current));
-  }
 
   function selectProject(id: string) {
     setSelectedProjectId(id);
@@ -503,8 +309,8 @@ function WorkspaceApp() {
     });
   }
 
-  function submitDiagram(event: FormEvent) {
-    event.preventDefault();
+  function submitDiagram(event?: FormEvent) {
+    event?.preventDefault();
     if (!selectedSystem) return;
     void runAction("Created diagram.", async () => {
       const created = await api.createDiagram(selectedSystem.id, { name: diagramName });
@@ -539,22 +345,6 @@ function WorkspaceApp() {
       setDiagrams(next);
       setSelectedDiagramId(next[0]?.id || "");
     });
-  }
-
-  function addGraphNode(kind: string) {
-    const id = `${kind}-${nodes.length + 1}`;
-    setNodes((current) => [
-      ...current,
-      {
-        id,
-        type: "pidSymbol",
-        position: { x: 120 + nodes.length * 35, y: 180 + nodes.length * 15 },
-        style: { width: 120, height: 72 },
-        data: { label: kind[0].toUpperCase() + kind.slice(1), symbolType: kind, rotation: 0 }
-      }
-    ]);
-    setSelectedNodeId(id);
-    setGraphDirty(true);
   }
 
   function placeComponent() {
@@ -643,68 +433,40 @@ function WorkspaceApp() {
         <Route
           path="/diagrams"
           element={
-            <PageLayout className="diagramPage" title="Diagrams" description="P&ID workspace">
-              <section className="diagramLayout">
-                <div className="workspace">
-                  <div className="toolbar">
-                    <form className="inlineForm" onSubmit={submitDiagram}>
-                      <TextInput label="Diagram name" value={diagramName} onChange={setDiagramName} />
-                      <button disabled={busy || !selectedSystem || !diagramName}>Create P&ID</button>
-                    </form>
-                    <Select label="Open diagram" value={selectedDiagramId} options={diagrams.map((diagram) => ({ value: diagram.id, label: `${diagram.name} rev ${diagram.revision}` }))} onChange={setSelectedDiagramId} />
-                    <button disabled={busy || !selectedDiagram || !diagramName} onClick={updateDiagram}>Rename</button>
-                    <button className="danger" disabled={busy || !selectedDiagram} onClick={deleteDiagram}>Delete</button>
-                    <button disabled={busy || !selectedDiagram || !graphDirty} onClick={saveGraph}>Save graph</button>
-                    <span className={graphDirty ? "dirtyBadge" : "cleanBadge"}>{graphDirty ? "Unsaved changes" : "Saved"}</span>
-                  </div>
-                  <div className="nodePalette">
-                    {["valve", "sensor", "regulator", "filter", "source", "sink"].map((kind) => (
-                      <button key={kind} onClick={() => addGraphNode(kind)}>{kind}</button>
-                    ))}
-                  </div>
-                  <div className="diagram">
-                    <ReactFlow
-                      nodes={nodes}
-                      edges={edges}
-                      nodeTypes={nodeTypes}
-                      edgeTypes={edgeTypes}
-                      onNodesChange={onNodesChange}
-                      onEdgesChange={onEdgesChange}
-                      onConnect={onConnect}
-                      onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-                      onEdgeClick={(_, edge) => setSelectedEdgeId(edge.id)}
-                      fitView
-                    >
-                      <Background />
-                      <Controls />
-                    </ReactFlow>
-                  </div>
-                </div>
-                <aside className="inspector">
-                  <Panel title="Node Inspector">
-                    <p><strong>Selected:</strong> {selectedNode?.id ?? "None"}</p>
-                    <p><strong>Label:</strong> {String(selectedNode?.data?.label ?? "-")}</p>
-                    <p><strong>Rotation:</strong> {String(selectedNode?.data?.rotation ?? 0)} degrees</p>
-                    <p><strong>Size:</strong> {selectedNode ? `${String(selectedNode.style?.width ?? "auto")} x ${String(selectedNode.style?.height ?? "auto")}` : "-"}</p>
-                    <p><strong>Position:</strong> {selectedNode ? `${Math.round(selectedNode.position.x)}, ${Math.round(selectedNode.position.y)}` : "-"}</p>
-                    <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
-                    <FormError message={formErrors.component} />
-                    <button disabled={busy || !selectedDiagram || !selectedPart || !selectedNodeId} onClick={placeComponent}>Place selected part</button>
-                  </Panel>
-                  <Panel title="Line Metadata">
-                    <p><strong>Selected edge:</strong> {selectedEdge?.id ?? "None"}</p>
-                    <p><strong>Label:</strong> {String(selectedEdge?.label ?? "-")}</p>
-                    <p><strong>Start leg X:</strong> {String(selectedEdge?.data?.startX ?? selectedEdge?.data?.bendX ?? "auto")}</p>
-                    <p><strong>Middle leg Y:</strong> {String(selectedEdge?.data?.bendY ?? "auto")}</p>
-                    <p><strong>End leg X:</strong> {String(selectedEdge?.data?.endX ?? selectedEdge?.data?.bendX ?? "auto")}</p>
-                    <p><strong>Lines:</strong> {edges.length}</p>
-                  </Panel>
-                  <Panel title="Diagrams">
-                    <DataTable rows={diagrams} selectedKey={selectedDiagramId} getKey={(diagram) => diagram.id} onSelect={(diagram) => setSelectedDiagramId(diagram.id)} columns={[{ header: "Name", render: (diagram) => diagram.name }, { header: "Rev", render: (diagram) => diagram.revision }]} />
-                  </Panel>
-                </aside>
-              </section>
-            </PageLayout>
+            <PidEditorPage
+              busy={busy}
+              componentTag={componentTag}
+              customSymbols={customSymbols}
+              diagramName={diagramName}
+              diagrams={diagrams}
+              edges={edges}
+              editorSettings={editorSettings}
+              graphDirty={graphDirty}
+              nodes={nodes}
+              onCreateDiagram={submitDiagram}
+              onDeleteDiagram={deleteDiagram}
+              onDirty={() => setGraphDirty(true)}
+              onEdgesChange={onEdgesChange}
+              onNodesChange={onNodesChange}
+              onPlaceComponent={placeComponent}
+              onRenameDiagram={updateDiagram}
+              onSave={saveGraph}
+              parts={parts}
+              selectedDiagram={selectedDiagram}
+              selectedDiagramId={selectedDiagramId}
+              selectedEdgeId={selectedEdgeId}
+              selectedNodeId={selectedNodeId}
+              selectedPart={selectedPart}
+              setComponentTag={setComponentTag}
+              setCustomSymbols={setCustomSymbols}
+              setDiagramName={setDiagramName}
+              setEdges={setEdges}
+              setEditorSettings={setEditorSettings}
+              setNodes={setNodes}
+              setSelectedDiagramId={setSelectedDiagramId}
+              setSelectedEdgeId={setSelectedEdgeId}
+              setSelectedNodeId={setSelectedNodeId}
+            />
           }
         />
         <Route

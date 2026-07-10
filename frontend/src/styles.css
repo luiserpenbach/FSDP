@@ -847,6 +847,586 @@ tbody tr:hover,
   background: #edf3ff;
 }
 
+.pidEditor {
+  --pid-border: #d7dee9;
+  --pid-ink: #172235;
+  --pid-muted: #637087;
+  background: #eef2f7;
+  color: var(--pid-ink);
+  display: grid;
+  grid-template-rows: 64px minmax(560px, calc(100vh - 146px));
+  min-width: 0;
+}
+
+.pidEditor button,
+.pidEditor input,
+.pidEditor select {
+  border-radius: 7px;
+  font-size: 13px;
+  margin: 0;
+}
+
+.pidEditor button {
+  background: #25344b;
+  border-color: #25344b;
+  min-height: 32px;
+  padding: 6px 10px;
+}
+
+.pidEditor button:hover:not(:disabled) {
+  background: #182439;
+}
+
+.pidEditor button.secondary {
+  background: #fff;
+  border-color: var(--pid-border);
+  color: var(--pid-ink);
+}
+
+.pidCommandBar {
+  align-items: center;
+  background: #fff;
+  border-bottom: 1px solid var(--pid-border);
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 14px;
+}
+
+.pidCommandBar > select {
+  margin: 0;
+  max-width: 210px;
+}
+
+.pidDocumentControl {
+  min-width: 170px;
+}
+
+.pidDocumentControl input {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--pid-ink);
+  font-size: 15px;
+  font-weight: 750;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.pidEyebrow {
+  color: #7a879c;
+  display: block;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.pidCommandGroup,
+.pidOverflow {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+
+.pidCommandGroup {
+  border-left: 1px solid var(--pid-border);
+  padding-left: 10px;
+}
+
+.pidOverflow {
+  margin-left: auto;
+}
+
+.pidSaveState {
+  align-items: center;
+  color: #31735b;
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.pidSaveState i {
+  background: #36a87c;
+  border-radius: 50%;
+  height: 7px;
+  width: 7px;
+}
+
+.pidSaveState.dirty {
+  color: #a45b13;
+}
+
+.pidSaveState.dirty i {
+  background: #e18a2d;
+}
+
+.pidEditorBody {
+  display: grid;
+  grid-template-columns: 178px minmax(0, 1fr) 270px;
+  min-height: 0;
+}
+
+.pidPalette,
+.pidInspector {
+  background: #fff;
+  min-height: 0;
+  overflow: auto;
+  z-index: 3;
+}
+
+.pidPalette {
+  border-right: 1px solid var(--pid-border);
+}
+
+.pidInspector {
+  border-left: 1px solid var(--pid-border);
+}
+
+.pidPanelTitle {
+  align-items: center;
+  border-bottom: 1px solid #e7ebf1;
+  display: flex;
+  font-size: 12px;
+  font-weight: 800;
+  justify-content: space-between;
+  letter-spacing: .04em;
+  padding: 12px 14px;
+  text-transform: uppercase;
+}
+
+.pidPanelTitle small {
+  background: #edf1f6;
+  border-radius: 10px;
+  color: var(--pid-muted);
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+.pidSymbolList {
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+}
+
+.pidPaletteItem {
+  position: relative;
+}
+
+.pidPaletteItem > button:first-child {
+  align-items: center;
+  background: transparent;
+  border-color: transparent;
+  color: var(--pid-ink);
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 44px 1fr;
+  min-height: 56px;
+  padding: 6px;
+  text-align: left;
+  width: 100%;
+}
+
+.pidPaletteItem > button:first-child:hover {
+  background: #edf3ff;
+  border-color: #d5e1fb;
+}
+
+.pidPaletteItem .pidSymbolSvg {
+  height: 39px;
+  width: 44px;
+}
+
+.pidEditSymbol {
+  background: transparent !important;
+  border: 0 !important;
+  color: var(--pid-muted) !important;
+  min-height: 22px !important;
+  padding: 0 4px !important;
+  position: absolute;
+  right: 3px;
+  top: 2px;
+}
+
+.pidCanvas {
+  background: #f8fafc;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.pidCanvas .react-flow__renderer {
+  cursor: crosshair;
+}
+
+.pidCanvas .react-flow__controls,
+.pidCanvas .react-flow__minimap {
+  border: 1px solid var(--pid-border);
+  border-radius: 9px;
+  box-shadow: 0 5px 18px rgba(23, 34, 53, .1);
+  overflow: hidden;
+}
+
+.pidCanvas .react-flow__controls-button {
+  background: #fff;
+  border: 0;
+  border-bottom: 1px solid var(--pid-border);
+  border-radius: 0;
+  min-height: 27px;
+}
+
+.pidCanvas .react-flow__edge-interaction {
+  stroke-width: 18;
+}
+
+.pidCanvasStatus {
+  align-items: center;
+  backdrop-filter: blur(6px);
+  background: rgba(255, 255, 255, .88);
+  border: 1px solid var(--pid-border);
+  border-radius: 7px;
+  bottom: 10px;
+  color: var(--pid-muted);
+  display: flex;
+  font-size: 11px;
+  gap: 12px;
+  left: 50%;
+  padding: 5px 9px;
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 4;
+}
+
+.pidCadSymbol {
+  align-items: center;
+  color: #1c2b40;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  position: relative;
+  width: 100%;
+}
+
+.pidSymbolRotator {
+  height: 100%;
+  position: relative;
+  transition: transform 120ms ease;
+  width: 100%;
+}
+
+.pidSymbolSvg {
+  display: block;
+  height: 100%;
+  overflow: visible;
+  width: 100%;
+}
+
+.pidCadSymbol.isSelected::before {
+  border: 1px dashed #2364d8;
+  border-radius: 3px;
+  content: "";
+  inset: 2px;
+  pointer-events: none;
+  position: absolute;
+}
+
+.pidCadLabel {
+  background: rgba(248, 250, 252, .92);
+  bottom: -13px;
+  color: #35445b;
+  font-size: 11px;
+  font-weight: 700;
+  left: 50%;
+  max-width: 150px;
+  overflow: hidden;
+  padding: 1px 4px;
+  position: absolute;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.pidPort {
+  background: #fff;
+  border: 1.5px solid #2364d8;
+  height: 8px;
+  opacity: 0;
+  transition: opacity 100ms ease;
+  width: 8px;
+}
+
+.pidCadSymbol:hover .pidPort,
+.pidCadSymbol.isSelected .pidPort {
+  opacity: 1;
+}
+
+.pidSegmentHandle {
+  background: #fff !important;
+  border: 2px solid #2364d8 !important;
+  border-radius: 3px !important;
+  box-shadow: 0 2px 7px rgba(31, 73, 145, .22);
+  height: 12px;
+  min-height: 0 !important;
+  padding: 0 !important;
+  pointer-events: all;
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 12px;
+}
+
+.pidSegmentHandle.horizontal {
+  cursor: ns-resize;
+  width: 19px;
+}
+
+.pidSegmentHandle.vertical {
+  cursor: ew-resize;
+  height: 19px;
+}
+
+.pidInspectorContent {
+  padding: 14px;
+}
+
+.pidInspectorContent label {
+  color: var(--pid-muted);
+  font-size: 11px;
+  letter-spacing: .03em;
+  margin-bottom: 13px;
+  text-transform: uppercase;
+}
+
+.pidInspectorContent input,
+.pidInspectorContent select {
+  background: #f8fafc;
+  color: var(--pid-ink);
+  font-size: 13px;
+  letter-spacing: normal;
+  margin-top: 5px;
+  text-transform: none;
+}
+
+.pidInspectorContent input[type="color"] {
+  height: 36px;
+  padding: 3px;
+}
+
+.pidInspectorContent button {
+  margin-bottom: 7px;
+  width: 100%;
+}
+
+.pidInspectorContent .danger {
+  color: #a52a23;
+}
+
+.pidToggle {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  text-transform: none !important;
+}
+
+.pidToggle input {
+  margin: 0;
+  width: auto;
+}
+
+.pidHelp {
+  color: var(--pid-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.pidLinePreview {
+  border-top-style: solid;
+  height: 20px;
+  margin: 16px 3px;
+}
+
+.pidContextMenu {
+  background: #fff;
+  border: 1px solid var(--pid-border);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(18, 30, 49, .2);
+  display: grid;
+  gap: 8px;
+  min-width: 210px;
+  padding: 11px;
+  position: fixed;
+  z-index: 100;
+}
+
+.pidContextMenu > span {
+  color: var(--pid-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.pidSwatches,
+.pidThicknesses {
+  display: flex;
+  gap: 5px;
+}
+
+.pidSwatches button {
+  border: 2px solid #fff;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--pid-border);
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  width: 24px;
+}
+
+.pidThicknesses button {
+  align-items: center;
+  background: #f3f5f8;
+  border-color: transparent;
+  color: var(--pid-muted);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  font-size: 9px;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+}
+
+.pidThicknesses i {
+  border-top: solid var(--pid-ink);
+  display: block;
+  width: 18px;
+}
+
+.pidModalBackdrop {
+  align-items: center;
+  background: rgba(13, 22, 36, .58);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 200;
+}
+
+.pidSymbolEditor {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .3);
+  max-width: 960px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.pidSymbolEditor header,
+.pidSymbolEditor footer {
+  align-items: center;
+  border-bottom: 1px solid var(--pid-border);
+  display: flex;
+  justify-content: space-between;
+  padding: 14px 18px;
+}
+
+.pidSymbolEditor h2 {
+  font-size: 18px;
+  margin: 2px 0 0;
+}
+
+.pidSymbolEditor footer {
+  border-bottom: 0;
+  border-top: 1px solid var(--pid-border);
+  justify-content: flex-end;
+}
+
+.pidIconButton {
+  background: transparent !important;
+  border-color: transparent !important;
+  color: var(--pid-ink) !important;
+  font-size: 22px !important;
+}
+
+.pidSymbolEditorBody {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  min-height: 480px;
+}
+
+.pidSymbolEditorBody > aside {
+  border-right: 1px solid var(--pid-border);
+  overflow: auto;
+  padding: 16px;
+}
+
+.pidToolGrid {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(2, 1fr);
+  margin: 14px 0;
+}
+
+.pidToolGrid button {
+  background: #f0f3f7;
+  border-color: #dbe1ea;
+  color: var(--pid-ink);
+  text-transform: capitalize;
+}
+
+.pidToolGrid button.active {
+  background: #2364d8;
+  color: #fff;
+}
+
+.pidPortName {
+  align-items: center;
+  display: grid;
+  font-size: 10px;
+  gap: 5px;
+  grid-template-columns: 52px 1fr;
+  margin-top: 9px;
+}
+
+.pidPortName input {
+  margin: 0;
+}
+
+.pidSymbolCanvas {
+  align-items: center;
+  background: #edf1f6;
+  display: flex;
+  justify-content: center;
+  padding: 28px;
+}
+
+.pidSymbolCanvas svg {
+  background: #fff;
+  box-shadow: 0 10px 35px rgba(23, 34, 53, .14);
+  cursor: crosshair;
+  height: min(64vh, 580px);
+  touch-action: none;
+  width: min(64vh, 580px);
+}
+
+.pidSymbolCanvas .selected {
+  filter: drop-shadow(0 0 1px #2364d8);
+  stroke: #2364d8;
+}
+
+.symbolEditorPort {
+  cursor: move;
+  fill: #fff;
+  stroke: #d23c36;
+  stroke-width: 1.4;
+}
+
+.symbolEditorPort.selected {
+  fill: #d23c36;
+}
+
 @media (max-width: 1000px) {
   .appShell {
     grid-template-columns: 1fr;
@@ -878,5 +1458,19 @@ tbody tr:hover,
 
   .hero {
     display: block;
+  }
+
+  .pidEditor {
+    grid-template-rows: auto 760px;
+  }
+
+  .pidCommandBar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .pidEditorBody {
+    grid-template-columns: 140px minmax(480px, 1fr) 230px;
+    overflow-x: auto;
   }
 }

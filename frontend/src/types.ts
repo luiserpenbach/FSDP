@@ -1,3 +1,5 @@
+import type { PidEditorSettings, PidSymbolDefinition } from "./utils/pidEditor";
+
 export type Project = {
   id: string;
   name: string;
@@ -104,6 +106,8 @@ export type Diagram = {
   graph: {
     nodes?: import("reactflow").Node[];
     edges?: import("reactflow").Edge[];
+    editorSettings?: Partial<PidEditorSettings>;
+    symbols?: PidSymbolDefinition[];
   };
 };
 
