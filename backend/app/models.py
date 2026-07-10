@@ -48,6 +48,9 @@ class Project(TimestampMixin, Base):
     requirements: Mapped[list[Requirement]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+    requirement_sets: Mapped[list[RequirementSet]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class FluidSystem(TimestampMixin, Base):
@@ -63,6 +66,18 @@ class FluidSystem(TimestampMixin, Base):
     diagrams: Mapped[list[Diagram]] = relationship(
         back_populates="system", cascade="all, delete-orphan"
     )
+
+
+class PartFamily(TimestampMixin, Base):
+    __tablename__ = "part_families"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    name: Mapped[str] = mapped_column(String(160), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text)
+    part_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    template_properties: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    parts: Mapped[list[Part]] = relationship(back_populates="family")
 
 
 class Part(TimestampMixin, Base):
@@ -84,7 +99,51 @@ class Part(TimestampMixin, Base):
     dimensions: Mapped[dict] = mapped_column(JSON, default=dict)
     certification_status: Mapped[str] = mapped_column(String(80), default="unreviewed")
     qualification_status: Mapped[str] = mapped_column(String(80), default="unqualified")
+    lifecycle_status: Mapped[str] = mapped_column(String(40), nullable=False, default="active")
+    family_id: Mapped[str | None] = mapped_column(
+        ForeignKey("part_families.id", ondelete="SET NULL")
+    )
+    replacement_part_id: Mapped[str | None] = mapped_column(
+        ForeignKey("parts.id", ondelete="SET NULL")
+    )
     metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+
+    family: Mapped[PartFamily | None] = relationship(back_populates="parts")
+    replacement_part: Mapped[Part | None] = relationship(
+        remote_side="Part.id", foreign_keys=[replacement_part_id]
+    )
+    revision_history: Mapped[list[PartRevisionHistory]] = relationship(
+        back_populates="part", cascade="all, delete-orphan"
+    )
+    attachments: Mapped[list[PartAttachment]] = relationship(
+        back_populates="part", cascade="all, delete-orphan"
+    )
+
+
+class PartRevisionHistory(TimestampMixin, Base):
+    __tablename__ = "part_revision_history"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    part_id: Mapped[str] = mapped_column(ForeignKey("parts.id", ondelete="CASCADE"))
+    revision_label: Mapped[str | None] = mapped_column(String(40))
+    change_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    part: Mapped[Part] = relationship(back_populates="revision_history")
+
+
+class PartAttachment(TimestampMixin, Base):
+    __tablename__ = "part_attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    part_id: Mapped[str] = mapped_column(ForeignKey("parts.id", ondelete="CASCADE"))
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    attachment_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(120))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    content_base64: Mapped[str | None] = mapped_column(Text)
+
+    part: Mapped[Part] = relationship(back_populates="attachments")
 
 
 class Diagram(TimestampMixin, Base):
@@ -164,6 +223,23 @@ class ComponentInstance(TimestampMixin, Base):
     part: Mapped[Part | None] = relationship()
 
 
+class RequirementSet(TimestampMixin, Base):
+    __tablename__ = "requirement_sets"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_requirement_set_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    requirement_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    default_verification_method: Mapped[str | None] = mapped_column(String(80))
+    template_text: Mapped[str | None] = mapped_column(Text)
+    template_properties: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    project: Mapped[Project] = relationship(back_populates="requirement_sets")
+    requirements: Mapped[list[Requirement]] = relationship(back_populates="requirement_set")
+
+
 class Requirement(TimestampMixin, Base):
     __tablename__ = "requirements"
 
@@ -176,8 +252,52 @@ class Requirement(TimestampMixin, Base):
     verification_method: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(80), default="draft")
     owner: Mapped[str | None] = mapped_column(String(160))
+    lifecycle_status: Mapped[str] = mapped_column(String(40), nullable=False, default="active")
+    verification_status: Mapped[str] = mapped_column(String(40), nullable=False, default="not_started")
+    set_id: Mapped[str | None] = mapped_column(
+        ForeignKey("requirement_sets.id", ondelete="SET NULL")
+    )
+    superseded_by_requirement_id: Mapped[str | None] = mapped_column(
+        ForeignKey("requirements.id", ondelete="SET NULL")
+    )
 
     project: Mapped[Project] = relationship(back_populates="requirements")
+    requirement_set: Mapped[RequirementSet | None] = relationship(back_populates="requirements")
+    superseded_by: Mapped[Requirement | None] = relationship(
+        remote_side="Requirement.id", foreign_keys=[superseded_by_requirement_id]
+    )
+    revision_history: Mapped[list[RequirementRevisionHistory]] = relationship(
+        back_populates="requirement", cascade="all, delete-orphan"
+    )
+    attachments: Mapped[list[RequirementAttachment]] = relationship(
+        back_populates="requirement", cascade="all, delete-orphan"
+    )
+
+
+class RequirementRevisionHistory(TimestampMixin, Base):
+    __tablename__ = "requirement_revision_history"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    requirement_id: Mapped[str] = mapped_column(ForeignKey("requirements.id", ondelete="CASCADE"))
+    revision_label: Mapped[str | None] = mapped_column(String(40))
+    change_summary: Mapped[str] = mapped_column(Text, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    requirement: Mapped[Requirement] = relationship(back_populates="revision_history")
+
+
+class RequirementAttachment(TimestampMixin, Base):
+    __tablename__ = "requirement_attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    requirement_id: Mapped[str] = mapped_column(ForeignKey("requirements.id", ondelete="CASCADE"))
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    attachment_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(120))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    content_base64: Mapped[str | None] = mapped_column(Text)
+
+    requirement: Mapped[Requirement] = relationship(back_populates="attachments")
 
 
 class TraceLink(TimestampMixin, Base):

@@ -30,6 +30,25 @@ def get_change_impact(db: Session, object_type: str, object_id: str) -> dict:
                 )
             )
 
+    if object_type == "requirement":
+        component_ids: set[str] = set()
+        for link in direct_links:
+            if link.source_type == "requirement" and link.target_type == "component":
+                component_ids.add(link.target_id)
+            if link.target_type == "requirement" and link.source_type == "component":
+                component_ids.add(link.source_id)
+        if component_ids:
+            affected_components = list(
+                db.scalars(
+                    select(ComponentInstance).where(ComponentInstance.id.in_(component_ids))
+                )
+            )
+            diagram_ids = {component.diagram_id for component in affected_components}
+            if diagram_ids:
+                affected_bom_snapshots = list(
+                    db.scalars(select(BomSnapshot).where(BomSnapshot.diagram_id.in_(diagram_ids)))
+                )
+
     return {
         "object_type": object_type,
         "object_id": object_id,

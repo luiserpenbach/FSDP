@@ -61,6 +61,9 @@ class PartCreate(BaseModel):
     dimensions: dict[str, Any] = Field(default_factory=dict)
     certification_status: str = "unreviewed"
     qualification_status: str = "unqualified"
+    lifecycle_status: str = "active"
+    family_id: str | None = None
+    replacement_part_id: str | None = None
     metadata: dict[str, Any] = Field(
         default_factory=dict, validation_alias=AliasChoices("metadata", "metadata_")
     )
@@ -82,6 +85,9 @@ class PartUpdate(BaseModel):
     dimensions: dict[str, Any] | None = None
     certification_status: str | None = None
     qualification_status: str | None = None
+    lifecycle_status: str | None = None
+    family_id: str | None = None
+    replacement_part_id: str | None = None
     metadata: dict[str, Any] | None = Field(
         default=None, validation_alias=AliasChoices("metadata", "metadata_")
     )
@@ -178,6 +184,10 @@ class RequirementCreate(BaseModel):
     verification_method: str | None = None
     status: str = "draft"
     owner: str | None = None
+    lifecycle_status: str = "active"
+    verification_status: str = "not_started"
+    set_id: str | None = None
+    superseded_by_requirement_id: str | None = None
 
 
 class RequirementUpdate(BaseModel):
@@ -188,12 +198,127 @@ class RequirementUpdate(BaseModel):
     verification_method: str | None = None
     status: str | None = None
     owner: str | None = None
+    lifecycle_status: str | None = None
+    verification_status: str | None = None
+    set_id: str | None = None
+    superseded_by_requirement_id: str | None = None
 
 
 class RequirementRead(RequirementCreate, OrmModel):
     id: str
     created_at: datetime
     updated_at: datetime
+
+
+class RequirementSetCreate(BaseModel):
+    name: str
+    description: str | None = None
+    requirement_type: str
+    default_verification_method: str | None = None
+    template_text: str | None = None
+    template_properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class RequirementSetRead(RequirementSetCreate, OrmModel):
+    id: str
+    project_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class RequirementRevisionRead(OrmModel):
+    id: str
+    requirement_id: str
+    revision_label: str | None
+    change_summary: str
+    snapshot: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class RequirementAttachmentCreate(BaseModel):
+    filename: str
+    attachment_type: str
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    content_base64: str | None = None
+
+
+class RequirementAttachmentRead(RequirementAttachmentCreate, OrmModel):
+    id: str
+    requirement_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class RequirementCompareRead(BaseModel):
+    left: RequirementRead
+    right: RequirementRead
+    differences: list[dict[str, Any]]
+
+
+class RequirementBulkUpdate(BaseModel):
+    requirement_ids: list[str]
+    status: str | None = None
+    owner: str | None = None
+    verification_method: str | None = None
+    requirement_type: str | None = None
+    lifecycle_status: str | None = None
+    verification_status: str | None = None
+    set_id: str | None = None
+
+
+class RequirementImportRequest(BaseModel):
+    project_id: str
+    csv_text: str
+    column_mapping: dict[str, str]
+    on_duplicate: str = "skip"
+
+
+class RequirementImportResult(BaseModel):
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str]
+
+
+class RequirementVerificationMatrixRow(BaseModel):
+    requirement_id: str
+    key: str
+    title: str
+    requirement_type: str
+    verification_method: str | None = None
+    status: str
+    verification_status: str
+    verification_display: str
+    link_count: int
+    evidence_count: int
+    linked_components: list[str]
+    lifecycle_status: str
+
+
+class TraceableComponentRead(BaseModel):
+    component_id: str
+    tag: str
+    diagram_id: str
+    diagram_name: str
+    system_name: str
+    part_number: str | None = None
+
+
+class RequirementCoverageEntry(BaseModel):
+    link_count: int
+    linked: bool
+    evidence_count: int = 0
+    verification_display: str = "not_started"
+
+
+class RequirementTraceabilityRead(BaseModel):
+    requirement_id: str
+    links: list[dict[str, Any]]
+    components: list[dict[str, Any]]
+    diagrams: list[dict[str, Any]]
+    parts: list[dict[str, Any]]
 
 
 class TraceLinkCreate(BaseModel):
@@ -227,3 +352,78 @@ class ImpactRead(BaseModel):
     direct_links: list[TraceLinkRead]
     affected_bom_snapshots: list[BomSnapshotRead]
     affected_components: list[ComponentInstanceRead]
+
+
+class PartFamilyCreate(BaseModel):
+    name: str
+    description: str | None = None
+    part_type: str
+    template_properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class PartFamilyRead(PartFamilyCreate, OrmModel):
+    id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PartRevisionRead(OrmModel):
+    id: str
+    part_id: str
+    revision_label: str | None
+    change_summary: str
+    snapshot: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class PartAttachmentCreate(BaseModel):
+    filename: str
+    attachment_type: str
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    content_base64: str | None = None
+
+
+class PartAttachmentRead(PartAttachmentCreate, OrmModel):
+    id: str
+    part_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class PartWhereUsedRead(BaseModel):
+    part_id: str
+    components: list[dict[str, Any]]
+    diagrams: list[dict[str, Any]]
+    bom_snapshots: list[dict[str, Any]]
+    requirements: list[dict[str, Any]]
+
+
+class PartCompareRead(BaseModel):
+    left: PartRead
+    right: PartRead
+    differences: list[dict[str, Any]]
+
+
+class PartBulkUpdate(BaseModel):
+    part_ids: list[str]
+    manufacturer: str | None = None
+    material: str | None = None
+    qualification_status: str | None = None
+    certification_status: str | None = None
+    lifecycle_status: str | None = None
+    family_id: str | None = None
+
+
+class PartImportRequest(BaseModel):
+    csv_text: str
+    column_mapping: dict[str, str]
+    on_duplicate: str = "skip"
+
+
+class PartImportResult(BaseModel):
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str]

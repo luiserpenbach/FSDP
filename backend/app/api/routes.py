@@ -15,8 +15,14 @@ from app.models import (
     DiagramNode,
     FluidSystem,
     Part,
+    PartAttachment,
+    PartFamily,
+    PartRevisionHistory,
     Project,
     Requirement,
+    RequirementAttachment,
+    RequirementRevisionHistory,
+    RequirementSet,
     TraceLink,
 )
 from app.schemas import (
@@ -32,20 +38,63 @@ from app.schemas import (
     FluidSystemRead,
     FluidSystemUpdate,
     ImpactRead,
+    PartAttachmentCreate,
+    PartAttachmentRead,
+    PartBulkUpdate,
+    PartCompareRead,
     PartCreate,
+    PartFamilyCreate,
+    PartFamilyRead,
+    PartImportRequest,
+    PartImportResult,
     PartRead,
+    PartRevisionRead,
     PartUpdate,
+    PartWhereUsedRead,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
+    RequirementAttachmentCreate,
+    RequirementAttachmentRead,
+    RequirementBulkUpdate,
+    RequirementCompareRead,
     RequirementCreate,
+    RequirementImportRequest,
+    RequirementImportResult,
     RequirementRead,
+    RequirementRevisionRead,
+    RequirementSetCreate,
+    RequirementSetRead,
+    RequirementTraceabilityRead,
     RequirementUpdate,
+    RequirementVerificationMatrixRow,
+    TraceableComponentRead,
     TraceLinkCreate,
     TraceLinkRead,
 )
 from app.services.bom import generate_bom_snapshot
 from app.services.change_impact import get_change_impact
+from app.services.parts_catalog import (
+    apply_family_template,
+    bulk_update_parts,
+    compare_parts,
+    get_part_where_used,
+    import_parts_csv,
+    part_snapshot,
+    record_revision_history as record_part_revision_history,
+)
+from app.services.requirements_workspace import (
+    apply_set_template,
+    bulk_update_requirements,
+    compare_requirements,
+    get_project_requirement_coverage,
+    get_project_verification_matrix,
+    get_requirement_traceability,
+    import_requirements_csv,
+    list_project_traceable_components,
+    record_revision_history as record_requirement_revision_history,
+    requirement_snapshot,
+)
 from app.services.traceability import get_trace_links
 
 router = APIRouter()
@@ -286,6 +335,10 @@ def create_part(payload: PartCreate, db: Session = Depends(get_db)) -> Part:
 
     data = payload.model_dump()
     data["metadata_"] = data.pop("metadata")
+    family = db.get(PartFamily, data["family_id"]) if data.get("family_id") else None
+    data = apply_family_template(data, family)
+    if data.get("replacement_part_id"):
+        require_model(db, Part, data["replacement_part_id"])
     part = Part(**data)
     db.add(part)
     db.flush()
@@ -318,9 +371,108 @@ def list_parts(
     return list(db.scalars(stmt.order_by(Part.part_number)))
 
 
+@router.get("/parts/families", response_model=list[PartFamilyRead])
+def list_part_families(db: Session = Depends(get_db)) -> list[PartFamily]:
+    return list(db.scalars(select(PartFamily).order_by(PartFamily.name)))
+
+
+@router.post("/parts/families", response_model=PartFamilyRead, status_code=201)
+def create_part_family(payload: PartFamilyCreate, db: Session = Depends(get_db)) -> PartFamily:
+    existing = db.scalar(select(PartFamily).where(PartFamily.name == payload.name))
+    if existing:
+        raise HTTPException(status_code=409, detail="Part family name already exists")
+    family = PartFamily(**payload.model_dump())
+    db.add(family)
+    db.commit()
+    db.refresh(family)
+    return family
+
+
+@router.get("/parts/compare", response_model=PartCompareRead)
+def compare_part_pair(left_id: str, right_id: str, db: Session = Depends(get_db)) -> dict:
+    left = require_model(db, Part, left_id)
+    right = require_model(db, Part, right_id)
+    return {"left": left, "right": right, "differences": compare_parts(left, right)}
+
+
+@router.post("/parts/bulk-update", response_model=list[PartRead])
+def bulk_update_part_records(payload: PartBulkUpdate, db: Session = Depends(get_db)) -> list[Part]:
+    if not payload.part_ids:
+        raise HTTPException(status_code=422, detail="part_ids cannot be empty")
+    updates = payload.model_dump(exclude_unset=True, exclude={"part_ids"})
+    if not updates:
+        raise HTTPException(status_code=422, detail="No updates provided")
+    if updates.get("family_id"):
+        require_model(db, PartFamily, updates["family_id"])
+    updated = bulk_update_parts(db, payload.part_ids, updates)
+    db.commit()
+    for part in updated:
+        db.refresh(part)
+    return updated
+
+
+@router.post("/parts/import", response_model=PartImportResult)
+def import_parts(payload: PartImportRequest, db: Session = Depends(get_db)) -> dict:
+    if payload.on_duplicate not in {"skip", "update", "error"}:
+        raise HTTPException(status_code=422, detail="on_duplicate must be skip, update, or error")
+    result = import_parts_csv(db, payload.csv_text, payload.column_mapping, payload.on_duplicate)
+    db.commit()
+    return result
+
+
 @router.get("/parts/{part_id}", response_model=PartRead)
 def get_part(part_id: str, db: Session = Depends(get_db)) -> Part:
     return require_model(db, Part, part_id)
+
+
+@router.get("/parts/{part_id}/revisions", response_model=list[PartRevisionRead])
+def list_part_revisions(part_id: str, db: Session = Depends(get_db)) -> list[PartRevisionHistory]:
+    require_model(db, Part, part_id)
+    return list(
+        db.scalars(
+            select(PartRevisionHistory)
+            .where(PartRevisionHistory.part_id == part_id)
+            .order_by(PartRevisionHistory.created_at.desc())
+        )
+    )
+
+
+@router.get("/parts/{part_id}/where-used", response_model=PartWhereUsedRead)
+def part_where_used(part_id: str, db: Session = Depends(get_db)) -> dict:
+    require_model(db, Part, part_id)
+    return get_part_where_used(db, part_id)
+
+
+@router.get("/parts/{part_id}/attachments", response_model=list[PartAttachmentRead])
+def list_part_attachments(part_id: str, db: Session = Depends(get_db)) -> list[PartAttachment]:
+    require_model(db, Part, part_id)
+    return list(
+        db.scalars(
+            select(PartAttachment)
+            .where(PartAttachment.part_id == part_id)
+            .order_by(PartAttachment.filename)
+        )
+    )
+
+
+@router.post("/parts/{part_id}/attachments", response_model=PartAttachmentRead, status_code=201)
+def create_part_attachment(
+    part_id: str, payload: PartAttachmentCreate, db: Session = Depends(get_db)
+) -> PartAttachment:
+    require_model(db, Part, part_id)
+    attachment = PartAttachment(part_id=part_id, **payload.model_dump())
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return attachment
+
+
+@router.delete("/part-attachments/{attachment_id}", status_code=204)
+def delete_part_attachment(attachment_id: str, db: Session = Depends(get_db)) -> Response:
+    attachment = require_model(db, PartAttachment, attachment_id)
+    db.delete(attachment)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.put("/parts/{part_id}", response_model=PartRead)
@@ -332,8 +484,14 @@ def update_part(part_id: str, payload: PartUpdate, db: Session = Depends(get_db)
         )
         if existing:
             raise HTTPException(status_code=409, detail="Part number already exists")
+    if payload.replacement_part_id:
+        require_model(db, Part, payload.replacement_part_id)
+    if payload.family_id:
+        require_model(db, PartFamily, payload.family_id)
 
+    before = part_snapshot(part)
     apply_updates(part, payload)
+    record_part_revision_history(db, part, f"Updated part {part.part_number}", before)
     record_change(db, "part", part.id, "updated", f"Updated part {part.part_number}")
     db.commit()
     db.refresh(part)
@@ -430,7 +588,17 @@ def create_requirement(payload: RequirementCreate, db: Session = Depends(get_db)
     if existing:
         raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
-    requirement = Requirement(**payload.model_dump())
+    data = payload.model_dump()
+    requirement_set = (
+        db.get(RequirementSet, data["set_id"]) if data.get("set_id") else None
+    )
+    if data.get("set_id") and requirement_set is None:
+        raise HTTPException(status_code=404, detail="Requirement set not found")
+    data = apply_set_template(data, requirement_set)
+    if data.get("superseded_by_requirement_id"):
+        require_model(db, Requirement, data["superseded_by_requirement_id"])
+
+    requirement = Requirement(**data)
     db.add(requirement)
     db.flush()
     record_change(
@@ -445,6 +613,167 @@ def create_requirement(payload: RequirementCreate, db: Session = Depends(get_db)
 def list_requirements(project_id: str, db: Session = Depends(get_db)) -> list[Requirement]:
     require_model(db, Project, project_id)
     return list(db.scalars(select(Requirement).where(Requirement.project_id == project_id)))
+
+
+@router.get("/projects/{project_id}/requirements/coverage")
+def requirement_coverage(project_id: str, db: Session = Depends(get_db)) -> dict[str, dict]:
+    require_model(db, Project, project_id)
+    return get_project_requirement_coverage(db, project_id)
+
+
+@router.get(
+    "/projects/{project_id}/traceable-components", response_model=list[TraceableComponentRead]
+)
+def traceable_components(project_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    require_model(db, Project, project_id)
+    return list_project_traceable_components(db, project_id)
+
+
+@router.get("/requirements/{requirement_id}/traceability", response_model=RequirementTraceabilityRead)
+def requirement_traceability(requirement_id: str, db: Session = Depends(get_db)) -> dict:
+    require_model(db, Requirement, requirement_id)
+    return get_requirement_traceability(db, requirement_id)
+
+
+@router.get("/requirements/compare", response_model=RequirementCompareRead)
+def compare_requirement_pair(
+    left_id: str, right_id: str, db: Session = Depends(get_db)
+) -> dict:
+    left = require_model(db, Requirement, left_id)
+    right = require_model(db, Requirement, right_id)
+    return {"left": left, "right": right, "differences": compare_requirements(left, right)}
+
+
+@router.post("/requirements/bulk-update", response_model=list[RequirementRead])
+def bulk_update_requirement_records(
+    payload: RequirementBulkUpdate, db: Session = Depends(get_db)
+) -> list[Requirement]:
+    updates = payload.model_dump(exclude={"requirement_ids"}, exclude_none=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No updates provided")
+    if updates.get("set_id"):
+        require_model(db, RequirementSet, updates["set_id"])
+    updated = bulk_update_requirements(db, payload.requirement_ids, updates)
+    db.commit()
+    for requirement in updated:
+        db.refresh(requirement)
+    return updated
+
+
+@router.post("/requirements/import", response_model=RequirementImportResult)
+def import_requirements(payload: RequirementImportRequest, db: Session = Depends(get_db)) -> dict:
+    require_model(db, Project, payload.project_id)
+    result = import_requirements_csv(
+        db, payload.project_id, payload.csv_text, payload.column_mapping, payload.on_duplicate
+    )
+    if result["errors"] and result["created"] == 0 and result["updated"] == 0:
+        raise HTTPException(status_code=400, detail=result["errors"])
+    db.commit()
+    return result
+
+
+@router.get(
+    "/projects/{project_id}/requirements/verification-matrix",
+    response_model=list[RequirementVerificationMatrixRow],
+)
+def requirement_verification_matrix(project_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    require_model(db, Project, project_id)
+    return get_project_verification_matrix(db, project_id)
+
+
+@router.get(
+    "/projects/{project_id}/requirement-sets", response_model=list[RequirementSetRead]
+)
+def list_requirement_sets(project_id: str, db: Session = Depends(get_db)) -> list[RequirementSet]:
+    require_model(db, Project, project_id)
+    return list(
+        db.scalars(select(RequirementSet).where(RequirementSet.project_id == project_id))
+    )
+
+
+@router.post(
+    "/projects/{project_id}/requirement-sets",
+    response_model=RequirementSetRead,
+    status_code=201,
+)
+def create_requirement_set(
+    project_id: str, payload: RequirementSetCreate, db: Session = Depends(get_db)
+) -> RequirementSet:
+    require_model(db, Project, project_id)
+    existing = db.scalar(
+        select(RequirementSet).where(
+            RequirementSet.project_id == project_id,
+            RequirementSet.name == payload.name,
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="Requirement set name already exists in project")
+    requirement_set = RequirementSet(project_id=project_id, **payload.model_dump())
+    db.add(requirement_set)
+    db.commit()
+    db.refresh(requirement_set)
+    return requirement_set
+
+
+@router.get(
+    "/requirements/{requirement_id}/revisions", response_model=list[RequirementRevisionRead]
+)
+def list_requirement_revisions(
+    requirement_id: str, db: Session = Depends(get_db)
+) -> list[RequirementRevisionHistory]:
+    require_model(db, Requirement, requirement_id)
+    return list(
+        db.scalars(
+            select(RequirementRevisionHistory)
+            .where(RequirementRevisionHistory.requirement_id == requirement_id)
+            .order_by(RequirementRevisionHistory.created_at.desc())
+        )
+    )
+
+
+@router.get(
+    "/requirements/{requirement_id}/attachments",
+    response_model=list[RequirementAttachmentRead],
+)
+def list_requirement_attachments(
+    requirement_id: str, db: Session = Depends(get_db)
+) -> list[RequirementAttachment]:
+    require_model(db, Requirement, requirement_id)
+    return list(
+        db.scalars(
+            select(RequirementAttachment).where(
+                RequirementAttachment.requirement_id == requirement_id
+            )
+        )
+    )
+
+
+@router.post(
+    "/requirements/{requirement_id}/attachments",
+    response_model=RequirementAttachmentRead,
+    status_code=201,
+)
+def create_requirement_attachment(
+    requirement_id: str,
+    payload: RequirementAttachmentCreate,
+    db: Session = Depends(get_db),
+) -> RequirementAttachment:
+    require_model(db, Requirement, requirement_id)
+    attachment = RequirementAttachment(requirement_id=requirement_id, **payload.model_dump())
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+    return attachment
+
+
+@router.delete("/requirement-attachments/{attachment_id}", status_code=204)
+def delete_requirement_attachment(
+    attachment_id: str, db: Session = Depends(get_db)
+) -> Response:
+    attachment = require_model(db, RequirementAttachment, attachment_id)
+    db.delete(attachment)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.put("/requirements/{requirement_id}", response_model=RequirementRead)
@@ -463,7 +792,13 @@ def update_requirement(
         if existing:
             raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
+    before = requirement_snapshot(requirement)
     apply_updates(requirement, payload)
+    if payload.set_id:
+        require_model(db, RequirementSet, payload.set_id)
+    if payload.superseded_by_requirement_id:
+        require_model(db, Requirement, payload.superseded_by_requirement_id)
+    record_requirement_revision_history(db, requirement, f"Updated requirement {requirement.key}", before)
     record_change(
         db, "requirement", requirement.id, "updated", f"Updated requirement {requirement.key}"
     )
@@ -489,6 +824,14 @@ def create_trace_link(payload: TraceLinkCreate, db: Session = Depends(get_db)) -
     db.commit()
     db.refresh(link)
     return link
+
+
+@router.delete("/trace-links/{link_id}", status_code=204)
+def delete_trace_link(link_id: str, db: Session = Depends(get_db)) -> Response:
+    link = require_model(db, TraceLink, link_id)
+    db.delete(link)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/objects/{object_type}/{object_id}/trace", response_model=list[TraceLinkRead])

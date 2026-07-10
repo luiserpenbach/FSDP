@@ -22,16 +22,18 @@ export function SummaryCard({ title, value, detail }: { title: string; value: nu
 export function TextInput({
   label,
   value,
-  onChange
+  onChange,
+  readOnly = false
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  readOnly?: boolean;
 }) {
   return (
     <label>
       {label}
-      <input value={value} onChange={(event) => onChange(event.target.value)} />
+      <input readOnly={readOnly} value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
@@ -39,16 +41,18 @@ export function TextInput({
 export function TextArea({
   label,
   value,
-  onChange
+  onChange,
+  readOnly = false
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  readOnly?: boolean;
 }) {
   return (
     <label>
       {label}
-      <textarea value={value} onChange={(event) => onChange(event.target.value)} />
+      <textarea readOnly={readOnly} value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }
@@ -57,18 +61,22 @@ export function Select({
   label,
   value,
   options,
-  onChange
+  onChange,
+  allowEmpty = true,
+  disabled = false
 }: {
   label: string;
   value: string;
   options: Array<{ value: string; label: string }>;
   onChange: (value: string) => void;
+  allowEmpty?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <label>
       {label}
-      <select value={value} onChange={(event) => onChange(event.target.value)}>
-        <option value="">Select...</option>
+      <select disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)}>
+        {allowEmpty && <option value="">Select...</option>}
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}

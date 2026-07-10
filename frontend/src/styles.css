@@ -108,6 +108,28 @@ a {
   width: 42px;
 }
 
+.sidebarContext {
+  border-bottom: 1px solid #1f2937;
+  margin-bottom: 4px;
+  padding: 0 8px 16px;
+}
+
+.sidebarContext label {
+  color: #9ca3af;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.sidebarContext select {
+  background: #1f2937;
+  border-color: #374151;
+  color: #f9fafb;
+  margin-top: 8px;
+  width: 100%;
+}
+
 .sideNav {
   display: flex;
   flex-direction: column;
@@ -377,9 +399,239 @@ a {
   overflow: hidden;
 }
 
-.diagramPage {
+.diagramPage,
+.partsPage,
+.requirementsPage {
   max-width: none;
   padding: 20px;
+  width: 100%;
+}
+
+.coverageBadge {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+}
+
+.coverageBadge.linked {
+  background: #e8f5ee;
+  color: #1f6b45;
+}
+
+.coverageBadge.unlinked {
+  background: #fff4e5;
+  color: #9a5b00;
+}
+
+.verificationBadge {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  text-transform: capitalize;
+}
+
+.verificationBadge.not_started {
+  background: #f1f3f6;
+  color: #5b6472;
+}
+
+.verificationBadge.in_progress {
+  background: #e8f0ff;
+  color: #1f4f9a;
+}
+
+.verificationBadge.passed {
+  background: #e8f5ee;
+  color: #1f6b45;
+}
+
+.verificationBadge.failed {
+  background: #fdecea;
+  color: #9a2c2c;
+}
+
+.partsCatalog {
+  display: grid;
+  gap: 18px;
+}
+
+.partsToolbar {
+  align-items: flex-start;
+  background: #ffffff;
+  border: 1px solid #dfe5ef;
+  border-radius: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 16px 18px;
+}
+
+.partsToolbarMain,
+.partsToolbarActions {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.partsToolbarMain button,
+.partsToolbarActions button {
+  margin: 0;
+}
+
+.partsSearch {
+  margin-top: 0;
+  min-width: 240px;
+  width: auto;
+}
+
+.partsToolbar label {
+  margin: 0;
+  min-width: 150px;
+}
+
+.partsTableLayout {
+  align-items: start;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) 280px;
+}
+
+.partsTableLayout:has(.columnPicker) {
+  grid-template-columns: minmax(0, 1fr) 280px;
+}
+
+.partsTableLayout:not(:has(.columnPicker)) {
+  grid-template-columns: 1fr;
+}
+
+.partsTableArea {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.partsTableWrap {
+  width: 100%;
+}
+
+.partsTable {
+  min-width: 100%;
+}
+
+.partsTable th,
+.partsTable td {
+  white-space: nowrap;
+}
+
+.checkboxCell {
+  width: 42px;
+}
+
+.sortHeader {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 800;
+  margin: 0;
+  padding: 0;
+  text-transform: inherit;
+}
+
+.sortHeader:hover {
+  color: #1f5eff;
+}
+
+.partsFormGrid {
+  display: grid;
+  gap: 0 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.partsViewerHeader {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.columnPicker {
+  position: sticky;
+  top: 96px;
+}
+
+.columnPickerList {
+  display: grid;
+  gap: 8px;
+}
+
+.columnPickerItem {
+  align-items: center;
+  color: #40516a;
+  display: flex;
+  font-size: 0.92rem;
+  font-weight: 600;
+  gap: 8px;
+  margin: 0;
+}
+
+.columnPickerItem input {
+  margin: 0;
+  width: auto;
+}
+
+input[readonly],
+select:disabled {
+  background: #f7f9fd;
+  color: #40516a;
+}
+
+.viewerTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.tabButton {
+  background: #eef3ff;
+  color: #1f3a8a;
+  margin: 0;
+  text-transform: capitalize;
+}
+
+.tabButton.active {
+  background: #1f5eff;
+  color: #ffffff;
+}
+
+.viewerSections {
+  display: grid;
+  gap: 16px;
+}
+
+.revisionCard,
+.attachmentCard {
+  background: #f7f9fd;
+  border: 1px solid #dfe5ef;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.importCsvArea {
+  margin-bottom: 12px;
+  min-height: 120px;
+  width: 100%;
+}
+
+.fileUpload input {
+  margin-top: 8px;
   width: 100%;
 }
 
@@ -618,7 +870,9 @@ tbody tr:hover,
     grid-template-columns: 1fr;
   }
 
-  .diagramLayout {
+  .diagramLayout,
+  .partsTableLayout,
+  .partsFormGrid {
     grid-template-columns: 1fr;
   }
 

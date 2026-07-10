@@ -43,6 +43,9 @@ export function AppShell({
             <small>Fluid Systems</small>
           </div>
         </div>
+        <div className="sidebarContext">
+          <Select allowEmpty={false} label="Project" value={projectValue} options={projectOptions} onChange={onProjectChange} />
+        </div>
         <nav className="sideNav" aria-label="Primary navigation">
           {navItems.map((item) => (
             <NavLink className={({ isActive }) => (isActive ? "navItem active" : "navItem")} key={item.path} to={item.path}>
@@ -56,7 +59,6 @@ export function AppShell({
       <div className="appMain">
         <header className="topBar">
           <div className="contextSelectors">
-            <Select label="Project" value={projectValue} options={projectOptions} onChange={onProjectChange} />
             <Select label="System" value={systemValue} options={systemOptions} onChange={onSystemChange} />
             <div className="searchBox">Search parts, requirements, diagrams...</div>
           </div>
