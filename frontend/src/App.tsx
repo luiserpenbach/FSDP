@@ -24,6 +24,8 @@ import { api, bomCsvUrl } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { PageLayout, PlaceholderPage } from "./pages/PageLayout";
+import { PartsCatalogPage } from "./pages/PartsCatalogPage";
+import { RequirementsPage } from "./pages/RequirementsPage";
 import type { BomSnapshot, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, Requirement } from "./types";
 
 type PidNodeData = {
@@ -52,7 +54,7 @@ const starterEdges: Edge<OrthogonalEdgeData>[] = [
 
 const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
-  { path: "/systems", label: "Systems", description: "Projects and fluid systems" },
+  { path: "/systems", label: "Systems", description: "Fluid systems" },
   { path: "/diagrams", label: "Diagrams", description: "P&ID workspace" },
   { path: "/parts", label: "Parts Catalog", description: "Internal and vendor parts" },
   { path: "/requirements", label: "Requirements", description: "Traceable requirements" },
@@ -256,10 +258,7 @@ function WorkspaceApp() {
   const [projectForm, setProjectForm] = useState({ name: "Demo Propulsion System", owner: "Propulsion Engineering", description: "MVP digital-thread project for FSDP." });
   const [systemForm, setSystemForm] = useState({ name: "Helium Pressurization", fluid: "GHe", description: "Pressurization system MVP workspace." });
   const [diagramName, setDiagramName] = useState("MVP P&ID");
-  const [partForm, setPartForm] = useState({ part_number: "VALVE-001", description: "Normally closed solenoid valve", part_type: "valve", manufacturer: "Internal Standard", material: "316L", pressure_rating_bar: "350" });
   const [componentTag, setComponentTag] = useState("V-1");
-  const [requirementForm, setRequirementForm] = useState({ key: "FSDP-REQ-1", title: "Maintain pressure boundary compatibility", text: "All pressurized components shall be compatible with maximum expected operating pressure.", requirement_type: "safety", verification_method: "analysis" });
-
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Ready");
   const [error, setError] = useState("");
@@ -324,7 +323,7 @@ function WorkspaceApp() {
     void runAction("Loaded parts.", async () => {
       const next = await api.listParts();
       setParts(next);
-      setSelectedPartId((current) => current || next[0]?.id || "");
+      setSelectedPartId((current) => current || "");
     });
   }, []);
 
@@ -342,7 +341,7 @@ function WorkspaceApp() {
       setSystems(nextSystems);
       setRequirements(nextRequirements);
       setSelectedSystemId((current) => (nextSystems.some((system) => system.id === current) ? current : nextSystems[0]?.id || ""));
-      setSelectedRequirementId((current) => (nextRequirements.some((requirement) => requirement.id === current) ? current : nextRequirements[0]?.id || ""));
+      setSelectedRequirementId((current) => (nextRequirements.some((requirement) => requirement.id === current) ? current : ""));
     });
   }, [selectedProjectId]);
 
@@ -390,31 +389,6 @@ function WorkspaceApp() {
       setSystemForm({ name: selectedSystem.name, fluid: selectedSystem.fluid ?? "", description: selectedSystem.description ?? "" });
     }
   }, [selectedSystem]);
-
-  useEffect(() => {
-    if (selectedPart) {
-      setPartForm({
-        part_number: selectedPart.part_number,
-        description: selectedPart.description,
-        part_type: selectedPart.part_type,
-        manufacturer: selectedPart.manufacturer ?? "",
-        material: selectedPart.material ?? "",
-        pressure_rating_bar: String(selectedPart.pressure_rating_bar ?? "")
-      });
-    }
-  }, [selectedPart]);
-
-  useEffect(() => {
-    if (selectedRequirement) {
-      setRequirementForm({
-        key: selectedRequirement.key,
-        title: selectedRequirement.title,
-        text: selectedRequirement.text,
-        requirement_type: selectedRequirement.requirement_type,
-        verification_method: selectedRequirement.verification_method ?? ""
-      });
-    }
-  }, [selectedRequirement]);
 
   useEffect(() => {
     if (selectedComponent) {
@@ -529,33 +503,6 @@ function WorkspaceApp() {
     });
   }
 
-  function submitPart(event: FormEvent) {
-    event.preventDefault();
-    void runAction("Created part.", async () => {
-      const part = await api.createPart({ ...partForm, pressure_rating_bar: Number(partForm.pressure_rating_bar), source_type: "internal", qualification_status: "preferred", certification_status: "qualified" });
-      setParts(await api.listParts());
-      setSelectedPartId(part.id);
-    }, "part");
-  }
-
-  function updatePart() {
-    if (!selectedPart) return;
-    void runAction("Updated part.", async () => {
-      await api.updatePart(selectedPart.id, { ...partForm, pressure_rating_bar: Number(partForm.pressure_rating_bar) });
-      setParts(await api.listParts());
-    }, "part");
-  }
-
-  function deletePart() {
-    if (!selectedPart || !window.confirm(`Delete part "${selectedPart.part_number}"?`)) return;
-    void runAction("Deleted part.", async () => {
-      await api.deletePart(selectedPart.id);
-      const next = await api.listParts();
-      setParts(next);
-      setSelectedPartId(next[0]?.id || "");
-    });
-  }
-
   function submitDiagram(event: FormEvent) {
     event.preventDefault();
     if (!selectedSystem) return;
@@ -621,59 +568,6 @@ function WorkspaceApp() {
     }, "component");
   }
 
-  function submitRequirement(event: FormEvent) {
-    event.preventDefault();
-    if (!selectedProject) return;
-    void runAction("Created requirement.", async () => {
-      const requirement = await api.createRequirement({ ...requirementForm, project_id: selectedProject.id, status: "draft" });
-      setRequirements(await api.listRequirements(selectedProject.id));
-      setSelectedRequirementId(requirement.id);
-    }, "requirement");
-  }
-
-  function updateRequirement() {
-    if (!selectedProject || !selectedRequirement) return;
-    void runAction("Updated requirement.", async () => {
-      await api.updateRequirement(selectedRequirement.id, requirementForm);
-      setRequirements(await api.listRequirements(selectedProject.id));
-    }, "requirement");
-  }
-
-  function deleteRequirement() {
-    if (!selectedProject || !selectedRequirement || !window.confirm(`Delete requirement "${selectedRequirement.key}"?`)) return;
-    void runAction("Deleted requirement.", async () => {
-      await api.deleteRequirement(selectedRequirement.id);
-      const next = await api.listRequirements(selectedProject.id);
-      setRequirements(next);
-      setSelectedRequirementId(next[0]?.id || "");
-    });
-  }
-
-  function updateComponent() {
-    if (!selectedComponent) return;
-    void runAction("Updated component.", async () => {
-      const updated = await api.updateComponent(selectedComponent.id, { tag: componentTag });
-      setComponents((current) => current.map((component) => (component.id === updated.id ? updated : component)));
-    }, "component");
-  }
-
-  function deleteComponent() {
-    if (!selectedDiagram || !selectedComponent || !window.confirm(`Delete component "${selectedComponent.tag}"?`)) return;
-    void runAction("Deleted component.", async () => {
-      await api.deleteComponent(selectedComponent.id);
-      const next = await api.listComponents(selectedDiagram.id);
-      setComponents(next);
-      setSelectedComponentId(next[0]?.id || "");
-    });
-  }
-
-  function linkRequirementToComponent() {
-    if (!selectedRequirement || !selectedComponent) return;
-    void runAction("Linked requirement.", async () => {
-      await api.createTraceLink({ source_type: "requirement", source_id: selectedRequirement.id, target_type: "component", target_id: selectedComponent.id, link_type: "satisfied_by" });
-    });
-  }
-
   function generateBom() {
     if (!selectedDiagram) return;
     void runAction("Generated BoM.", async () => {
@@ -726,22 +620,8 @@ function WorkspaceApp() {
         <Route
           path="/systems"
           element={
-            <PageLayout title="Systems" description="Projects and fluid systems">
+            <PageLayout title="Systems" description="Fluid systems in the active project">
               <section className="grid">
-                <Panel title="Project">
-                  <form onSubmit={submitProject}>
-                    <TextInput label="Name" value={projectForm.name} onChange={(name) => setProjectForm({ ...projectForm, name })} />
-                    <TextInput label="Owner" value={projectForm.owner} onChange={(owner) => setProjectForm({ ...projectForm, owner })} />
-                    <TextArea label="Description" value={projectForm.description} onChange={(description) => setProjectForm({ ...projectForm, description })} />
-                    <FormError message={formErrors.project} />
-                    <button disabled={busy || !projectForm.name}>Create project</button>
-                  </form>
-                  <div className="buttonRow">
-                    <button disabled={busy || !selectedProject} onClick={updateProject}>Update selected</button>
-                    <button className="danger" disabled={busy || !selectedProject} onClick={deleteProject}>Delete selected</button>
-                  </div>
-                  <DataTable rows={projects} selectedKey={selectedProjectId} getKey={(project) => project.id} onSelect={(project) => selectProject(project.id)} columns={[{ header: "Name", render: (project) => project.name }, { header: "Owner", render: (project) => project.owner ?? "-" }]} />
-                </Panel>
                 <Panel title="Fluid System">
                   <form onSubmit={submitSystem}>
                     <TextInput label="Name" value={systemForm.name} onChange={(name) => setSystemForm({ ...systemForm, name })} />
@@ -830,57 +710,33 @@ function WorkspaceApp() {
         <Route
           path="/parts"
           element={
-            <PageLayout title="Parts Catalog" description="Internal and vendor parts">
-              <section className="grid">
-                <Panel title="Part Editor">
-                  <form onSubmit={submitPart}>
-                    <TextInput label="Part number" value={partForm.part_number} onChange={(partNumber) => setPartForm({ ...partForm, part_number: partNumber })} />
-                    <TextInput label="Description" value={partForm.description} onChange={(description) => setPartForm({ ...partForm, description })} />
-                    <TextInput label="Type" value={partForm.part_type} onChange={(partType) => setPartForm({ ...partForm, part_type: partType })} />
-                    <TextInput label="Manufacturer" value={partForm.manufacturer} onChange={(manufacturer) => setPartForm({ ...partForm, manufacturer })} />
-                    <TextInput label="Material" value={partForm.material} onChange={(material) => setPartForm({ ...partForm, material })} />
-                    <TextInput label="Pressure rating bar" value={partForm.pressure_rating_bar} onChange={(pressure) => setPartForm({ ...partForm, pressure_rating_bar: pressure })} />
-                    <FormError message={formErrors.part} />
-                    <button disabled={busy || !partForm.part_number || !partForm.description}>Add part</button>
-                  </form>
-                  <div className="buttonRow"><button disabled={!selectedPart} onClick={updatePart}>Update selected</button><button className="danger" disabled={!selectedPart} onClick={deletePart}>Delete selected</button></div>
-                </Panel>
-                <Panel title="Parts">
-                  <DataTable rows={parts} selectedKey={selectedPartId} getKey={(part) => part.id} onSelect={(part) => setSelectedPartId(part.id)} columns={[{ header: "Part", render: (part) => part.part_number }, { header: "Type", render: (part) => part.part_type }, { header: "Material", render: (part) => part.material ?? "-" }, { header: "Pressure", render: (part) => part.pressure_rating_bar ?? "-" }]} />
-                </Panel>
-              </section>
-            </PageLayout>
+            <PartsCatalogPage
+              busy={busy}
+              formErrors={formErrors}
+              parts={parts}
+              selectedPartId={selectedPartId}
+              onPartsUpdated={async () => setParts(await api.listParts())}
+              onSelectPart={setSelectedPartId}
+              runAction={runAction}
+            />
           }
         />
         <Route
           path="/requirements"
           element={
-            <PageLayout title="Requirements" description="Traceable requirements">
-              <section className="grid">
-                <Panel title="Requirement Editor">
-                  <form onSubmit={submitRequirement}>
-                    <TextInput label="Key" value={requirementForm.key} onChange={(key) => setRequirementForm({ ...requirementForm, key })} />
-                    <TextInput label="Title" value={requirementForm.title} onChange={(title) => setRequirementForm({ ...requirementForm, title })} />
-                    <TextInput label="Type" value={requirementForm.requirement_type} onChange={(requirementType) => setRequirementForm({ ...requirementForm, requirement_type: requirementType })} />
-                    <TextInput label="Verification" value={requirementForm.verification_method} onChange={(verificationMethod) => setRequirementForm({ ...requirementForm, verification_method: verificationMethod })} />
-                    <TextArea label="Text" value={requirementForm.text} onChange={(text) => setRequirementForm({ ...requirementForm, text })} />
-                    <FormError message={formErrors.requirement} />
-                    <button disabled={busy || !selectedProject || !requirementForm.key}>Create requirement</button>
-                  </form>
-                  <div className="buttonRow"><button disabled={!selectedRequirement} onClick={updateRequirement}>Update selected</button><button className="danger" disabled={!selectedRequirement} onClick={deleteRequirement}>Delete selected</button></div>
-                </Panel>
-                <Panel title="Requirements">
-                  <DataTable rows={requirements} selectedKey={selectedRequirementId} getKey={(requirement) => requirement.id} onSelect={(requirement) => setSelectedRequirementId(requirement.id)} columns={[{ header: "Key", render: (requirement) => requirement.key }, { header: "Title", render: (requirement) => requirement.title }, { header: "Type", render: (requirement) => requirement.requirement_type }]} />
-                </Panel>
-                <Panel title="Trace Links">
-                  <Select label="Component" value={selectedComponentId} options={components.map((component) => ({ value: component.id, label: component.tag }))} onChange={setSelectedComponentId} />
-                  <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
-                  <FormError message={formErrors.component} />
-                  <div className="buttonRow"><button disabled={!selectedComponent} onClick={updateComponent}>Update component</button><button className="danger" disabled={!selectedComponent} onClick={deleteComponent}>Delete component</button></div>
-                  <button disabled={!selectedRequirement || !selectedComponent} onClick={linkRequirementToComponent}>Link requirement to component</button>
-                </Panel>
-              </section>
-            </PageLayout>
+            <RequirementsPage
+              busy={busy}
+              formErrors={formErrors}
+              projectId={selectedProjectId}
+              requirements={requirements}
+              selectedRequirementId={selectedRequirementId}
+              onRequirementsUpdated={async () => {
+                if (!selectedProjectId) return;
+                setRequirements(await api.listRequirements(selectedProjectId));
+              }}
+              onSelectRequirement={setSelectedRequirementId}
+              runAction={runAction}
+            />
           }
         />
         <Route
@@ -912,7 +768,32 @@ function WorkspaceApp() {
         />
         <Route path="/safety" element={<PlaceholderPage title="Safety" body="Hazards, trapped-volume checks, relief scenarios, and FMEA/FHA workflows will be added after the navigation foundation." />} />
         <Route path="/certification" element={<PlaceholderPage title="Certification" body="Compliance packages, evidence status, and generated certification artifacts will live here." />} />
-        <Route path="/settings" element={<PlaceholderPage title="Settings" body="Project settings, unit systems, templates, roles, and controlled vocabularies will live here." />} />
+        <Route
+          path="/settings"
+          element={
+            <PageLayout title="Settings" description="Project configuration">
+              <section className="grid">
+                <Panel title="Projects">
+                  <form onSubmit={submitProject}>
+                    <TextInput label="Name" value={projectForm.name} onChange={(name) => setProjectForm({ ...projectForm, name })} />
+                    <TextInput label="Owner" value={projectForm.owner} onChange={(owner) => setProjectForm({ ...projectForm, owner })} />
+                    <TextArea label="Description" value={projectForm.description} onChange={(description) => setProjectForm({ ...projectForm, description })} />
+                    <FormError message={formErrors.project} />
+                    <button disabled={busy || !projectForm.name}>Create project</button>
+                  </form>
+                  <div className="buttonRow">
+                    <button disabled={busy || !selectedProject} onClick={updateProject}>Update selected</button>
+                    <button className="danger" disabled={busy || !selectedProject} onClick={deleteProject}>Delete selected</button>
+                  </div>
+                  <DataTable rows={projects} selectedKey={selectedProjectId} getKey={(project) => project.id} onSelect={(project) => selectProject(project.id)} columns={[{ header: "Name", render: (project) => project.name }, { header: "Owner", render: (project) => project.owner ?? "-" }]} />
+                </Panel>
+                <Panel title="Workspace Settings">
+                  <p className="hint">Unit systems, templates, roles, and controlled vocabularies will live here.</p>
+                </Panel>
+              </section>
+            </PageLayout>
+          }
+        />
       </Routes>
     </AppShell>
   );
