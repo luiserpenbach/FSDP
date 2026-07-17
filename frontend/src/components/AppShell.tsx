@@ -59,7 +59,14 @@ export function AppShell({
       <div className="appMain">
         <header className="topBar">
           <div className="contextSelectors">
-            <Select label="System" value={systemValue} options={systemOptions} onChange={onSystemChange} />
+      <Select
+        allowEmpty={systemOptions.length === 0}
+        disabled={systemOptions.length === 0}
+        label="System"
+        value={systemValue}
+        options={systemOptions}
+        onChange={onSystemChange}
+      />
             <div className="searchBox">Search parts, requirements, diagrams...</div>
           </div>
           <div className="statusStack">

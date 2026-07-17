@@ -1,4 +1,4 @@
-import type { PidEditorSettings, PidSymbolDefinition } from "./utils/pidEditor";
+import type { LineClass, PidEditorSettings, PidJunction, PidNet, PidSymbolDefinition } from "./pid-cad";
 
 export type Project = {
   id: string;
@@ -104,10 +104,14 @@ export type Diagram = {
   diagram_type: string;
   revision: number;
   graph: {
+    version?: number;
     nodes?: import("reactflow").Node[];
     edges?: import("reactflow").Edge[];
     editorSettings?: Partial<PidEditorSettings>;
     symbols?: PidSymbolDefinition[];
+    nets?: PidNet[];
+    junctions?: PidJunction[];
+    lineClasses?: LineClass[];
   };
 };
 

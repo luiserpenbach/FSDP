@@ -1,12 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import {
-  useEdgesState,
-  useNodesState,
-  type Edge,
-  type EdgeChange,
-  type Node,
-  type NodeChange
-} from "reactflow";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { api, bomCsvUrl } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
@@ -17,25 +9,18 @@ import { PidEditorPage } from "./pages/PidEditorPage";
 import { RequirementsPage } from "./pages/RequirementsPage";
 import type { BomSnapshot, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, Requirement } from "./types";
 import {
-  DEFAULT_EDITOR_SETTINGS,
-  normalizeEdge,
-  normalizeNode,
-  type PidEdgeData,
-  type PidEditorSettings,
-  type PidNodeData,
-  type PidSymbolDefinition
-} from "./utils/pidEditor";
-
-const starterNodes: Node<PidNodeData>[] = [
-  { id: "source-1", type: "pidSymbol", position: { x: 0, y: 80 }, style: { width: 140, height: 78 }, data: { label: "Tank / Source", symbolType: "source", rotation: 0 } },
-  { id: "valve-1", type: "pidSymbol", position: { x: 220, y: 80 }, style: { width: 120, height: 72 }, data: { label: "Valve", symbolType: "valve", rotation: 0 } },
-  { id: "sink-1", type: "pidSymbol", position: { x: 460, y: 80 }, style: { width: 140, height: 78 }, data: { label: "Engine / Sink", symbolType: "sink", rotation: 0 } }
-];
-
-const starterEdges: Edge<PidEdgeData>[] = [
-  { id: "line-1", type: "pidLine", source: "source-1", target: "valve-1", label: "Feed line" },
-  { id: "line-2", type: "pidLine", source: "valve-1", target: "sink-1", label: "Outlet line" }
-];
+  canRedo,
+  canUndo,
+  commit,
+  createHistory,
+  createStarterDocument,
+  documentToApiPayload,
+  graphToDocument,
+  redo,
+  undo,
+  type HistoryState,
+  type PidDocument
+} from "./pid-cad";
 
 const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
@@ -75,8 +60,6 @@ function WorkspaceApp() {
   const [selectedPartId, setSelectedPartId] = useState("");
   const [selectedRequirementId, setSelectedRequirementId] = useState("");
   const [selectedComponentId, setSelectedComponentId] = useState("");
-  const [selectedNodeId, setSelectedNodeId] = useState("valve-1");
-  const [selectedEdgeId, setSelectedEdgeId] = useState("");
 
   const [projectForm, setProjectForm] = useState({ name: "Demo Propulsion System", owner: "Propulsion Engineering", description: "MVP digital-thread project for FSDP." });
   const [systemForm, setSystemForm] = useState({ name: "Helium Pressurization", fluid: "GHe", description: "Pressurization system MVP workspace." });
@@ -87,11 +70,9 @@ function WorkspaceApp() {
   const [error, setError] = useState("");
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [graphDirty, setGraphDirty] = useState(false);
-  const [nodes, setNodes, onNodesChangeBase] = useNodesState(starterNodes);
-  const [edges, setEdges, onEdgesChangeBase] = useEdgesState(starterEdges);
-  const [editorSettings, setEditorSettings] = useState<PidEditorSettings>(DEFAULT_EDITOR_SETTINGS);
-  const [customSymbols, setCustomSymbols] = useState<PidSymbolDefinition[]>([]);
+  const [history, setHistory] = useState<HistoryState>(() => createHistory(createStarterDocument()));
 
+  const pidDocument = history.present;
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
   const selectedDiagram = diagrams.find((diagram) => diagram.id === selectedDiagramId) ?? null;
@@ -99,27 +80,29 @@ function WorkspaceApp() {
   const selectedRequirement = requirements.find((requirement) => requirement.id === selectedRequirementId) ?? null;
   const selectedComponent = components.find((component) => component.id === selectedComponentId) ?? null;
 
-  const graphPayload = useMemo(
-    () => ({
-      graph: { nodes, edges, editorSettings, symbols: customSymbols },
-      nodes: nodes.map((node) => ({
-        external_id: node.id,
-        node_type: String(node.data?.symbolType ?? node.type ?? "component"),
-        label: String(node.data?.label ?? node.id),
-        position: node.position,
-        properties: { ...(node.data ?? {}), style: node.style ?? {} }
-      })),
-      edges: edges.map((edge) => ({
-        external_id: edge.id,
-        source_node_id: edge.source,
-        target_node_id: edge.target,
-        fluid: "TBD",
-        flow_direction: "forward",
-        properties: { label: edge.label, ...(edge.data ?? {}) }
-      }))
-    }),
-    [customSymbols, edges, editorSettings, nodes]
-  );
+  const graphPayload = useMemo(() => documentToApiPayload(pidDocument), [pidDocument]);
+  const documentRef = useRef(pidDocument);
+  documentRef.current = pidDocument;
+
+  function setDocument(next: PidDocument, options?: { merge?: boolean }) {
+    setHistory((current) => commit(current, next, options?.merge));
+  }
+
+  function handleUndo() {
+    setHistory((current) => {
+      if (!canUndo(current)) return current;
+      setGraphDirty(true);
+      return undo(current);
+    });
+  }
+
+  function handleRedo() {
+    setHistory((current) => {
+      if (!canRedo(current)) return current;
+      setGraphDirty(true);
+      return redo(current);
+    });
+  }
 
   useEffect(() => {
     void runAction("Loaded projects.", async () => {
@@ -169,25 +152,19 @@ function WorkspaceApp() {
     if (!selectedDiagramId) {
       setComponents([]);
       setBom(null);
-      setNodes(starterNodes.map(normalizeNode));
-      setEdges(starterEdges.map(normalizeEdge));
-      setEditorSettings(DEFAULT_EDITOR_SETTINGS);
-      setCustomSymbols([]);
+      setHistory(createHistory(createStarterDocument()));
       return;
     }
     void runAction("Loaded saved diagram.", async () => {
       const diagram = await api.getDiagram(selectedDiagramId);
       setDiagramName(diagram.name);
-      setNodes((diagram.graph.nodes?.length ? diagram.graph.nodes : starterNodes).map(normalizeNode));
-      setEdges((diagram.graph.edges?.length ? diagram.graph.edges : starterEdges).map(normalizeEdge));
-      setEditorSettings({ ...DEFAULT_EDITOR_SETTINGS, ...diagram.graph.editorSettings });
-      setCustomSymbols(diagram.graph.symbols ?? []);
+      setHistory(createHistory(graphToDocument(diagram.graph)));
       setComponents(await api.listComponents(diagram.id));
       const snapshots = await api.listDiagramBoms(diagram.id);
       setBom(snapshots[0] ?? null);
       setGraphDirty(false);
     });
-  }, [selectedDiagramId, setEdges, setNodes]);
+  }, [selectedDiagramId]);
 
   useEffect(() => {
     if (selectedProject) {
@@ -224,21 +201,28 @@ function WorkspaceApp() {
     }
   }
 
-  const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
+  function placeComponent(nodeId: string, partId: string) {
+    if (!selectedDiagram || !partId || !nodeId) return;
+    const part = parts.find((item) => item.id === partId);
+    if (!part) return;
+    void runAction("Placed component.", async () => {
+      const component = await api.createComponent(selectedDiagram.id, {
+        tag: componentTag,
+        part_id: part.id,
+        quantity: 1,
+        properties: { node_external_id: nodeId }
+      });
+      setDocument({
+        ...pidDocument,
+        nodes: pidDocument.nodes.map((node) =>
+          node.id === nodeId ? { ...node, data: { ...node.data, label: `${component.tag}: ${part.part_number}` } } : node
+        )
+      });
+      setComponents(await api.listComponents(selectedDiagram.id));
+      setSelectedComponentId(component.id);
       setGraphDirty(true);
-      onNodesChangeBase(changes);
-    },
-    [onNodesChangeBase]
-  );
-
-  const onEdgesChange = useCallback(
-    (changes: EdgeChange[]) => {
-      setGraphDirty(true);
-      onEdgesChangeBase(changes);
-    },
-    [onEdgesChangeBase]
-  );
+    }, "component");
+  }
 
   function selectProject(id: string) {
     setSelectedProjectId(id);
@@ -252,6 +236,25 @@ function WorkspaceApp() {
     setSelectedSystemId(id);
     setSelectedDiagramId("");
     setBom(null);
+    setGraphDirty(false);
+  }
+
+  function saveGraph() {
+    if (!selectedDiagramId) {
+      setError("Open or create a diagram first. Select a System in the top bar, then pick a diagram.");
+      setMessage("Save blocked.");
+      return;
+    }
+    const diagramId = selectedDiagramId;
+    const systemId = selectedSystemId;
+    const payload = documentToApiPayload(documentRef.current);
+    void runAction("Saved graph.", async () => {
+      await api.updateDiagramGraph(diagramId, payload);
+      setGraphDirty(false);
+      if (systemId) {
+        setDiagrams(await api.listDiagrams(systemId));
+      }
+    }, "diagram");
   }
 
   function submitProject(event: FormEvent) {
@@ -311,21 +314,17 @@ function WorkspaceApp() {
 
   function submitDiagram(event?: FormEvent) {
     event?.preventDefault();
-    if (!selectedSystem) return;
+    if (!selectedSystem) {
+      setError("Select a System in the top bar before creating a diagram.");
+      setMessage("Create blocked.");
+      return;
+    }
     void runAction("Created diagram.", async () => {
       const created = await api.createDiagram(selectedSystem.id, { name: diagramName });
-      await api.updateDiagramGraph(created.id, graphPayload);
+      await api.updateDiagramGraph(created.id, documentToApiPayload(documentRef.current));
       setDiagrams(await api.listDiagrams(selectedSystem.id));
       setSelectedDiagramId(created.id);
-    }, "diagram");
-  }
-
-  function saveGraph() {
-    if (!selectedDiagram) return;
-    void runAction("Saved graph.", async () => {
-      await api.updateDiagramGraph(selectedDiagram.id, graphPayload);
       setGraphDirty(false);
-      setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
     }, "diagram");
   }
 
@@ -345,17 +344,6 @@ function WorkspaceApp() {
       setDiagrams(next);
       setSelectedDiagramId(next[0]?.id || "");
     });
-  }
-
-  function placeComponent() {
-    if (!selectedDiagram || !selectedPart || !selectedNodeId) return;
-    void runAction("Placed component.", async () => {
-      const component = await api.createComponent(selectedDiagram.id, { tag: componentTag, part_id: selectedPart.id, quantity: 1, properties: { node_external_id: selectedNodeId } });
-      setNodes((current) => current.map((node) => (node.id === selectedNodeId ? { ...node, data: { ...node.data, label: `${component.tag}: ${selectedPart.part_number}` } } : node)));
-      setComponents(await api.listComponents(selectedDiagram.id));
-      setSelectedComponentId(component.id);
-      setGraphDirty(true);
-    }, "component");
   }
 
   function generateBom() {
@@ -436,36 +424,29 @@ function WorkspaceApp() {
             <PidEditorPage
               busy={busy}
               componentTag={componentTag}
-              customSymbols={customSymbols}
               diagramName={diagramName}
               diagrams={diagrams}
-              edges={edges}
-              editorSettings={editorSettings}
+              document={pidDocument}
               graphDirty={graphDirty}
-              nodes={nodes}
+              history={history}
               onCreateDiagram={submitDiagram}
               onDeleteDiagram={deleteDiagram}
               onDirty={() => setGraphDirty(true)}
-              onEdgesChange={onEdgesChange}
-              onNodesChange={onNodesChange}
               onPlaceComponent={placeComponent}
+              onRedo={handleRedo}
               onRenameDiagram={updateDiagram}
               onSave={saveGraph}
+              onUndo={handleUndo}
               parts={parts}
               selectedDiagram={selectedDiagram}
               selectedDiagramId={selectedDiagramId}
-              selectedEdgeId={selectedEdgeId}
-              selectedNodeId={selectedNodeId}
-              selectedPart={selectedPart}
+              selectedPartId={selectedPartId}
               setComponentTag={setComponentTag}
-              setCustomSymbols={setCustomSymbols}
               setDiagramName={setDiagramName}
-              setEdges={setEdges}
-              setEditorSettings={setEditorSettings}
-              setNodes={setNodes}
+              setDocument={setDocument}
+              setHistory={setHistory}
               setSelectedDiagramId={setSelectedDiagramId}
-              setSelectedEdgeId={setSelectedEdgeId}
-              setSelectedNodeId={setSelectedNodeId}
+              setSelectedPartId={setSelectedPartId}
             />
           }
         />

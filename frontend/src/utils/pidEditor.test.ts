@@ -1,10 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { gridSizeInPixels, normalizeEdge, orthogonalPath, routeOrthogonal } from "./pidEditor";
+import { gridSizeInPixels, normalizeEdge, orthogonalPath, routeOrthogonal } from "../pid-cad";
 
-describe("P&ID editor geometry", () => {
+describe("P&ID editor geometry (compat re-exports)", () => {
   it("converts millimetres to CSS pixels", () => {
-    expect(gridSizeInPixels({ gridVisible: true, snapToGrid: true, unit: "mm", gridSize: 25.4 })).toBeCloseTo(96);
-    expect(gridSizeInPixels({ gridVisible: true, snapToGrid: true, unit: "px", gridSize: 12 })).toBe(12);
+    expect(
+      gridSizeInPixels({
+        gridVisible: true,
+        gridVariant: "dots",
+        snapToGrid: true,
+        unit: "mm",
+        gridSize: 25.4,
+        autoLineTags: true,
+        routeMode: "orthogonal",
+        hiddenLineClasses: []
+      })
+    ).toBeCloseTo(96);
+    expect(
+      gridSizeInPixels({
+        gridVisible: true,
+        gridVariant: "lines",
+        snapToGrid: true,
+        unit: "px",
+        gridSize: 12,
+        autoLineTags: true,
+        routeMode: "orthogonal",
+        hiddenLineClasses: []
+      })
+    ).toBe(12);
   });
 
   it("creates an orthogonal route around an obstacle", () => {
@@ -34,8 +56,6 @@ describe("P&ID editor geometry", () => {
   });
 
   it("serializes a polyline as an SVG path", () => {
-    expect(orthogonalPath([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }])).toBe(
-      "M 0 0 L 10 0 L 10 20"
-    );
+    expect(orthogonalPath([{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 20 }])).toBe("M 0 0 L 10 0 L 10 20");
   });
 });
