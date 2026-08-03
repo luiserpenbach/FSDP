@@ -94,7 +94,7 @@ export function DataTable<T>({
 }: {
   rows: T[];
   columns: Array<{ header: string; render: (row: T) => ReactNode }>;
-  getKey: (row: T) => string;
+  getKey: (row: T, index: number) => string;
   selectedKey?: string;
   onSelect?: (row: T) => void;
 }) {
@@ -114,10 +114,10 @@ export function DataTable<T>({
               <td colSpan={columns.length}>No records yet.</td>
             </tr>
           ) : (
-            rows.map((row) => (
+            rows.map((row, index) => (
               <tr
-                className={selectedKey === getKey(row) ? "selectedRow" : undefined}
-                key={getKey(row)}
+                className={selectedKey === getKey(row, index) ? "selectedRow" : undefined}
+                key={getKey(row, index)}
                 onClick={() => onSelect?.(row)}
               >
                 {columns.map((column) => (
