@@ -1,7 +1,18 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+
+
+def clean_required_text(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("must not be blank")
+    return cleaned
+
+
+def clean_optional_text(value: str | None) -> str | None:
+    return None if value is None else clean_required_text(value)
 
 
 class OrmModel(BaseModel):
@@ -65,6 +76,11 @@ class PartCreate(BaseModel):
         default_factory=dict, validation_alias=AliasChoices("metadata", "metadata_")
     )
 
+    @field_validator("part_number", "description", "part_type")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return clean_required_text(value)
+
 
 class PartUpdate(BaseModel):
     part_number: str | None = None
@@ -86,6 +102,11 @@ class PartUpdate(BaseModel):
         default=None, validation_alias=AliasChoices("metadata", "metadata_")
     )
 
+    @field_validator("part_number", "description", "part_type")
+    @classmethod
+    def _required_text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
 
 class PartRead(PartCreate, OrmModel):
     id: str
@@ -102,10 +123,20 @@ class DiagramCreate(BaseModel):
     name: str
     diagram_type: str = "pid"
 
+    @field_validator("name")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return clean_required_text(value)
+
 
 class DiagramUpdate(BaseModel):
     name: str | None = None
     diagram_type: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _required_text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
 
 
 class GraphNodeIn(BaseModel):
@@ -150,16 +181,26 @@ class ComponentInstanceCreate(BaseModel):
     node_id: str | None = None
     part_id: str | None = None
     tag: str
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1)
     properties: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("tag")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return clean_required_text(value)
 
 
 class ComponentInstanceUpdate(BaseModel):
     node_id: str | None = None
     part_id: str | None = None
     tag: str | None = None
-    quantity: int | None = None
+    quantity: int | None = Field(default=None, ge=1)
     properties: dict[str, Any] | None = None
+
+    @field_validator("tag")
+    @classmethod
+    def _required_text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
 
 
 class ComponentInstanceRead(ComponentInstanceCreate, OrmModel):
@@ -179,6 +220,11 @@ class RequirementCreate(BaseModel):
     status: str = "draft"
     owner: str | None = None
 
+    @field_validator("key", "title", "text", "requirement_type")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return clean_required_text(value)
+
 
 class RequirementUpdate(BaseModel):
     key: str | None = None
@@ -188,6 +234,11 @@ class RequirementUpdate(BaseModel):
     verification_method: str | None = None
     status: str | None = None
     owner: str | None = None
+
+    @field_validator("key", "title", "text", "requirement_type")
+    @classmethod
+    def _required_text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
 
 
 class RequirementRead(RequirementCreate, OrmModel):

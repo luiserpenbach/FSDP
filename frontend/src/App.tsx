@@ -39,16 +39,8 @@ type OrthogonalEdgeData = {
   endX?: number;
 };
 
-const starterNodes: Node<PidNodeData>[] = [
-  { id: "source-1", type: "pidSymbol", position: { x: 0, y: 80 }, style: { width: 140, height: 78 }, data: { label: "Tank / Source", symbolType: "source", rotation: 0 } },
-  { id: "valve-1", type: "pidSymbol", position: { x: 220, y: 80 }, style: { width: 120, height: 72 }, data: { label: "Valve", symbolType: "valve", rotation: 0 } },
-  { id: "sink-1", type: "pidSymbol", position: { x: 460, y: 80 }, style: { width: 140, height: 78 }, data: { label: "Engine / Sink", symbolType: "sink", rotation: 0 } }
-];
-
-const starterEdges: Edge<OrthogonalEdgeData>[] = [
-  { id: "line-1", type: "orthogonal", source: "source-1", target: "valve-1", label: "Feed line" },
-  { id: "line-2", type: "orthogonal", source: "valve-1", target: "sink-1", label: "Outlet line" }
-];
+const qualificationOptions = ["unqualified", "qualified", "preferred", "legacy", "restricted"].map((value) => ({ value, label: value }));
+const certificationOptions = ["unreviewed", "in_review", "certified", "rejected"].map((value) => ({ value, label: value }));
 
 const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
@@ -62,6 +54,31 @@ const navItems: NavItem[] = [
   { path: "/certification", label: "Certification", description: "Evidence packages" },
   { path: "/settings", label: "Settings", description: "Project configuration" }
 ];
+
+function makeNodeId(kind: string): string {
+  return `${kind}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
+function buildGraphPayload(nodes: Node<PidNodeData>[], edges: Edge<OrthogonalEdgeData>[]) {
+  return {
+    graph: { nodes, edges },
+    nodes: nodes.map((node) => ({
+      external_id: node.id,
+      node_type: String(node.data?.symbolType ?? node.type ?? "component"),
+      label: String(node.data?.label ?? node.id),
+      position: node.position,
+      properties: { ...(node.data ?? {}), style: node.style ?? {} }
+    })),
+    edges: edges.map((edge) => ({
+      external_id: edge.id,
+      source_node_id: edge.source,
+      target_node_id: edge.target,
+      fluid: "TBD",
+      flow_direction: "forward",
+      properties: { label: edge.label, ...(edge.data ?? {}) }
+    }))
+  };
+}
 
 function normalizePidNode(node: Node): Node<PidNodeData> {
   const label = String(node.data?.label ?? node.id);
@@ -250,13 +267,13 @@ function WorkspaceApp() {
   const [selectedPartId, setSelectedPartId] = useState("");
   const [selectedRequirementId, setSelectedRequirementId] = useState("");
   const [selectedComponentId, setSelectedComponentId] = useState("");
-  const [selectedNodeId, setSelectedNodeId] = useState("valve-1");
+  const [selectedNodeId, setSelectedNodeId] = useState("");
   const [selectedEdgeId, setSelectedEdgeId] = useState("");
 
   const [projectForm, setProjectForm] = useState({ name: "Demo Propulsion System", owner: "Propulsion Engineering", description: "MVP digital-thread project for FSDP." });
   const [systemForm, setSystemForm] = useState({ name: "Helium Pressurization", fluid: "GHe", description: "Pressurization system MVP workspace." });
   const [diagramName, setDiagramName] = useState("MVP P&ID");
-  const [partForm, setPartForm] = useState({ part_number: "VALVE-001", description: "Normally closed solenoid valve", part_type: "valve", manufacturer: "Internal Standard", material: "316L", pressure_rating_bar: "350" });
+  const [partForm, setPartForm] = useState({ part_number: "VALVE-001", description: "Normally closed solenoid valve", part_type: "valve", manufacturer: "Internal Standard", material: "316L", pressure_rating_bar: "350", qualification_status: "unqualified", certification_status: "unreviewed" });
   const [componentTag, setComponentTag] = useState("V-1");
   const [requirementForm, setRequirementForm] = useState({ key: "FSDP-REQ-1", title: "Maintain pressure boundary compatibility", text: "All pressurized components shall be compatible with maximum expected operating pressure.", requirement_type: "safety", verification_method: "analysis" });
 
@@ -265,8 +282,8 @@ function WorkspaceApp() {
   const [error, setError] = useState("");
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [graphDirty, setGraphDirty] = useState(false);
-  const [nodes, setNodes, onNodesChangeBase] = useNodesState(starterNodes);
-  const [edges, setEdges, onEdgesChangeBase] = useEdgesState(starterEdges);
+  const [nodes, setNodes, onNodesChangeBase] = useNodesState<PidNodeData>([]);
+  const [edges, setEdges, onEdgesChangeBase] = useEdgesState<OrthogonalEdgeData>([]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -293,27 +310,7 @@ function WorkspaceApp() {
     []
   );
 
-  const graphPayload = useMemo(
-    () => ({
-      graph: { nodes, edges },
-      nodes: nodes.map((node) => ({
-        external_id: node.id,
-        node_type: String(node.data?.symbolType ?? node.type ?? "component"),
-        label: String(node.data?.label ?? node.id),
-        position: node.position,
-        properties: { ...(node.data ?? {}), style: node.style ?? {} }
-      })),
-      edges: edges.map((edge) => ({
-        external_id: edge.id,
-        source_node_id: edge.source,
-        target_node_id: edge.target,
-        fluid: "TBD",
-        flow_direction: "forward",
-        properties: { label: edge.label, ...(edge.data ?? {}) }
-      }))
-    }),
-    [edges, nodes]
-  );
+  const graphPayload = useMemo(() => buildGraphPayload(nodes, edges), [edges, nodes]);
 
   useEffect(() => {
     void runAction("Loaded projects.", async () => {
@@ -363,21 +360,32 @@ function WorkspaceApp() {
     if (!selectedDiagramId) {
       setComponents([]);
       setBom(null);
-      setNodes(starterNodes.map(normalizePidNode));
-      setEdges(starterEdges.map(normalizeOrthogonalEdge));
+      setNodes([]);
+      setEdges([]);
+      setGraphDirty(false);
       return;
     }
     void runAction("Loaded saved diagram.", async () => {
       const diagram = await api.getDiagram(selectedDiagramId);
       setDiagramName(diagram.name);
-      setNodes((diagram.graph.nodes?.length ? diagram.graph.nodes : starterNodes).map(normalizePidNode));
-      setEdges((diagram.graph.edges?.length ? diagram.graph.edges : starterEdges).map(normalizeOrthogonalEdge));
+      setNodes((diagram.graph.nodes ?? []).map(normalizePidNode));
+      setEdges((diagram.graph.edges ?? []).map(normalizeOrthogonalEdge));
       setComponents(await api.listComponents(diagram.id));
       const snapshots = await api.listDiagramBoms(diagram.id);
       setBom(snapshots[0] ?? null);
       setGraphDirty(false);
     });
   }, [selectedDiagramId, setEdges, setNodes]);
+
+  useEffect(() => {
+    if (!graphDirty) return;
+    function warnBeforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", warnBeforeUnload);
+    return () => window.removeEventListener("beforeunload", warnBeforeUnload);
+  }, [graphDirty]);
 
   useEffect(() => {
     if (selectedProject) {
@@ -399,7 +407,9 @@ function WorkspaceApp() {
         part_type: selectedPart.part_type,
         manufacturer: selectedPart.manufacturer ?? "",
         material: selectedPart.material ?? "",
-        pressure_rating_bar: String(selectedPart.pressure_rating_bar ?? "")
+        pressure_rating_bar: String(selectedPart.pressure_rating_bar ?? ""),
+        qualification_status: selectedPart.qualification_status,
+        certification_status: selectedPart.certification_status
       });
     }
   }, [selectedPart]);
@@ -441,7 +451,10 @@ function WorkspaceApp() {
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
-      setGraphDirty(true);
+      // Selection and initial-measurement changes are not edits.
+      if (changes.some((change) => change.type === "position" || change.type === "add" || change.type === "remove")) {
+        setGraphDirty(true);
+      }
       onNodesChangeBase(changes);
     },
     [onNodesChangeBase]
@@ -449,7 +462,9 @@ function WorkspaceApp() {
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
-      setGraphDirty(true);
+      if (changes.some((change) => change.type === "add" || change.type === "remove")) {
+        setGraphDirty(true);
+      }
       onEdgesChangeBase(changes);
     },
     [onEdgesChangeBase]
@@ -460,7 +475,13 @@ function WorkspaceApp() {
     setEdges((current) => addEdge({ ...connection, type: "orthogonal", label: "New line" }, current));
   }
 
+  function confirmDiscardUnsaved(): boolean {
+    return !graphDirty || window.confirm("You have unsaved diagram changes. Discard them?");
+  }
+
   function selectProject(id: string) {
+    if (id === selectedProjectId) return;
+    if (!confirmDiscardUnsaved()) return;
     setSelectedProjectId(id);
     setSelectedSystemId("");
     setSelectedDiagramId("");
@@ -469,9 +490,17 @@ function WorkspaceApp() {
   }
 
   function selectSystem(id: string) {
+    if (id === selectedSystemId) return;
+    if (!confirmDiscardUnsaved()) return;
     setSelectedSystemId(id);
     setSelectedDiagramId("");
     setBom(null);
+  }
+
+  function openDiagram(id: string) {
+    if (id === selectedDiagramId) return;
+    if (!confirmDiscardUnsaved()) return;
+    setSelectedDiagramId(id);
   }
 
   function submitProject(event: FormEvent) {
@@ -529,10 +558,26 @@ function WorkspaceApp() {
     });
   }
 
+  function parsePressureRating(): number | null {
+    const cleaned = partForm.pressure_rating_bar.trim();
+    if (!cleaned) return null;
+    const parsed = Number(cleaned);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      throw new Error("Pressure rating must be a non-negative number (leave empty if unrated).");
+    }
+    return parsed;
+  }
+
   function submitPart(event: FormEvent) {
     event.preventDefault();
     void runAction("Created part.", async () => {
-      const part = await api.createPart({ ...partForm, pressure_rating_bar: Number(partForm.pressure_rating_bar), source_type: "internal", qualification_status: "preferred", certification_status: "qualified" });
+      const part = await api.createPart({
+        ...partForm,
+        pressure_rating_bar: parsePressureRating(),
+        source_type: "internal",
+        qualification_status: partForm.qualification_status || "unqualified",
+        certification_status: partForm.certification_status || "unreviewed"
+      });
       setParts(await api.listParts());
       setSelectedPartId(part.id);
     }, "part");
@@ -541,7 +586,12 @@ function WorkspaceApp() {
   function updatePart() {
     if (!selectedPart) return;
     void runAction("Updated part.", async () => {
-      await api.updatePart(selectedPart.id, { ...partForm, pressure_rating_bar: Number(partForm.pressure_rating_bar) });
+      await api.updatePart(selectedPart.id, {
+        ...partForm,
+        pressure_rating_bar: parsePressureRating(),
+        qualification_status: partForm.qualification_status || "unqualified",
+        certification_status: partForm.certification_status || "unreviewed"
+      });
       setParts(await api.listParts());
     }, "part");
   }
@@ -595,7 +645,7 @@ function WorkspaceApp() {
   }
 
   function addGraphNode(kind: string) {
-    const id = `${kind}-${nodes.length + 1}`;
+    const id = makeNodeId(kind);
     setNodes((current) => [
       ...current,
       {
@@ -611,13 +661,18 @@ function WorkspaceApp() {
   }
 
   function placeComponent() {
-    if (!selectedDiagram || !selectedPart || !selectedNodeId) return;
+    if (!selectedDiagram || !selectedPart || !selectedNode) return;
     void runAction("Placed component.", async () => {
-      const component = await api.createComponent(selectedDiagram.id, { tag: componentTag, part_id: selectedPart.id, quantity: 1, properties: { node_external_id: selectedNodeId } });
-      setNodes((current) => current.map((node) => (node.id === selectedNodeId ? { ...node, data: { ...node.data, label: `${component.tag}: ${selectedPart.part_number}` } } : node)));
+      if (graphDirty) {
+        throw new Error("Save the diagram first — parts can only be placed on saved nodes.");
+      }
+      const component = await api.createComponent(selectedDiagram.id, { tag: componentTag, part_id: selectedPart.id, quantity: 1, properties: { node_external_id: selectedNode.id } });
+      const nextNodes = nodes.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, label: `${component.tag}: ${selectedPart.part_number}` } } : node));
+      setNodes(nextNodes);
+      await api.updateDiagramGraph(selectedDiagram.id, buildGraphPayload(nextNodes, edges));
       setComponents(await api.listComponents(selectedDiagram.id));
       setSelectedComponentId(component.id);
-      setGraphDirty(true);
+      setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
     }, "component");
   }
 
@@ -771,11 +826,11 @@ function WorkspaceApp() {
                       <TextInput label="Diagram name" value={diagramName} onChange={setDiagramName} />
                       <button disabled={busy || !selectedSystem || !diagramName}>Create P&ID</button>
                     </form>
-                    <Select label="Open diagram" value={selectedDiagramId} options={diagrams.map((diagram) => ({ value: diagram.id, label: `${diagram.name} rev ${diagram.revision}` }))} onChange={setSelectedDiagramId} />
+                    <Select label="Open diagram" value={selectedDiagramId} options={diagrams.map((diagram) => ({ value: diagram.id, label: `${diagram.name} rev ${diagram.revision}` }))} onChange={openDiagram} />
                     <button disabled={busy || !selectedDiagram || !diagramName} onClick={updateDiagram}>Rename</button>
                     <button className="danger" disabled={busy || !selectedDiagram} onClick={deleteDiagram}>Delete</button>
                     <button disabled={busy || !selectedDiagram || !graphDirty} onClick={saveGraph}>Save graph</button>
-                    <span className={graphDirty ? "dirtyBadge" : "cleanBadge"}>{graphDirty ? "Unsaved changes" : "Saved"}</span>
+                    {selectedDiagram && <span className={graphDirty ? "dirtyBadge" : "cleanBadge"}>{graphDirty ? "Unsaved changes" : "Saved"}</span>}
                   </div>
                   <div className="nodePalette">
                     {["valve", "sensor", "regulator", "filter", "source", "sink"].map((kind) => (
@@ -809,7 +864,7 @@ function WorkspaceApp() {
                     <p><strong>Position:</strong> {selectedNode ? `${Math.round(selectedNode.position.x)}, ${Math.round(selectedNode.position.y)}` : "-"}</p>
                     <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
                     <FormError message={formErrors.component} />
-                    <button disabled={busy || !selectedDiagram || !selectedPart || !selectedNodeId} onClick={placeComponent}>Place selected part</button>
+                    <button disabled={busy || !selectedDiagram || !selectedPart || !selectedNode || !componentTag.trim()} onClick={placeComponent}>Place selected part</button>
                   </Panel>
                   <Panel title="Line Metadata">
                     <p><strong>Selected edge:</strong> {selectedEdge?.id ?? "None"}</p>
@@ -820,7 +875,7 @@ function WorkspaceApp() {
                     <p><strong>Lines:</strong> {edges.length}</p>
                   </Panel>
                   <Panel title="Diagrams">
-                    <DataTable rows={diagrams} selectedKey={selectedDiagramId} getKey={(diagram) => diagram.id} onSelect={(diagram) => setSelectedDiagramId(diagram.id)} columns={[{ header: "Name", render: (diagram) => diagram.name }, { header: "Rev", render: (diagram) => diagram.revision }]} />
+                    <DataTable rows={diagrams} selectedKey={selectedDiagramId} getKey={(diagram) => diagram.id} onSelect={(diagram) => openDiagram(diagram.id)} columns={[{ header: "Name", render: (diagram) => diagram.name }, { header: "Rev", render: (diagram) => diagram.revision }]} />
                   </Panel>
                 </aside>
               </section>
@@ -840,6 +895,8 @@ function WorkspaceApp() {
                     <TextInput label="Manufacturer" value={partForm.manufacturer} onChange={(manufacturer) => setPartForm({ ...partForm, manufacturer })} />
                     <TextInput label="Material" value={partForm.material} onChange={(material) => setPartForm({ ...partForm, material })} />
                     <TextInput label="Pressure rating bar" value={partForm.pressure_rating_bar} onChange={(pressure) => setPartForm({ ...partForm, pressure_rating_bar: pressure })} />
+                    <Select label="Qualification status" value={partForm.qualification_status} options={qualificationOptions} onChange={(qualificationStatus) => setPartForm({ ...partForm, qualification_status: qualificationStatus })} />
+                    <Select label="Certification status" value={partForm.certification_status} options={certificationOptions} onChange={(certificationStatus) => setPartForm({ ...partForm, certification_status: certificationStatus })} />
                     <FormError message={formErrors.part} />
                     <button disabled={busy || !partForm.part_number || !partForm.description}>Add part</button>
                   </form>

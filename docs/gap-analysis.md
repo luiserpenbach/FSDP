@@ -206,7 +206,11 @@ No `.github/workflows`. Add one workflow running: `ruff check`, `pytest`, `tsc -
 
 ## 9. Prioritized Roadmap
 
-### Phase 0 — Data-integrity bug fixes (highest urgency, ≈1–2 days)
+### Phase 0 — Data-integrity bug fixes (highest urgency, ≈1–2 days) — ✅ IMPLEMENTED
+
+> Status 2026-08-03: all Phase 0 items below are implemented and covered by regression
+> tests in `backend/tests/test_phase0_regressions.py` (B1–B7, B9–B11, F1–F6 fixed;
+> B8 delete-auditing intentionally deferred to Phase 1 where actor identity exists).
 1. B1 upsert-by-`external_id` graph save preserving component bindings (+ regression test).
 2. F1 UUID node ids; B2 IntegrityError handler (409/422 instead of 500).
 3. F3 respect intentionally-empty diagrams (drop starter-node fallback on load; new diagrams start blank); F2 dirty-check before diagram switch + `beforeunload`.

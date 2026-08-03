@@ -150,6 +150,7 @@ class DiagramEdge(TimestampMixin, Base):
 
 class ComponentInstance(TimestampMixin, Base):
     __tablename__ = "component_instances"
+    __table_args__ = (UniqueConstraint("diagram_id", "tag", name="uq_component_tag"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     diagram_id: Mapped[str] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"))

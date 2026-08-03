@@ -1,5 +1,6 @@
 import csv
 import io
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
@@ -220,6 +221,15 @@ def create_diagram(
     system_id: str, payload: DiagramCreate, db: Session = Depends(get_db)
 ) -> Diagram:
     require_model(db, FluidSystem, system_id)
+    existing = db.scalar(
+        select(Diagram).where(
+            Diagram.system_id == system_id,
+            normalized_column(Diagram.name) == normalized_name(payload.name),
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="Diagram name already exists in system")
+
     diagram = Diagram(system_id=system_id, graph={"nodes": [], "edges": []}, **payload.model_dump())
     db.add(diagram)
     db.flush()
@@ -245,6 +255,17 @@ def update_diagram(
     diagram_id: str, payload: DiagramUpdate, db: Session = Depends(get_db)
 ) -> Diagram:
     diagram = require_model(db, Diagram, diagram_id)
+    if payload.name is not None:
+        existing = db.scalar(
+            select(Diagram).where(
+                Diagram.system_id == diagram.system_id,
+                normalized_column(Diagram.name) == normalized_name(payload.name),
+                Diagram.id != diagram_id,
+            )
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Diagram name already exists in system")
+
     apply_updates(diagram, payload)
     record_change(db, "diagram", diagram.id, "updated", f"Updated diagram {diagram.name}")
     db.commit()
@@ -265,13 +286,67 @@ def update_diagram_graph(
     diagram_id: str, payload: DiagramGraphUpdate, db: Session = Depends(get_db)
 ) -> Diagram:
     diagram = require_model(db, Diagram, diagram_id)
-    db.query(DiagramNode).filter(DiagramNode.diagram_id == diagram_id).delete()
-    db.query(DiagramEdge).filter(DiagramEdge.diagram_id == diagram_id).delete()
+
+    node_ids = [node.external_id for node in payload.nodes]
+    if len(node_ids) != len(set(node_ids)):
+        raise HTTPException(status_code=422, detail="Diagram nodes must have unique ids")
+    edge_ids = [edge.external_id for edge in payload.edges]
+    if len(edge_ids) != len(set(edge_ids)):
+        raise HTTPException(status_code=422, detail="Diagram lines must have unique ids")
+
+    # Upsert by external_id so persisted node rows (and the component instances
+    # bound to them) survive graph saves; only rows removed from the canvas go away.
+    existing_nodes = {
+        node.external_id: node
+        for node in db.scalars(select(DiagramNode).where(DiagramNode.diagram_id == diagram_id))
+    }
+    for node_payload in payload.nodes:
+        data = node_payload.model_dump()
+        existing = existing_nodes.pop(node_payload.external_id, None)
+        if existing is None:
+            db.add(DiagramNode(diagram_id=diagram_id, **data))
+        else:
+            for field, value in data.items():
+                setattr(existing, field, value)
+    for removed_node in existing_nodes.values():
+        db.delete(removed_node)
+
+    existing_edges = {
+        edge.external_id: edge
+        for edge in db.scalars(select(DiagramEdge).where(DiagramEdge.diagram_id == diagram_id))
+    }
+    for edge_payload in payload.edges:
+        data = edge_payload.model_dump()
+        existing = existing_edges.pop(edge_payload.external_id, None)
+        if existing is None:
+            db.add(DiagramEdge(diagram_id=diagram_id, **data))
+        else:
+            for field, value in data.items():
+                setattr(existing, field, value)
+    for removed_edge in existing_edges.values():
+        db.delete(removed_edge)
 
     diagram.graph = payload.graph
     diagram.revision += 1
-    db.add_all([DiagramNode(diagram_id=diagram_id, **node.model_dump()) for node in payload.nodes])
-    db.add_all([DiagramEdge(diagram_id=diagram_id, **edge.model_dump()) for edge in payload.edges])
+    db.flush()
+
+    # Re-bind components that lost their node link (e.g. data severed by the
+    # previous delete-and-recreate save behavior) when the node still exists.
+    nodes_by_external_id = {
+        node.external_id: node
+        for node in db.scalars(select(DiagramNode).where(DiagramNode.diagram_id == diagram_id))
+    }
+    components = db.scalars(
+        select(ComponentInstance).where(ComponentInstance.diagram_id == diagram_id)
+    )
+    for component in components:
+        if component.node_id is not None:
+            continue
+        external_id = (component.properties or {}).get("node_external_id")
+        node = nodes_by_external_id.get(external_id) if external_id else None
+        if node is not None:
+            component.node_id = node.id
+
     record_change(db, "diagram", diagram.id, "updated", f"Updated graph for {diagram.name}")
     db.commit()
     db.refresh(diagram)
@@ -343,6 +418,19 @@ def update_part(part_id: str, payload: PartUpdate, db: Session = Depends(get_db)
 @router.delete("/parts/{part_id}", status_code=204)
 def delete_part(part_id: str, db: Session = Depends(get_db)) -> Response:
     part = require_model(db, Part, part_id)
+    usage_count = db.scalar(
+        select(func.count())
+        .select_from(ComponentInstance)
+        .where(ComponentInstance.part_id == part_id)
+    )
+    if usage_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Part {part.part_number} is placed on {usage_count} component instance(s). "
+                "Remove those components first or mark the part obsolete instead of deleting it."
+            ),
+        )
     db.delete(part)
     db.commit()
     return Response(status_code=204)
@@ -357,6 +445,14 @@ def create_component(
     require_model(db, Diagram, diagram_id)
     if payload.part_id:
         require_model(db, Part, payload.part_id)
+    existing_tag = db.scalar(
+        select(ComponentInstance).where(
+            ComponentInstance.diagram_id == diagram_id,
+            ComponentInstance.tag == payload.tag,
+        )
+    )
+    if existing_tag:
+        raise HTTPException(status_code=409, detail="Component tag already exists on this diagram")
     data = payload.model_dump()
     node_external_id = data.get("properties", {}).get("node_external_id")
     if node_external_id and not data.get("node_id"):
@@ -398,6 +494,18 @@ def update_component(
     component = require_model(db, ComponentInstance, component_id)
     if payload.part_id:
         require_model(db, Part, payload.part_id)
+    if payload.tag is not None:
+        existing_tag = db.scalar(
+            select(ComponentInstance).where(
+                ComponentInstance.diagram_id == component.diagram_id,
+                ComponentInstance.tag == payload.tag,
+                ComponentInstance.id != component_id,
+            )
+        )
+        if existing_tag:
+            raise HTTPException(
+                status_code=409, detail="Component tag already exists on this diagram"
+            )
     if payload.node_id:
         node = require_model(db, DiagramNode, payload.node_id)
         if node.diagram_id != component.diagram_id:
@@ -480,8 +588,45 @@ def delete_requirement(requirement_id: str, db: Session = Depends(get_db)) -> Re
     return Response(status_code=204)
 
 
+TRACE_OBJECT_MODELS: dict[str, type] = {
+    "project": Project,
+    "fluid_system": FluidSystem,
+    "diagram": Diagram,
+    "part": Part,
+    "component": ComponentInstance,
+    "requirement": Requirement,
+}
+
+
 @router.post("/trace-links", response_model=TraceLinkRead, status_code=201)
 def create_trace_link(payload: TraceLinkCreate, db: Session = Depends(get_db)) -> TraceLink:
+    for kind, type_name, object_id in (
+        ("source", payload.source_type, payload.source_id),
+        ("target", payload.target_type, payload.target_id),
+    ):
+        model = TRACE_OBJECT_MODELS.get(type_name)
+        if model is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Unknown {kind} type '{type_name}'. Expected one of: "
+                    + ", ".join(sorted(TRACE_OBJECT_MODELS))
+                ),
+            )
+        require_model(db, model, object_id)
+
+    existing = db.scalar(
+        select(TraceLink).where(
+            TraceLink.source_type == payload.source_type,
+            TraceLink.source_id == payload.source_id,
+            TraceLink.target_type == payload.target_type,
+            TraceLink.target_id == payload.target_id,
+            TraceLink.link_type == payload.link_type,
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="Identical trace link already exists")
+
     link = TraceLink(**payload.model_dump())
     db.add(link)
     db.flush()
@@ -534,26 +679,48 @@ def list_project_bom_snapshots(project_id: str, db: Session = Depends(get_db)) -
     )
 
 
+BOM_CSV_FIELDS = [
+    "part_number",
+    "revision",
+    "description",
+    "manufacturer",
+    "material",
+    "pressure_rating_bar",
+    "mass_kg",
+    "cv",
+    "quantity",
+    "qualification_status",
+    "certification_status",
+    "component_tags",
+]
+
+
+def csv_safe(value):
+    # Guard spreadsheet formula injection when the CSV is opened in Excel.
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return f"'{value}"
+    return value
+
+
 @router.get("/bom/{snapshot_id}/csv")
 def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
     snapshot = require_model(db, BomSnapshot, snapshot_id)
     buffer = io.StringIO()
-    writer = csv.DictWriter(
-        buffer,
-        fieldnames=[
-            "part_number",
-            "revision",
-            "description",
-            "manufacturer",
-            "quantity",
-            "qualification_status",
-            "certification_status",
-        ],
-    )
+    writer = csv.DictWriter(buffer, fieldnames=BOM_CSV_FIELDS)
     writer.writeheader()
     for row in snapshot.rows:
-        writer.writerow({key: row.get(key) for key in writer.fieldnames})
-    return Response(buffer.getvalue(), media_type="text/csv")
+        record = {key: row.get(key) for key in BOM_CSV_FIELDS}
+        if isinstance(record.get("component_tags"), list):
+            record["component_tags"] = "; ".join(str(tag) for tag in record["component_tags"])
+        writer.writerow({key: csv_safe(value) for key, value in record.items()})
+
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram.name).strip("-.").lower() or "diagram"
+    filename = f"bom-{slug}-rev{snapshot.revision}.csv"
+    return Response(
+        buffer.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/changes/impact", response_model=ImpactRead)
