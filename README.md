@@ -7,6 +7,7 @@ FSDP is a greenfield web platform for connected fluid-system design data. The MV
 - [Product requirements](docs/requirements.md): original user requirements, product goals, epics, MVP scope, deferred scope, and current implementation coverage.
 - [Architecture](docs/architecture.md): high-level system architecture and digital-thread model.
 - [Implementation guide](docs/implementation.md): repository structure, backend API, data model, frontend workflow, and verification commands.
+- [Gap analysis](docs/gap-analysis.md): verified bugs, P&ID/BoM usability gaps, authentication and deployment readiness (Vercel demo, internal server + Tailscale), and prioritized roadmap.
 
 ## Stack
 
