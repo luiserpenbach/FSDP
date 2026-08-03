@@ -882,6 +882,36 @@ button.paletteItem:hover .paletteGlyph {
   width: 100%;
 }
 
+.componentDot {
+  background: var(--green-soft);
+  border: 1.5px solid var(--green-deep);
+  border-radius: 999px;
+  height: 9px;
+  left: -4px;
+  position: absolute;
+  top: -4px;
+  width: 9px;
+}
+
+.rowActions {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.rowActions select {
+  display: inline-block;
+  margin: 0;
+  padding: 3px 6px;
+  width: auto;
+}
+
+.rowActions button {
+  font-size: 11.5px;
+  margin: 0;
+  padding: 3px 8px;
+}
+
 .pidSymbolLabel {
   color: var(--text-2);
   font-family: var(--font-mono);

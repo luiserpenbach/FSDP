@@ -53,3 +53,13 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Administrator access required")
     return user
+
+
+WRITER_ROLES = {"admin", "engineer"}
+
+
+def require_writer(user: User = Depends(get_current_user)) -> User:
+    if user.role not in WRITER_ROLES:
+        detail = "This account is read-only; an engineer or admin role is required to make changes."
+        raise HTTPException(status_code=403, detail=detail)
+    return user

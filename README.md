@@ -32,15 +32,20 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
 
 ## Current MVP Capabilities
 
-- Sign in/out with per-user accounts and an actor-stamped change history.
+- Sign in/out with per-user accounts (admin/engineer/viewer; viewers are read-only) and
+  an actor-stamped change history; admins manage accounts from the Settings page.
 - Create, select, update, and delete projects and fluid systems.
-- Create, reopen, rename, delete, edit, and save P&ID diagrams.
-- Persist React Flow graph data and normalized diagram nodes/edges.
-- Create, select, update, and delete catalog parts.
-- Place selected parts onto persisted diagram nodes as component instances.
-- Create, select, update, and delete requirements.
-- Link requirements to components.
-- Generate BoM snapshots and download CSV exports.
+- Author P&ID diagrams with an ISA-style symbol library, snap-to-grid, minimap,
+  undo/redo, node renaming, and PNG export.
+- Edit line engineering data (fluid, pressure, temperature, diameter, material) per
+  edge, persisted to normalized diagram edges.
+- Create, select, update, and delete catalog parts with qualification/certification
+  status tracking.
+- Place parts onto diagram nodes with auto-suggested tags; placed nodes are badged.
+- Create, select, update, and delete requirements; link them to components and manage
+  trace links.
+- Generate BoM snapshots with history, draft/released workflow, revision diffs,
+  procurement-readiness checks, project-wide roll-up, and CSV export.
 - Inspect basic change impact for selected parts and components.
 
 ## Running the Full Stack (Docker)

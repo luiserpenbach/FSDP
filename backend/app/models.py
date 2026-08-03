@@ -216,6 +216,10 @@ class BomSnapshot(TimestampMixin, Base):
 
     diagram: Mapped[Diagram] = relationship(back_populates="bom_snapshots")
 
+    @property
+    def diagram_name(self) -> str:
+        return self.diagram.name if self.diagram else ""
+
 
 class ChangeEvent(TimestampMixin, Base):
     __tablename__ = "change_events"

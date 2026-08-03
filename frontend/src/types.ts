@@ -84,6 +84,36 @@ export type BomSnapshot = {
   revision: number;
   status: string;
   rows: Array<Record<string, unknown>>;
+  created_at?: string;
+};
+
+export type ProjectBom = BomSnapshot & { diagram_name: string };
+
+export type BomReadinessIssue = {
+  part_number?: string | null;
+  component_tags: string[];
+  warnings: string[];
+};
+
+export type BomReadiness = {
+  snapshot_id: string;
+  row_count: number;
+  issue_count: number;
+  ready: boolean;
+  issues: BomReadinessIssue[];
+};
+
+export type BomDiff = {
+  snapshot_id: string;
+  against_id: string;
+  added: Array<Record<string, unknown>>;
+  removed: Array<Record<string, unknown>>;
+  changed: Array<{
+    part_number?: string | null;
+    description?: string | null;
+    from_quantity: number;
+    to_quantity: number;
+  }>;
 };
 
 export type TraceLink = {

@@ -100,7 +100,12 @@ const PILL_TONES: Record<string, string> = {
   released: "good",
   created: "good",
   updated: "info",
-  deleted: "bad"
+  deleted: "bad",
+  admin: "warn",
+  engineer: "info",
+  viewer: "muted",
+  active: "good",
+  inactive: "bad"
 };
 
 export function StatusPill({ value }: { value: string }) {

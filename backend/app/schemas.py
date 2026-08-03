@@ -352,6 +352,53 @@ class BomSnapshotRead(OrmModel):
     updated_at: datetime
 
 
+class ProjectBomRead(BomSnapshotRead):
+    diagram_name: str
+
+
+VALID_BOM_STATUSES = {"draft", "released"}
+
+
+class BomStatusUpdate(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, value: str) -> str:
+        if value not in VALID_BOM_STATUSES:
+            raise ValueError("must be one of: " + ", ".join(sorted(VALID_BOM_STATUSES)))
+        return value
+
+
+class BomReadinessIssue(BaseModel):
+    part_number: str | None
+    component_tags: list[str]
+    warnings: list[str]
+
+
+class BomReadinessRead(BaseModel):
+    snapshot_id: str
+    row_count: int
+    issue_count: int
+    ready: bool
+    issues: list[BomReadinessIssue]
+
+
+class BomQuantityChange(BaseModel):
+    part_number: str | None
+    description: str | None
+    from_quantity: int
+    to_quantity: int
+
+
+class BomDiffRead(BaseModel):
+    snapshot_id: str
+    against_id: str
+    added: list[dict[str, Any]]
+    removed: list[dict[str, Any]]
+    changed: list[BomQuantityChange]
+
+
 class ImpactRead(BaseModel):
     object_type: str
     object_id: str

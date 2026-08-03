@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.core.security import get_current_user
+from app.core.security import require_writer
 from app.db import get_db
 from app.models import (
     BomSnapshot,
@@ -23,7 +23,10 @@ from app.models import (
     User,
 )
 from app.schemas import (
+    BomDiffRead,
+    BomReadinessRead,
     BomSnapshotRead,
+    BomStatusUpdate,
     ChangeEventRead,
     ComponentInstanceCreate,
     ComponentInstanceRead,
@@ -39,6 +42,7 @@ from app.schemas import (
     PartCreate,
     PartRead,
     PartUpdate,
+    ProjectBomRead,
     ProjectCreate,
     ProjectRead,
     ProjectUpdate,
@@ -49,6 +53,7 @@ from app.schemas import (
     TraceLinkRead,
 )
 from app.services.bom import generate_bom_snapshot
+from app.services.catalog import qualification_warnings
 from app.services.change_impact import get_change_impact
 from app.services.traceability import get_trace_links
 
@@ -101,7 +106,7 @@ def normalized_column(column):
 def create_project(
     payload: ProjectCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Project:
     clean_name = payload.name.strip()
     if not clean_name:
@@ -139,7 +144,7 @@ def update_project(
     project_id: str,
     payload: ProjectUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Project:
     project = require_model(db, Project, project_id)
     if payload.name is not None:
@@ -170,7 +175,7 @@ def update_project(
 def delete_project(
     project_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Response:
     project = require_model(db, Project, project_id)
     record_change(
@@ -186,7 +191,7 @@ def create_system(
     project_id: str,
     payload: FluidSystemCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> FluidSystem:
     require_model(db, Project, project_id)
     clean_name = payload.name.strip()
@@ -224,7 +229,7 @@ def update_system(
     system_id: str,
     payload: FluidSystemUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> FluidSystem:
     system = require_model(db, FluidSystem, system_id)
     if payload.name is not None:
@@ -256,7 +261,7 @@ def update_system(
 def delete_system(
     system_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Response:
     system = require_model(db, FluidSystem, system_id)
     record_change(
@@ -272,7 +277,7 @@ def create_diagram(
     system_id: str,
     payload: DiagramCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Diagram:
     require_model(db, FluidSystem, system_id)
     existing = db.scalar(
@@ -311,7 +316,7 @@ def update_diagram(
     diagram_id: str,
     payload: DiagramUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Diagram:
     diagram = require_model(db, Diagram, diagram_id)
     if payload.name is not None:
@@ -338,7 +343,7 @@ def update_diagram(
 def delete_diagram(
     diagram_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Response:
     diagram = require_model(db, Diagram, diagram_id)
     record_change(
@@ -354,7 +359,7 @@ def update_diagram_graph(
     diagram_id: str,
     payload: DiagramGraphUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Diagram:
     diagram = require_model(db, Diagram, diagram_id)
 
@@ -430,7 +435,7 @@ def update_diagram_graph(
 def create_part(
     payload: PartCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Part:
     existing = db.scalar(select(Part).where(Part.part_number == payload.part_number))
     if existing:
@@ -482,7 +487,7 @@ def update_part(
     part_id: str,
     payload: PartUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Part:
     part = require_model(db, Part, part_id)
     if payload.part_number:
@@ -505,7 +510,7 @@ def update_part(
 def delete_part(
     part_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Response:
     part = require_model(db, Part, part_id)
     usage_count = db.scalar(
@@ -536,7 +541,7 @@ def create_component(
     diagram_id: str,
     payload: ComponentInstanceCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> ComponentInstance:
     require_model(db, Diagram, diagram_id)
     if payload.part_id:
@@ -591,7 +596,7 @@ def update_component(
     component_id: str,
     payload: ComponentInstanceUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> ComponentInstance:
     component = require_model(db, ComponentInstance, component_id)
     if payload.part_id:
@@ -627,7 +632,7 @@ def update_component(
 def delete_component(
     component_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Response:
     component = require_model(db, ComponentInstance, component_id)
     record_change(
@@ -643,7 +648,7 @@ def delete_component(
 def create_requirement(
     payload: RequirementCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Requirement:
     require_model(db, Project, payload.project_id)
     existing = db.scalar(
@@ -678,7 +683,7 @@ def update_requirement(
     requirement_id: str,
     payload: RequirementUpdate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Requirement:
     requirement = require_model(db, Requirement, requirement_id)
     if payload.key:
@@ -706,7 +711,7 @@ def update_requirement(
 def delete_requirement(
     requirement_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> Response:
     requirement = require_model(db, Requirement, requirement_id)
     record_change(
@@ -732,7 +737,7 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
 def create_trace_link(
     payload: TraceLinkCreate,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ) -> TraceLink:
     for kind, type_name, object_id in (
         ("source", payload.source_type, payload.source_id),
@@ -773,6 +778,22 @@ def create_trace_link(
     return link
 
 
+@router.delete("/trace-links/{link_id}", status_code=204)
+def delete_trace_link(
+    link_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Response:
+    link = require_model(db, TraceLink, link_id)
+    record_change(
+        db, "trace_link", link.id, "deleted", f"Deleted {link.link_type} trace link",
+        actor=user.email,
+    )
+    db.delete(link)
+    db.commit()
+    return Response(status_code=204)
+
+
 @router.get("/objects/{object_type}/{object_id}/trace", response_model=list[TraceLinkRead])
 def object_trace(
     object_type: str, object_id: str, db: Session = Depends(get_db)
@@ -784,7 +805,7 @@ def object_trace(
 def create_bom(
     diagram_id: str,
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_writer),
 ):
     diagram = require_model(db, Diagram, diagram_id)
     snapshot = generate_bom_snapshot(db, diagram)
@@ -809,7 +830,7 @@ def list_diagram_bom_snapshots(diagram_id: str, db: Session = Depends(get_db)) -
     )
 
 
-@router.get("/projects/{project_id}/bom", response_model=list[BomSnapshotRead])
+@router.get("/projects/{project_id}/bom", response_model=list[ProjectBomRead])
 def list_project_bom_snapshots(project_id: str, db: Session = Depends(get_db)) -> list[BomSnapshot]:
     require_model(db, Project, project_id)
     return list(
@@ -821,6 +842,92 @@ def list_project_bom_snapshots(project_id: str, db: Session = Depends(get_db)) -
             .order_by(BomSnapshot.created_at.desc())
         )
     )
+
+
+@router.put("/bom/{snapshot_id}/status", response_model=BomSnapshotRead)
+def update_bom_status(
+    snapshot_id: str,
+    payload: BomStatusUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> BomSnapshot:
+    snapshot = require_model(db, BomSnapshot, snapshot_id)
+    snapshot.status = payload.status
+    record_change(
+        db, "bom_snapshot", snapshot.id, "updated",
+        f"BoM revision {snapshot.revision} status set to {payload.status}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(snapshot)
+    return snapshot
+
+
+@router.get("/bom/{snapshot_id}/readiness", response_model=BomReadinessRead)
+def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
+    snapshot = require_model(db, BomSnapshot, snapshot_id)
+    issues = []
+    for row in snapshot.rows:
+        warnings: list[str] = []
+        part = db.get(Part, row.get("part_id")) if row.get("part_id") else None
+        if part is None:
+            warnings.append("No catalog part is linked to this BoM row.")
+        else:
+            warnings.extend(qualification_warnings(part))
+        if warnings:
+            issues.append(
+                {
+                    "part_number": row.get("part_number"),
+                    "component_tags": row.get("component_tags") or [],
+                    "warnings": warnings,
+                }
+            )
+    return {
+        "snapshot_id": snapshot.id,
+        "row_count": len(snapshot.rows),
+        "issue_count": len(issues),
+        "ready": not issues,
+        "issues": issues,
+    }
+
+
+def _bom_row_key(row: dict) -> str:
+    if row.get("part_id"):
+        return f"part:{row['part_id']}"
+    tags = row.get("component_tags") or []
+    return f"tag:{tags[0] if tags else row.get('description', '?')}"
+
+
+@router.get("/bom/{snapshot_id}/diff", response_model=BomDiffRead)
+def bom_diff(snapshot_id: str, against_id: str, db: Session = Depends(get_db)) -> dict:
+    current = require_model(db, BomSnapshot, snapshot_id)
+    baseline = require_model(db, BomSnapshot, against_id)
+    if current.diagram_id != baseline.diagram_id:
+        raise HTTPException(
+            status_code=400, detail="BoM snapshots must belong to the same diagram to compare"
+        )
+
+    current_rows = {_bom_row_key(row): row for row in current.rows}
+    baseline_rows = {_bom_row_key(row): row for row in baseline.rows}
+    added = [current_rows[key] for key in sorted(current_rows.keys() - baseline_rows.keys())]
+    removed = [baseline_rows[key] for key in sorted(baseline_rows.keys() - current_rows.keys())]
+    changed = [
+        {
+            "part_number": current_rows[key].get("part_number"),
+            "description": current_rows[key].get("description"),
+            "from_quantity": baseline_rows[key].get("quantity", 0),
+            "to_quantity": current_rows[key].get("quantity", 0),
+        }
+        for key in sorted(current_rows.keys() & baseline_rows.keys())
+        if current_rows[key].get("quantity") != baseline_rows[key].get("quantity")
+    ]
+    return {
+        "snapshot_id": current.id,
+        "against_id": baseline.id,
+        "added": added,
+        "removed": removed,
+        "changed": changed,
+    }
 
 
 BOM_CSV_FIELDS = [

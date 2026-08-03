@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     admin_password: str | None = None
     admin_name: str = "FSDP Admin"
 
+    expose_docs: bool = True
+
     model_config = SettingsConfigDict(env_file=".env", env_prefix="FSDP_")
 
 

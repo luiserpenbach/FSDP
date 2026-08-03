@@ -1,4 +1,6 @@
 import type {
+  BomDiff,
+  BomReadiness,
   BomSnapshot,
   ChangeEvent,
   ComponentInstance,
@@ -7,6 +9,7 @@ import type {
   Impact,
   Part,
   Project,
+  ProjectBom,
   Requirement,
   TraceLink,
   User
@@ -144,10 +147,29 @@ export const api = {
     requestNoContent(`/requirements/${requirementId}`, { method: "DELETE" }),
   createTraceLink: (body: Omit<TraceLink, "id">) =>
     request<TraceLink>("/trace-links", { method: "POST", body: JSON.stringify(body) }),
+  deleteTraceLink: (linkId: string) =>
+    requestNoContent(`/trace-links/${linkId}`, { method: "DELETE" }),
+  listTraceLinks: (objectType: string, objectId: string) =>
+    request<TraceLink[]>(`/objects/${objectType}/${objectId}/trace`),
   generateBom: (diagramId: string) =>
     request<BomSnapshot>(`/diagrams/${diagramId}/bom`, { method: "POST" }),
   listDiagramBoms: (diagramId: string) => request<BomSnapshot[]>(`/diagrams/${diagramId}/bom`),
-  listProjectBoms: (projectId: string) => request<BomSnapshot[]>(`/projects/${projectId}/bom`),
+  listProjectBoms: (projectId: string) => request<ProjectBom[]>(`/projects/${projectId}/bom`),
+  setBomStatus: (snapshotId: string, status: string) =>
+    request<BomSnapshot>(`/bom/${snapshotId}/status`, {
+      method: "PUT",
+      body: JSON.stringify({ status })
+    }),
+  getBomReadiness: (snapshotId: string) => request<BomReadiness>(`/bom/${snapshotId}/readiness`),
+  getBomDiff: (snapshotId: string, againstId: string) =>
+    request<BomDiff>(`/bom/${snapshotId}/diff?against_id=${againstId}`),
+  listUsers: () => request<User[]>("/auth/users"),
+  createUser: (body: { email: string; name: string; password: string; role: string }) =>
+    request<User>("/auth/users", { method: "POST", body: JSON.stringify(body) }),
+  updateUser: (
+    userId: string,
+    body: { name?: string; password?: string; role?: string; is_active?: boolean }
+  ) => request<User>(`/auth/users/${userId}`, { method: "PUT", body: JSON.stringify(body) }),
   getImpact: (objectType: string, objectId: string) =>
     request<Impact>(`/changes/impact?object_type=${objectType}&object_id=${objectId}`)
 };

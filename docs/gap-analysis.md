@@ -249,8 +249,25 @@ Backend Dockerfile (+migrations on boot), compose `api`/`web` services, `/api` r
 > or CI run validates them. Remaining hardening for later: gate `/docs`, CI tests
 > against a Postgres service container, image builds in CI.
 
-### Phase 3 — P&ID/BoM usability for real internal work (iterative)
+### Phase 3 — P&ID/BoM usability for real internal work (iterative) — ✅ LARGELY IMPLEMENTED
 Line metadata editing (F8) → auto-tagging + tag uniqueness UX → symbol library → placement flow rework (bind by `external_id` at save; placed-part badges on canvas) → BoM history/project BoM/status workflow/procurement readiness endpoint (revive `qualification_warnings`) → BoM diff → undo/redo → diagram PNG/SVG export → trace-link management UI → `@xyflow/react` v12 migration.
+
+> Status 2026-08-03: implemented — line metadata editor (label/fluid/pressure/temperature/
+> diameter/material persisted to normalized `diagram_edges`, closing F8), node renaming,
+> per-symbol auto-tag suggestions (V-1, PT-2, …), placed-part badges on canvas,
+> snapshot-based undo/redo (toolbar + Ctrl+Z/Ctrl+Shift+Z), PNG export, ISA-style symbol
+> library (earlier pass), BoM snapshot history + draft/released workflow
+> (`PUT /bom/{id}/status`), procurement readiness (`GET /bom/{id}/readiness`, reviving
+> `qualification_warnings`), revision diff (`GET /bom/{id}/diff`), project-wide BoM view
+> with diagram names, and trace-link listing/deletion (`DELETE /trace-links/{id}`).
+> Still open from this list: `@xyflow/react` v12 migration; rotation remains glyph-only.
+
+### Phase 4 — Roles, administration, and API hardening — ✅ IMPLEMENTED
+
+> Status 2026-08-03: the `viewer` role is now read-only (all mutating endpoints require
+> engineer/admin via `require_writer`; reads remain available), admins manage accounts
+> from the Settings page (create, role change, activate/deactivate), and the OpenAPI
+> docs can be disabled per deployment with `FSDP_EXPOSE_DOCS=false`.
 
 ---
 

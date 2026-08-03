@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { toPng } from "html-to-image";
 import ReactFlow, {
   Background,
   BackgroundVariant,
@@ -29,12 +30,13 @@ import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { LoginPage } from "./pages/LoginPage";
 import { PageLayout, PlaceholderPage } from "./pages/PageLayout";
-import type { BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, Requirement, User } from "./types";
+import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
 type PidNodeData = {
   label: string;
   symbolType: string;
   rotation: number;
+  hasComponent?: boolean;
 };
 
 type OrthogonalEdgeData = {
@@ -42,10 +44,54 @@ type OrthogonalEdgeData = {
   bendY?: number;
   startX?: number;
   endX?: number;
+  fluid?: string | null;
+  pressure_bar?: number | null;
+  temperature_c?: number | null;
+  diameter_mm?: number | null;
+  material?: string | null;
 };
+
+type GraphSnapshot = {
+  nodes: Node<PidNodeData>[];
+  edges: Edge<OrthogonalEdgeData>[];
+};
+
+const TAG_PREFIXES: Record<string, string> = {
+  valve: "V",
+  check_valve: "CV",
+  regulator: "PR",
+  relief_valve: "RV",
+  sensor: "PT",
+  filter: "F",
+  pump: "P",
+  source: "TK",
+  tank: "TK",
+  sink: "IF"
+};
+
+function suggestTag(symbolType: string, components: ComponentInstance[]): string {
+  const prefix = TAG_PREFIXES[symbolType] ?? "C";
+  const pattern = new RegExp(`^${prefix}-(\\d+)$`);
+  const used = components
+    .map((component) => pattern.exec(component.tag)?.[1])
+    .filter(Boolean)
+    .map(Number);
+  return `${prefix}-${used.length ? Math.max(...used) + 1 : 1}`;
+}
+
+function parseOptionalNumber(raw: string, field: string): number | null {
+  const cleaned = raw.trim();
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${field} must be a number (leave empty if unknown).`);
+  }
+  return parsed;
+}
 
 const qualificationOptions = ["unqualified", "qualified", "preferred", "legacy", "restricted"].map((value) => ({ value, label: value }));
 const certificationOptions = ["unreviewed", "in_review", "certified", "rejected"].map((value) => ({ value, label: value }));
+const roleOptions = ["engineer", "viewer", "admin"].map((value) => ({ value, label: value }));
 
 const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
@@ -78,7 +124,11 @@ function buildGraphPayload(nodes: Node<PidNodeData>[], edges: Edge<OrthogonalEdg
       external_id: edge.id,
       source_node_id: edge.source,
       target_node_id: edge.target,
-      fluid: "TBD",
+      fluid: edge.data?.fluid ?? null,
+      pressure_bar: edge.data?.pressure_bar ?? null,
+      temperature_c: edge.data?.temperature_c ?? null,
+      diameter_mm: edge.data?.diameter_mm ?? null,
+      material: edge.data?.material ?? null,
       flow_direction: "forward",
       properties: { label: edge.label, ...(edge.data ?? {}) }
     }))
@@ -154,6 +204,7 @@ function PidSymbolNode({
       <div className="pidSymbolBody" style={{ transform: `rotate(${data.rotation}deg)` }}>
         <PidGlyph type={data.symbolType} />
       </div>
+      {data.hasComponent && <span className="componentDot" title="Catalog part placed" />}
       <button className="rotateHandle" onClick={rotateSymbol} title="Rotate symbol 90 degrees" type="button">
         &#8635;
       </button>
@@ -310,9 +361,17 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [parts, setParts] = useState<Part[]>([]);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [components, setComponents] = useState<ComponentInstance[]>([]);
-  const [bom, setBom] = useState<BomSnapshot | null>(null);
+  const [bomSnapshots, setBomSnapshots] = useState<BomSnapshot[]>([]);
+  const [selectedBomId, setSelectedBomId] = useState("");
+  const [bomReadiness, setBomReadiness] = useState<BomReadiness | null>(null);
+  const [diffAgainstId, setDiffAgainstId] = useState("");
+  const [bomDiff, setBomDiff] = useState<BomDiff | null>(null);
+  const [projectBoms, setProjectBoms] = useState<ProjectBom[]>([]);
+  const [traceLinks, setTraceLinks] = useState<TraceLink[]>([]);
   const [impact, setImpact] = useState<Impact | null>(null);
   const [changes, setChanges] = useState<ChangeLogEvent[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [userForm, setUserForm] = useState({ email: "", name: "", password: "", role: "engineer" });
 
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedSystemId, setSelectedSystemId] = useState("");
@@ -337,6 +396,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [graphDirty, setGraphDirty] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<PidNodeData>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<OrthogonalEdgeData>([]);
+  const [nodeLabelDraft, setNodeLabelDraft] = useState("");
+  const [edgeForm, setEdgeForm] = useState({ label: "", fluid: "", pressure_bar: "", temperature_c: "", diameter_mm: "", material: "" });
+  const [historyVersion, setHistoryVersion] = useState(0);
+
+  const nodesRef = useRef<Node<PidNodeData>[]>(nodes);
+  const edgesRef = useRef<Edge<OrthogonalEdgeData>[]>(edges);
+  nodesRef.current = nodes;
+  edgesRef.current = edges;
+  const historyRef = useRef<{ past: GraphSnapshot[]; future: GraphSnapshot[] }>({ past: [], future: [] });
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -346,6 +414,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const selectedComponent = components.find((component) => component.id === selectedComponentId) ?? null;
   const selectedNode = nodes.find((node) => node.id === selectedNodeId);
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
+  const bom = bomSnapshots.find((snapshot) => snapshot.id === selectedBomId) ?? null;
+  const canUndo = historyVersion >= 0 && historyRef.current.past.length > 0;
+  const canRedo = historyRef.current.future.length > 0;
+  const isAdmin = user.role === "admin";
   const nodeTypes = useMemo(
     () => ({
       pidSymbol: (props: NodeProps<PidNodeData>) => (
@@ -385,15 +457,18 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     if (!selectedProjectId) {
       setSystems([]);
       setRequirements([]);
+      setProjectBoms([]);
       return;
     }
     void runAction("Loaded project details.", async () => {
-      const [nextSystems, nextRequirements] = await Promise.all([
+      const [nextSystems, nextRequirements, nextProjectBoms] = await Promise.all([
         api.listSystems(selectedProjectId),
-        api.listRequirements(selectedProjectId)
+        api.listRequirements(selectedProjectId),
+        api.listProjectBoms(selectedProjectId)
       ]);
       setSystems(nextSystems);
       setRequirements(nextRequirements);
+      setProjectBoms(nextProjectBoms);
       setSelectedSystemId((current) => (nextSystems.some((system) => system.id === current) ? current : nextSystems[0]?.id || ""));
       setSelectedRequirementId((current) => (nextRequirements.some((requirement) => requirement.id === current) ? current : nextRequirements[0]?.id || ""));
     });
@@ -413,9 +488,12 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   }, [selectedSystemId]);
 
   useEffect(() => {
+    historyRef.current = { past: [], future: [] };
+    setHistoryVersion((version) => version + 1);
     if (!selectedDiagramId) {
       setComponents([]);
-      setBom(null);
+      setBomSnapshots([]);
+      setSelectedBomId("");
       setNodes([]);
       setEdges([]);
       setGraphDirty(false);
@@ -428,10 +506,79 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setEdges((diagram.graph.edges ?? []).map(normalizeOrthogonalEdge));
       setComponents(await api.listComponents(diagram.id));
       const snapshots = await api.listDiagramBoms(diagram.id);
-      setBom(snapshots[0] ?? null);
+      setBomSnapshots(snapshots);
+      setSelectedBomId(snapshots[0]?.id ?? "");
       setGraphDirty(false);
     });
   }, [selectedDiagramId, setEdges, setNodes]);
+
+  useEffect(() => {
+    setBomDiff(null);
+    setDiffAgainstId("");
+    if (!selectedBomId) {
+      setBomReadiness(null);
+      return;
+    }
+    api
+      .getBomReadiness(selectedBomId)
+      .then(setBomReadiness)
+      .catch(() => setBomReadiness(null));
+  }, [selectedBomId]);
+
+  useEffect(() => {
+    if (!selectedRequirementId) {
+      setTraceLinks([]);
+      return;
+    }
+    api
+      .listTraceLinks("requirement", selectedRequirementId)
+      .then(setTraceLinks)
+      .catch(() => setTraceLinks([]));
+  }, [selectedRequirementId]);
+
+  // Mark nodes that have a placed component with a badge.
+  useEffect(() => {
+    const bound = new Set(
+      components
+        .map((component) => (component.properties as Record<string, unknown> | undefined)?.node_external_id)
+        .filter((value): value is string => typeof value === "string")
+    );
+    setNodes((current) => {
+      let changed = false;
+      const next = current.map((node) => {
+        const hasComponent = bound.has(node.id);
+        if (Boolean(node.data?.hasComponent) === hasComponent) return node;
+        changed = true;
+        return { ...node, data: { ...node.data, hasComponent } };
+      });
+      return changed ? next : current;
+    });
+  }, [components, setNodes]);
+
+  useEffect(() => {
+    if (selectedEdge) {
+      setEdgeForm({
+        label: String(selectedEdge.label ?? ""),
+        fluid: selectedEdge.data?.fluid ?? "",
+        pressure_bar: selectedEdge.data?.pressure_bar != null ? String(selectedEdge.data.pressure_bar) : "",
+        temperature_c: selectedEdge.data?.temperature_c != null ? String(selectedEdge.data.temperature_c) : "",
+        diameter_mm: selectedEdge.data?.diameter_mm != null ? String(selectedEdge.data.diameter_mm) : "",
+        material: selectedEdge.data?.material ?? ""
+      });
+    }
+  }, [selectedEdgeId, selectedEdge?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (selectedNode) {
+      setNodeLabelDraft(String(selectedNode.data?.label ?? ""));
+    }
+  }, [selectedNodeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (isAdmin) {
+      api.listUsers().then(setUsers).catch(() => setUsers([]));
+    }
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!graphDirty) return;
@@ -505,28 +652,83 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     }
   }
 
+  const recordHistory = useCallback(() => {
+    const history = historyRef.current;
+    history.past.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    if (history.past.length > 50) history.past.shift();
+    history.future = [];
+    setHistoryVersion((version) => version + 1);
+  }, []);
+
+  const undo = useCallback(() => {
+    const history = historyRef.current;
+    const previous = history.past.pop();
+    if (!previous) return;
+    history.future.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    setNodes(previous.nodes);
+    setEdges(previous.edges);
+    setGraphDirty(true);
+    setHistoryVersion((version) => version + 1);
+  }, [setEdges, setNodes]);
+
+  const redo = useCallback(() => {
+    const history = historyRef.current;
+    const next = history.future.pop();
+    if (!next) return;
+    history.past.push({ nodes: nodesRef.current, edges: edgesRef.current });
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    setGraphDirty(true);
+    setHistoryVersion((version) => version + 1);
+  }, [setEdges, setNodes]);
+
+  useEffect(() => {
+    function handleKeydown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo();
+        else undo();
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        redo();
+      }
+    }
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [redo, undo]);
+
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
       // Selection and initial-measurement changes are not edits.
+      if (changes.some((change) => change.type === "remove")) {
+        recordHistory();
+      }
       if (changes.some((change) => change.type === "position" || change.type === "add" || change.type === "remove")) {
         setGraphDirty(true);
       }
       onNodesChangeBase(changes);
     },
-    [onNodesChangeBase]
+    [onNodesChangeBase, recordHistory]
   );
 
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) => {
+      if (changes.some((change) => change.type === "remove")) {
+        recordHistory();
+      }
       if (changes.some((change) => change.type === "add" || change.type === "remove")) {
         setGraphDirty(true);
       }
       onEdgesChangeBase(changes);
     },
-    [onEdgesChangeBase]
+    [onEdgesChangeBase, recordHistory]
   );
 
   function onConnect(connection: Connection) {
+    recordHistory();
     setGraphDirty(true);
     setEdges((current) =>
       addEdge({ ...connection, type: "orthogonal", label: "New line", markerEnd: EDGE_MARKER }, current)
@@ -543,7 +745,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setSelectedProjectId(id);
     setSelectedSystemId("");
     setSelectedDiagramId("");
-    setBom(null);
     setImpact(null);
   }
 
@@ -552,7 +753,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     if (!confirmDiscardUnsaved()) return;
     setSelectedSystemId(id);
     setSelectedDiagramId("");
-    setBom(null);
   }
 
   function openDiagram(id: string) {
@@ -702,7 +902,66 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     });
   }
 
+  function applyNodeLabel() {
+    if (!selectedNode) return;
+    const label = nodeLabelDraft.trim();
+    if (!label || label === selectedNode.data?.label) return;
+    recordHistory();
+    setNodes((current) =>
+      current.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, label } } : node))
+    );
+    setGraphDirty(true);
+    setMessage("Renamed node — save the graph to persist.");
+  }
+
+  function applyEdgeMetadata() {
+    if (!selectedEdge) return;
+    void runAction("Updated line metadata — save the graph to persist.", async () => {
+      const data: Partial<OrthogonalEdgeData> = {
+        fluid: edgeForm.fluid.trim() || null,
+        material: edgeForm.material.trim() || null,
+        pressure_bar: parseOptionalNumber(edgeForm.pressure_bar, "Pressure"),
+        temperature_c: parseOptionalNumber(edgeForm.temperature_c, "Temperature"),
+        diameter_mm: parseOptionalNumber(edgeForm.diameter_mm, "Diameter")
+      };
+      recordHistory();
+      setEdges((current) =>
+        current.map((edge) =>
+          edge.id === selectedEdge.id
+            ? { ...edge, label: edgeForm.label.trim() || undefined, data: { ...edge.data, ...data } }
+            : edge
+        )
+      );
+      setGraphDirty(true);
+    }, "edge");
+  }
+
+  async function exportDiagramPng() {
+    const canvas = document.querySelector<HTMLElement>(".react-flow");
+    if (!canvas || !selectedDiagram) return;
+    void runAction("Exported diagram PNG.", async () => {
+      const dataUrl = await toPng(canvas, {
+        backgroundColor: "#fbfcfe",
+        pixelRatio: 2,
+        filter: (element) => {
+          const classes = (element as HTMLElement).classList;
+          if (!classes) return true;
+          return (
+            !classes.contains("react-flow__minimap") &&
+            !classes.contains("react-flow__controls") &&
+            !classes.contains("react-flow__attribution")
+          );
+        }
+      });
+      const link = document.createElement("a");
+      link.href = dataUrl;
+      link.download = `${selectedDiagram.name.replaceAll(/[^A-Za-z0-9._-]+/g, "-")}-rev${selectedDiagram.revision}.png`;
+      link.click();
+    });
+  }
+
   function addGraphNode(kind: string) {
+    recordHistory();
     const id = makeNodeId(kind);
     setNodes((current) => [
       ...current,
@@ -728,9 +987,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       const nextNodes = nodes.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, label: `${component.tag}: ${selectedPart.part_number}` } } : node));
       setNodes(nextNodes);
       await api.updateDiagramGraph(selectedDiagram.id, buildGraphPayload(nextNodes, edges));
-      setComponents(await api.listComponents(selectedDiagram.id));
+      const nextComponents = await api.listComponents(selectedDiagram.id);
+      setComponents(nextComponents);
       setSelectedComponentId(component.id);
       setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
+      setComponentTag(suggestTag(String(selectedNode.data?.symbolType ?? "component"), nextComponents));
     }, "component");
   }
 
@@ -784,13 +1045,58 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     if (!selectedRequirement || !selectedComponent) return;
     void runAction("Linked requirement.", async () => {
       await api.createTraceLink({ source_type: "requirement", source_id: selectedRequirement.id, target_type: "component", target_id: selectedComponent.id, link_type: "satisfied_by" });
-    });
+      setTraceLinks(await api.listTraceLinks("requirement", selectedRequirement.id));
+    }, "traceLink");
+  }
+
+  function submitUser(event: FormEvent) {
+    event.preventDefault();
+    void runAction("Created user.", async () => {
+      await api.createUser(userForm);
+      setUsers(await api.listUsers());
+      setUserForm({ email: "", name: "", password: "", role: "engineer" });
+    }, "user");
+  }
+
+  function updateUserAccount(userId: string, changes: { role?: string; is_active?: boolean }) {
+    void runAction("Updated user.", async () => {
+      await api.updateUser(userId, changes);
+      setUsers(await api.listUsers());
+    }, "user");
   }
 
   function generateBom() {
     if (!selectedDiagram) return;
-    void runAction("Generated BoM.", async () => {
-      setBom(await api.generateBom(selectedDiagram.id));
+    void runAction("Generated BoM snapshot.", async () => {
+      const snapshot = await api.generateBom(selectedDiagram.id);
+      const snapshots = await api.listDiagramBoms(selectedDiagram.id);
+      setBomSnapshots(snapshots);
+      setSelectedBomId(snapshot.id);
+      setProjectBoms(selectedProjectId ? await api.listProjectBoms(selectedProjectId) : []);
+    });
+  }
+
+  function setBomStatus(status: string) {
+    if (!bom) return;
+    void runAction(`BoM revision ${bom.revision} marked ${status}.`, async () => {
+      const updated = await api.setBomStatus(bom.id, status);
+      setBomSnapshots((current) => current.map((snapshot) => (snapshot.id === updated.id ? updated : snapshot)));
+      setProjectBoms(selectedProjectId ? await api.listProjectBoms(selectedProjectId) : []);
+    });
+  }
+
+  function runBomDiff() {
+    if (!bom || !diffAgainstId) return;
+    void runAction("Compared BoM revisions.", async () => {
+      setBomDiff(await api.getBomDiff(bom.id, diffAgainstId));
+    });
+  }
+
+  function removeTraceLink(linkId: string) {
+    if (!selectedRequirement) return;
+    void runAction("Removed trace link.", async () => {
+      await api.deleteTraceLink(linkId);
+      setTraceLinks(await api.listTraceLinks("requirement", selectedRequirement.id));
     });
   }
 
@@ -895,7 +1201,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     <Select label="Open diagram" value={selectedDiagramId} options={diagrams.map((diagram) => ({ value: diagram.id, label: `${diagram.name} rev ${diagram.revision}` }))} onChange={openDiagram} />
                     <button disabled={busy || !selectedDiagram || !diagramName} onClick={updateDiagram}>Rename</button>
                     <button className="danger" disabled={busy || !selectedDiagram} onClick={deleteDiagram}>Delete</button>
-                    <button disabled={busy || !selectedDiagram || !graphDirty} onClick={saveGraph}>Save graph</button>
+                    <button disabled={!canUndo} onClick={undo} title="Undo (Ctrl+Z)">Undo</button>
+                    <button disabled={!canRedo} onClick={redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
+                    <button disabled={busy || !selectedDiagram} onClick={() => void exportDiagramPng()}>Export PNG</button>
+                    <button className="primary" disabled={busy || !selectedDiagram || !graphDirty} onClick={saveGraph}>Save graph</button>
                     {selectedDiagram && <span className={graphDirty ? "dirtyBadge" : "cleanBadge"}>{graphDirty ? "Unsaved changes" : "Saved"}</span>}
                   </div>
                   <div className="nodePalette">
@@ -916,8 +1225,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                       onNodesChange={onNodesChange}
                       onEdgesChange={onEdgesChange}
                       onConnect={onConnect}
-                      onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+                      onNodeClick={(_, node) => {
+                        setSelectedNodeId(node.id);
+                        if (!node.data?.hasComponent) {
+                          setComponentTag(suggestTag(String(node.data?.symbolType ?? "component"), components));
+                        }
+                      }}
                       onEdgeClick={(_, edge) => setSelectedEdgeId(edge.id)}
+                      onNodeDragStart={recordHistory}
                       snapToGrid
                       snapGrid={[10, 10]}
                       fitView
@@ -936,22 +1251,29 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                 </div>
                 <aside className="inspector">
                   <Panel title="Node Inspector">
-                    <p><strong>Selected:</strong> {selectedNode?.id ?? "None"}</p>
-                    <p><strong>Label:</strong> {String(selectedNode?.data?.label ?? "-")}</p>
-                    <p><strong>Rotation:</strong> {String(selectedNode?.data?.rotation ?? 0)} degrees</p>
-                    <p><strong>Size:</strong> {selectedNode ? `${String(selectedNode.style?.width ?? "auto")} x ${String(selectedNode.style?.height ?? "auto")}` : "-"}</p>
-                    <p><strong>Position:</strong> {selectedNode ? `${Math.round(selectedNode.position.x)}, ${Math.round(selectedNode.position.y)}` : "-"}</p>
+                    <p><strong>Selected:</strong> {selectedNode ? <span className="mono">{String(selectedNode.data?.symbolType ?? "node")}</span> : "None"}{selectedNode?.data?.hasComponent ? <span className="pill pill-good" style={{ marginLeft: 6 }}>part placed</span> : null}</p>
+                    <TextInput label="Node label" value={nodeLabelDraft} onChange={setNodeLabelDraft} />
+                    <button disabled={busy || !selectedNode || !nodeLabelDraft.trim()} onClick={applyNodeLabel}>Rename node</button>
                     <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
                     <FormError message={formErrors.component} />
-                    <button disabled={busy || !selectedDiagram || !selectedPart || !selectedNode || !componentTag.trim()} onClick={placeComponent}>Place selected part</button>
+                    <button className="primary" disabled={busy || !selectedDiagram || !selectedPart || !selectedNode || !componentTag.trim()} onClick={placeComponent}>Place selected part</button>
+                    <p className="hint">Placing uses the selected catalog part ({selectedPart?.part_number ?? "none selected"}).</p>
                   </Panel>
                   <Panel title="Line Metadata">
-                    <p><strong>Selected edge:</strong> {selectedEdge?.id ?? "None"}</p>
-                    <p><strong>Label:</strong> {String(selectedEdge?.label ?? "-")}</p>
-                    <p><strong>Start leg X:</strong> {String(selectedEdge?.data?.startX ?? selectedEdge?.data?.bendX ?? "auto")}</p>
-                    <p><strong>Middle leg Y:</strong> {String(selectedEdge?.data?.bendY ?? "auto")}</p>
-                    <p><strong>End leg X:</strong> {String(selectedEdge?.data?.endX ?? selectedEdge?.data?.bendX ?? "auto")}</p>
-                    <p><strong>Lines:</strong> {edges.length}</p>
+                    {selectedEdge ? (
+                      <>
+                        <TextInput label="Label" value={edgeForm.label} onChange={(label) => setEdgeForm({ ...edgeForm, label })} />
+                        <TextInput label="Fluid" value={edgeForm.fluid} onChange={(fluid) => setEdgeForm({ ...edgeForm, fluid })} />
+                        <TextInput label="Pressure bar" value={edgeForm.pressure_bar} onChange={(pressure) => setEdgeForm({ ...edgeForm, pressure_bar: pressure })} />
+                        <TextInput label="Temperature C" value={edgeForm.temperature_c} onChange={(temperature) => setEdgeForm({ ...edgeForm, temperature_c: temperature })} />
+                        <TextInput label="Diameter mm" value={edgeForm.diameter_mm} onChange={(diameter) => setEdgeForm({ ...edgeForm, diameter_mm: diameter })} />
+                        <TextInput label="Material" value={edgeForm.material} onChange={(material) => setEdgeForm({ ...edgeForm, material })} />
+                        <FormError message={formErrors.edge} />
+                        <button className="primary" disabled={busy} onClick={applyEdgeMetadata}>Apply to line</button>
+                      </>
+                    ) : (
+                      <p className="hint">Select a line on the canvas to edit its label and engineering data ({edges.length} line{edges.length === 1 ? "" : "s"}).</p>
+                    )}
                   </Panel>
                   <Panel title="Diagrams">
                     <DataTable rows={diagrams} selectedKey={selectedDiagramId} getKey={(diagram) => diagram.id} onSelect={(diagram) => openDiagram(diagram.id)} columns={[{ header: "Name", render: (diagram) => diagram.name }, { header: "Rev", render: (diagram) => diagram.revision }]} />
@@ -1013,7 +1335,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                   <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
                   <FormError message={formErrors.component} />
                   <div className="buttonRow"><button disabled={!selectedComponent} onClick={updateComponent}>Update component</button><button className="danger" disabled={!selectedComponent} onClick={deleteComponent}>Delete component</button></div>
-                  <button disabled={!selectedRequirement || !selectedComponent} onClick={linkRequirementToComponent}>Link requirement to component</button>
+                  <button className="primary" disabled={!selectedRequirement || !selectedComponent} onClick={linkRequirementToComponent}>Link requirement to component</button>
+                  <FormError message={formErrors.traceLink} />
+                  {selectedRequirement && (
+                    traceLinks.length
+                      ? <DataTable rows={traceLinks} getKey={(link) => link.id} columns={[{ header: "Link", render: (link) => <span className="mono">{link.link_type}</span> }, { header: "Target", render: (link) => <span className="mono">{components.find((component) => component.id === link.target_id)?.tag ?? `${link.target_type} ${link.target_id.slice(0, 8)}`}</span> }, { header: "", render: (link) => <button className="danger" disabled={busy} onClick={() => removeTraceLink(link.id)}>Remove</button> }]} />
+                      : <p className="hint">No trace links for {selectedRequirement.key} yet.</p>
+                  )}
                 </Panel>
               </section>
             </PageLayout>
@@ -1022,11 +1350,58 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         <Route
           path="/bom"
           element={
-            <PageLayout title="BoM & Procurement" description="Snapshots and exports">
+            <PageLayout title="BoM & Procurement" description="Snapshots, readiness, and exports">
               <section className="grid">
-                <Panel title="BoM Snapshot">
-                  <button disabled={busy || !selectedDiagram} onClick={generateBom}>Generate BoM</button>
-                  {bom ? <><p className="snapshotMeta">Snapshot revision <span className="mono">{bom.revision}</span> · {bom.rows.length} row(s) · <StatusPill value={bom.status} /></p><a className="downloadLink" href={bomCsvUrl(bom.id)}>Download CSV</a><DataTable rows={bom.rows} getKey={(_, index?: number) => String(index)} columns={[{ header: "Part", render: (row) => <span className="mono">{String(row.part_number ?? "Unresolved")}</span> }, { header: "Description", render: (row) => String(row.description ?? "") }, { header: "Material", render: (row) => String(row.material ?? "—") }, { header: "Qty", render: (row) => <span className="mono">{String(row.quantity ?? 0)}</span> }]} /></> : <p className="hint">Open a diagram and generate a BoM snapshot.</p>}
+                <Panel title="Snapshots">
+                  <button className="primary" disabled={busy || !selectedDiagram} onClick={generateBom}>Generate BoM</button>
+                  {bom && (bom.status === "released"
+                    ? <button disabled={busy} onClick={() => setBomStatus("draft")}>Reopen as draft</button>
+                    : <button disabled={busy} onClick={() => setBomStatus("released")}>Release</button>)}
+                  {selectedDiagram
+                    ? <DataTable rows={bomSnapshots} selectedKey={selectedBomId} getKey={(snapshot) => snapshot.id} onSelect={(snapshot) => setSelectedBomId(snapshot.id)} columns={[{ header: "Rev", render: (snapshot) => <span className="mono">{snapshot.revision}</span> }, { header: "Status", render: (snapshot) => <StatusPill value={snapshot.status} /> }, { header: "Rows", render: (snapshot) => <span className="mono">{snapshot.rows.length}</span> }, { header: "Created", render: (snapshot) => <span className="mono">{snapshot.created_at ? new Date(snapshot.created_at).toLocaleString() : "—"}</span> }]} />
+                    : <p className="hint">Open a diagram on the Diagrams page first.</p>}
+                </Panel>
+                <Panel title="Selected Snapshot">
+                  {bom ? (
+                    <>
+                      <p className="snapshotMeta">Revision <span className="mono">{bom.revision}</span> · {bom.rows.length} row(s) · <StatusPill value={bom.status} /></p>
+                      <a className="downloadLink" href={bomCsvUrl(bom.id)}>Download CSV</a>
+                      <DataTable rows={bom.rows} getKey={(_, index?: number) => String(index)} columns={[{ header: "Part", render: (row) => <span className="mono">{String(row.part_number ?? "Unresolved")}</span> }, { header: "Description", render: (row) => String(row.description ?? "") }, { header: "Material", render: (row) => String(row.material ?? "—") }, { header: "Qty", render: (row) => <span className="mono">{String(row.quantity ?? 0)}</span> }]} />
+                    </>
+                  ) : <p className="hint">Generate or select a snapshot.</p>}
+                </Panel>
+                <Panel title="Procurement Readiness">
+                  {bomReadiness ? (
+                    bomReadiness.ready
+                      ? <p className="snapshotMeta"><span className="pill pill-good">ready</span> All {bomReadiness.row_count} row(s) reference qualified parts with complete data.</p>
+                      : (
+                        <>
+                          <p className="snapshotMeta"><span className="pill pill-warn">{bomReadiness.issue_count} issue(s)</span> in {bomReadiness.row_count} row(s)</p>
+                          <DataTable rows={bomReadiness.issues} getKey={(_, index?: number) => String(index)} columns={[{ header: "Part", render: (issue) => <span className="mono">{issue.part_number ?? "Unresolved"}</span> }, { header: "Tags", render: (issue) => <span className="mono">{issue.component_tags.join(", ") || "—"}</span> }, { header: "Warnings", render: (issue) => issue.warnings.join(" ") }]} />
+                        </>
+                      )
+                  ) : <p className="hint">Select a snapshot to check procurement readiness.</p>}
+                </Panel>
+                <Panel title="Compare Revisions">
+                  {bom && bomSnapshots.length > 1 ? (
+                    <>
+                      <Select label={`Compare rev ${bom.revision} against`} value={diffAgainstId} options={bomSnapshots.filter((snapshot) => snapshot.id !== bom.id).map((snapshot) => ({ value: snapshot.id, label: `rev ${snapshot.revision}` }))} onChange={setDiffAgainstId} />
+                      <button disabled={busy || !diffAgainstId} onClick={runBomDiff}>Compare</button>
+                      {bomDiff && (
+                        <>
+                          <p className="snapshotMeta"><span className="pill pill-good">{bomDiff.added.length} added</span><span className="pill pill-bad">{bomDiff.removed.length} removed</span><span className="pill pill-info">{bomDiff.changed.length} qty changed</span></p>
+                          {bomDiff.added.length > 0 && <DataTable rows={bomDiff.added} getKey={(_, index?: number) => `a${index}`} columns={[{ header: "Added", render: (row) => <span className="mono">{String(row.part_number ?? row.description ?? "?")}</span> }, { header: "Qty", render: (row) => <span className="mono">{String(row.quantity ?? 0)}</span> }]} />}
+                          {bomDiff.removed.length > 0 && <DataTable rows={bomDiff.removed} getKey={(_, index?: number) => `r${index}`} columns={[{ header: "Removed", render: (row) => <span className="mono">{String(row.part_number ?? row.description ?? "?")}</span> }, { header: "Qty", render: (row) => <span className="mono">{String(row.quantity ?? 0)}</span> }]} />}
+                          {bomDiff.changed.length > 0 && <DataTable rows={bomDiff.changed} getKey={(_, index?: number) => `c${index}`} columns={[{ header: "Part", render: (row) => <span className="mono">{row.part_number ?? "?"}</span> }, { header: "Qty", render: (row) => <span className="mono">{row.from_quantity} → {row.to_quantity}</span> }]} />}
+                        </>
+                      )}
+                    </>
+                  ) : <p className="hint">Generate at least two snapshots of a diagram to compare revisions.</p>}
+                </Panel>
+                <Panel title="Project BoM History">
+                  {projectBoms.length ? (
+                    <DataTable rows={projectBoms} getKey={(snapshot) => snapshot.id} columns={[{ header: "Diagram", render: (snapshot) => snapshot.diagram_name }, { header: "Rev", render: (snapshot) => <span className="mono">{snapshot.revision}</span> }, { header: "Status", render: (snapshot) => <StatusPill value={snapshot.status} /> }, { header: "Rows", render: (snapshot) => <span className="mono">{snapshot.rows.length}</span> }, { header: "Created", render: (snapshot) => <span className="mono">{snapshot.created_at ? new Date(snapshot.created_at).toLocaleString() : "—"}</span> }]} />
+                  ) : <p className="hint">No snapshots in this project yet.</p>}
                 </Panel>
               </section>
             </PageLayout>
@@ -1061,7 +1436,60 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         />
         <Route path="/safety" element={<PlaceholderPage title="Safety" body="Hazards, trapped-volume checks, relief scenarios, and FMEA/FHA workflows will be added after the navigation foundation." />} />
         <Route path="/certification" element={<PlaceholderPage title="Certification" body="Compliance packages, evidence status, and generated certification artifacts will live here." />} />
-        <Route path="/settings" element={<PlaceholderPage title="Settings" body="Project settings, unit systems, templates, roles, and controlled vocabularies will live here." />} />
+        <Route
+          path="/settings"
+          element={
+            <PageLayout title="Settings" description="Accounts and configuration">
+              <section className="grid">
+                {isAdmin ? (
+                  <>
+                    <Panel title="Create User">
+                      <form onSubmit={submitUser}>
+                        <TextInput label="Email" value={userForm.email} onChange={(email) => setUserForm({ ...userForm, email })} />
+                        <TextInput label="Name" value={userForm.name} onChange={(name) => setUserForm({ ...userForm, name })} />
+                        <TextInput label="Password" type="password" value={userForm.password} onChange={(password) => setUserForm({ ...userForm, password })} />
+                        <Select label="Role" value={userForm.role} options={roleOptions} onChange={(role) => setUserForm({ ...userForm, role })} />
+                        <FormError message={formErrors.user} />
+                        <button disabled={busy || !userForm.email || !userForm.name || userForm.password.length < 8}>Create user</button>
+                      </form>
+                      <p className="hint">Passwords need at least 8 characters. Viewers are read-only.</p>
+                    </Panel>
+                    <Panel title="Users">
+                      <DataTable
+                        rows={users}
+                        getKey={(account) => account.id}
+                        columns={[
+                          { header: "Email", render: (account) => <span className="mono">{account.email}</span> },
+                          { header: "Name", render: (account) => account.name },
+                          { header: "Role", render: (account) => <StatusPill value={account.role} /> },
+                          { header: "Status", render: (account) => <StatusPill value={account.is_active ? "active" : "inactive"} /> },
+                          {
+                            header: "",
+                            render: (account) => (
+                              <span className="rowActions">
+                                <select value={account.role} onChange={(event) => updateUserAccount(account.id, { role: event.target.value })} disabled={busy || account.id === user.id}>
+                                  {roleOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                </select>
+                                {account.is_active
+                                  ? <button className="danger" disabled={busy || account.id === user.id} onClick={() => updateUserAccount(account.id, { is_active: false })}>Deactivate</button>
+                                  : <button disabled={busy} onClick={() => updateUserAccount(account.id, { is_active: true })}>Activate</button>}
+                              </span>
+                            )
+                          }
+                        ]}
+                      />
+                    </Panel>
+                  </>
+                ) : (
+                  <Panel title="Accounts">
+                    <p className="hint">You are signed in as {user.email} ({user.role}). Ask an administrator to manage accounts.</p>
+                  </Panel>
+                )}
+                <PlaceholderPage title="Project Configuration" body="Unit systems, templates, and controlled vocabularies will live here." />
+              </section>
+            </PageLayout>
+          }
+        />
       </Routes>
     </AppShell>
   );
