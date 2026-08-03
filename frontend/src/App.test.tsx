@@ -37,6 +37,7 @@ describe("App", () => {
     expect(screen.getByText("BoM & Procurement")).toBeInTheDocument();
     expect(screen.getByText("Test Engineer · admin")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Project")).toBeInTheDocument();
   });
 
   it("shows the login page when there is no session", async () => {

@@ -85,6 +85,29 @@ export function FormError({ message }: { message?: string }) {
   return message ? <p className="formError">{message}</p> : null;
 }
 
+const PILL_TONES: Record<string, string> = {
+  preferred: "good",
+  qualified: "info",
+  unqualified: "muted",
+  legacy: "warn",
+  restricted: "bad",
+  certified: "good",
+  in_review: "warn",
+  unreviewed: "muted",
+  rejected: "bad",
+  draft: "muted",
+  approved: "good",
+  released: "good",
+  created: "good",
+  updated: "info",
+  deleted: "bad"
+};
+
+export function StatusPill({ value }: { value: string }) {
+  const tone = PILL_TONES[value] ?? "muted";
+  return <span className={`pill pill-${tone}`}>{value.replaceAll("_", " ")}</span>;
+}
+
 export function DataTable<T>({
   rows,
   columns,

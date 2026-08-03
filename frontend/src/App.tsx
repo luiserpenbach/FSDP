@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import ReactFlow, {
   Background,
+  BackgroundVariant,
   BaseEdge,
   Controls,
   EdgeLabelRenderer,
   Handle,
+  MarkerType,
+  MiniMap,
   NodeResizer,
   Position,
   addEdge,
@@ -19,10 +22,11 @@ import ReactFlow, {
   type NodeChange,
   type NodeProps
 } from "reactflow";
+import { PALETTE_SYMBOLS, PidGlyph, SYMBOL_LABELS } from "./components/PidSymbols";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { api, bomCsvUrl, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
-import { DataTable, FormError, Panel, Select, SummaryCard, TextArea, TextInput } from "./components/ui";
+import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { LoginPage } from "./pages/LoginPage";
 import { PageLayout, PlaceholderPage } from "./pages/PageLayout";
 import type { BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, Requirement, User } from "./types";
@@ -87,8 +91,8 @@ function normalizePidNode(node: Node): Node<PidNodeData> {
     ...node,
     type: "pidSymbol",
     style: {
-      width: 130,
-      height: 76,
+      width: 112,
+      height: 84,
       ...node.style
     },
     data: {
@@ -99,11 +103,14 @@ function normalizePidNode(node: Node): Node<PidNodeData> {
   };
 }
 
+const EDGE_MARKER = { type: MarkerType.ArrowClosed, width: 13, height: 13, color: "#41536b" };
+
 function normalizeOrthogonalEdge(edge: Edge): Edge<OrthogonalEdgeData> {
   const legacyBendX = typeof edge.data?.bendX === "number" ? edge.data.bendX : undefined;
   return {
     ...edge,
     type: "orthogonal",
+    markerEnd: EDGE_MARKER,
     data: {
       ...edge.data,
       bendX: legacyBendX,
@@ -140,15 +147,15 @@ function PidSymbolNode({
   }
 
   return (
-    <div className="pidSymbolNode">
-      <NodeResizer isVisible={selected} minWidth={70} minHeight={44} onResizeEnd={onDirty} />
+    <div className={selected ? "pidSymbolNode selected" : "pidSymbolNode"}>
+      <NodeResizer isVisible={selected} minWidth={80} minHeight={56} onResizeEnd={onDirty} />
       <Handle type="target" position={Position.Left} />
       <Handle type="target" position={Position.Top} />
       <div className="pidSymbolBody" style={{ transform: `rotate(${data.rotation}deg)` }}>
-        <span className={`pidGlyph ${data.symbolType}`}>{data.symbolType.slice(0, 1).toUpperCase()}</span>
+        <PidGlyph type={data.symbolType} />
       </div>
       <button className="rotateHandle" onClick={rotateSymbol} title="Rotate symbol 90 degrees" type="button">
-        Rotate
+        &#8635;
       </button>
       <div className="pidSymbolLabel">{data.label}</div>
       <Handle type="source" position={Position.Right} />
@@ -165,6 +172,7 @@ function OrthogonalEdge({
   targetY,
   markerEnd,
   selected,
+  label,
   data,
   onDirty
 }: EdgeProps<OrthogonalEdgeData> & { onDirty: () => void }) {
@@ -216,11 +224,19 @@ function OrthogonalEdge({
         markerEnd={markerEnd}
         path={path}
         style={{
-          stroke: selected ? "#1f5eff" : "#26364d",
-          strokeWidth: selected ? 3 : 2.4
+          stroke: selected ? "#2257c4" : "#41536b",
+          strokeWidth: selected ? 2.4 : 1.8
         }}
       />
       <EdgeLabelRenderer>
+        {label ? (
+          <div
+            className="edgeLabelChip"
+            style={{ transform: `translate(-50%, -100%) translate(${(startX + endX) / 2}px, ${bendY - 6}px)` }}
+          >
+            {String(label)}
+          </div>
+        ) : null}
         <div
           className="edgeBendHandle vertical"
           onPointerDown={(event) => beginDrag(event, (position) => ({ startX: position.x, bendX: undefined }))}
@@ -512,7 +528,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function onConnect(connection: Connection) {
     setGraphDirty(true);
-    setEdges((current) => addEdge({ ...connection, type: "orthogonal", label: "New line" }, current));
+    setEdges((current) =>
+      addEdge({ ...connection, type: "orthogonal", label: "New line", markerEnd: EDGE_MARKER }, current)
+    );
   }
 
   function confirmDiscardUnsaved(): boolean {
@@ -691,9 +709,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       {
         id,
         type: "pidSymbol",
-        position: { x: 120 + nodes.length * 35, y: 180 + nodes.length * 15 },
-        style: { width: 120, height: 72 },
-        data: { label: kind[0].toUpperCase() + kind.slice(1), symbolType: kind, rotation: 0 }
+        position: { x: 120 + nodes.length * 40, y: 180 + nodes.length * 20 },
+        style: { width: 112, height: 84 },
+        data: { label: SYMBOL_LABELS[kind] ?? kind, symbolType: kind, rotation: 0 }
       }
     ]);
     setSelectedNodeId(id);
@@ -881,8 +899,12 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     {selectedDiagram && <span className={graphDirty ? "dirtyBadge" : "cleanBadge"}>{graphDirty ? "Unsaved changes" : "Saved"}</span>}
                   </div>
                   <div className="nodePalette">
-                    {["valve", "sensor", "regulator", "filter", "source", "sink"].map((kind) => (
-                      <button key={kind} onClick={() => addGraphNode(kind)}>{kind}</button>
+                    <span className="paletteLabel">Symbols</span>
+                    {PALETTE_SYMBOLS.map((kind) => (
+                      <button className="paletteItem" key={kind} onClick={() => addGraphNode(kind)} type="button">
+                        <span className="paletteGlyph"><PidGlyph type={kind} /></span>
+                        <span>{SYMBOL_LABELS[kind] ?? kind}</span>
+                      </button>
                     ))}
                   </div>
                   <div className="diagram">
@@ -896,9 +918,18 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                       onConnect={onConnect}
                       onNodeClick={(_, node) => setSelectedNodeId(node.id)}
                       onEdgeClick={(_, edge) => setSelectedEdgeId(edge.id)}
+                      snapToGrid
+                      snapGrid={[10, 10]}
                       fitView
                     >
-                      <Background />
+                      <Background color="#c3cede" gap={14} size={1.4} variant={BackgroundVariant.Dots} />
+                      <MiniMap
+                        maskColor="rgba(238, 241, 245, 0.7)"
+                        nodeColor="#c8d4e4"
+                        nodeStrokeColor="#41536b"
+                        pannable
+                        zoomable
+                      />
                       <Controls />
                     </ReactFlow>
                   </div>
@@ -951,7 +982,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                   <div className="buttonRow"><button disabled={!selectedPart} onClick={updatePart}>Update selected</button><button className="danger" disabled={!selectedPart} onClick={deletePart}>Delete selected</button></div>
                 </Panel>
                 <Panel title="Parts">
-                  <DataTable rows={parts} selectedKey={selectedPartId} getKey={(part) => part.id} onSelect={(part) => setSelectedPartId(part.id)} columns={[{ header: "Part", render: (part) => part.part_number }, { header: "Type", render: (part) => part.part_type }, { header: "Material", render: (part) => part.material ?? "-" }, { header: "Pressure", render: (part) => part.pressure_rating_bar ?? "-" }]} />
+                  <DataTable rows={parts} selectedKey={selectedPartId} getKey={(part) => part.id} onSelect={(part) => setSelectedPartId(part.id)} columns={[{ header: "Part", render: (part) => <span className="mono">{part.part_number}</span> }, { header: "Type", render: (part) => part.part_type }, { header: "Material", render: (part) => part.material ?? "—" }, { header: "Bar", render: (part) => <span className="mono">{part.pressure_rating_bar ?? "—"}</span> }, { header: "Qualification", render: (part) => <StatusPill value={part.qualification_status} /> }]} />
                 </Panel>
               </section>
             </PageLayout>
@@ -975,7 +1006,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                   <div className="buttonRow"><button disabled={!selectedRequirement} onClick={updateRequirement}>Update selected</button><button className="danger" disabled={!selectedRequirement} onClick={deleteRequirement}>Delete selected</button></div>
                 </Panel>
                 <Panel title="Requirements">
-                  <DataTable rows={requirements} selectedKey={selectedRequirementId} getKey={(requirement) => requirement.id} onSelect={(requirement) => setSelectedRequirementId(requirement.id)} columns={[{ header: "Key", render: (requirement) => requirement.key }, { header: "Title", render: (requirement) => requirement.title }, { header: "Type", render: (requirement) => requirement.requirement_type }]} />
+                  <DataTable rows={requirements} selectedKey={selectedRequirementId} getKey={(requirement) => requirement.id} onSelect={(requirement) => setSelectedRequirementId(requirement.id)} columns={[{ header: "Key", render: (requirement) => <span className="mono">{requirement.key}</span> }, { header: "Title", render: (requirement) => requirement.title }, { header: "Type", render: (requirement) => requirement.requirement_type }, { header: "Status", render: (requirement) => <StatusPill value={requirement.status} /> }]} />
                 </Panel>
                 <Panel title="Trace Links">
                   <Select label="Component" value={selectedComponentId} options={components.map((component) => ({ value: component.id, label: component.tag }))} onChange={setSelectedComponentId} />
@@ -995,7 +1026,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
               <section className="grid">
                 <Panel title="BoM Snapshot">
                   <button disabled={busy || !selectedDiagram} onClick={generateBom}>Generate BoM</button>
-                  {bom ? <><p>Snapshot revision {bom.revision}, {bom.rows.length} row(s)</p><a href={bomCsvUrl(bom.id)}>Download CSV</a><DataTable rows={bom.rows} getKey={(_, index?: number) => String(index)} columns={[{ header: "Part", render: (row) => String(row.part_number ?? "Unresolved") }, { header: "Description", render: (row) => String(row.description ?? "") }, { header: "Qty", render: (row) => String(row.quantity ?? 0) }]} /></> : <p className="hint">Open a diagram and generate a BoM snapshot.</p>}
+                  {bom ? <><p className="snapshotMeta">Snapshot revision <span className="mono">{bom.revision}</span> · {bom.rows.length} row(s) · <StatusPill value={bom.status} /></p><a className="downloadLink" href={bomCsvUrl(bom.id)}>Download CSV</a><DataTable rows={bom.rows} getKey={(_, index?: number) => String(index)} columns={[{ header: "Part", render: (row) => <span className="mono">{String(row.part_number ?? "Unresolved")}</span> }, { header: "Description", render: (row) => String(row.description ?? "") }, { header: "Material", render: (row) => String(row.material ?? "—") }, { header: "Qty", render: (row) => <span className="mono">{String(row.quantity ?? 0)}</span> }]} /></> : <p className="hint">Open a diagram and generate a BoM snapshot.</p>}
                 </Panel>
               </section>
             </PageLayout>
@@ -1016,10 +1047,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     rows={changes}
                     getKey={(change) => change.id}
                     columns={[
-                      { header: "Summary", render: (change) => change.summary },
-                      { header: "Action", render: (change) => change.action },
-                      { header: "Actor", render: (change) => change.actor ?? "-" },
-                      { header: "When", render: (change) => new Date(change.created_at).toLocaleString() }
+                      { header: "Summary", render: (change) => <span className="clamp" title={change.summary}>{change.summary}</span> },
+                      { header: "Action", render: (change) => <StatusPill value={change.action} /> },
+                      { header: "Actor", render: (change) => <span className="mono">{change.actor ?? "—"}</span> },
+                      { header: "When", render: (change) => <span className="mono">{new Date(change.created_at).toLocaleString()}</span> }
                     ]}
                   />
                 </Panel>

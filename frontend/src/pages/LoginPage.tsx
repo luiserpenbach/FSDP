@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { api } from "../api";
+import { Brand } from "../components/AppShell";
 import { FormError, TextInput } from "../components/ui";
 import type { User } from "../types";
 
@@ -24,23 +25,20 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
 
   return (
     <div className="authScreen">
-      <form className="loginCard" onSubmit={submit}>
-        <div className="brand">
-          <span className="brandMark">F</span>
-          <div>
-            <strong>FSDP</strong>
-            <small>Fluid Systems</small>
-          </div>
-        </div>
-        <h1>Sign in</h1>
-        <p className="hint">Use your FSDP account. Ask an administrator if you need one.</p>
-        <TextInput label="Email" value={email} onChange={setEmail} />
-        <TextInput label="Password" type="password" value={password} onChange={setPassword} />
-        <FormError message={error} />
-        <button disabled={busy || !email.trim() || !password}>
-          {busy ? "Signing in..." : "Sign in"}
-        </button>
-      </form>
+      <div className="loginPanel">
+        <form className="loginCard" onSubmit={submit}>
+          <Brand />
+          <h1>Sign in</h1>
+          <p className="hint">Use your FSDP account. Ask an administrator if you need one.</p>
+          <TextInput label="Email" value={email} onChange={setEmail} />
+          <TextInput label="Password" type="password" value={password} onChange={setPassword} />
+          <FormError message={error} />
+          <button disabled={busy || !email.trim() || !password}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+        <p className="loginFootnote">Fluid Systems Development Platform · connected engineering data</p>
+      </div>
     </div>
   );
 }

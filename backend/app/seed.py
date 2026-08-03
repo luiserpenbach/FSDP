@@ -152,7 +152,7 @@ def build_graph_json() -> dict:
             "id": external_id,
             "type": "pidSymbol",
             "position": {"x": x, "y": y},
-            "style": {"width": 140, "height": 78},
+            "style": {"width": 112, "height": 84},
             "data": {"label": label, "symbolType": symbol_type, "rotation": 0},
         }
         for external_id, symbol_type, label, x, y, _tag, _part in NODES

@@ -8,6 +8,25 @@ export type NavItem = {
   description: string;
 };
 
+export function Brand() {
+  return (
+    <div className="brand">
+      <span className="brandMark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 12 h4" />
+          <path d="M6 8 L12 12 L6 16 Z" />
+          <path d="M18 8 L12 12 L18 16 Z" />
+          <path d="M18 12 h4" />
+        </svg>
+      </span>
+      <div>
+        <strong>FSDP</strong>
+        <small>Fluid Systems</small>
+      </div>
+    </div>
+  );
+}
+
 export function AppShell({
   children,
   navItems,
@@ -40,13 +59,7 @@ export function AppShell({
   return (
     <div className="appShell">
       <aside className="sidebar">
-        <div className="brand">
-          <span className="brandMark">F</span>
-          <div>
-            <strong>FSDP</strong>
-            <small>Fluid Systems</small>
-          </div>
-        </div>
+        <Brand />
         <nav className="sideNav" aria-label="Primary navigation">
           {navItems.map((item) => (
             <NavLink className={({ isActive }) => (isActive ? "navItem active" : "navItem")} key={item.path} to={item.path}>
@@ -62,11 +75,11 @@ export function AppShell({
           <div className="contextSelectors">
             <Select label="Project" value={projectValue} options={projectOptions} onChange={onProjectChange} />
             <Select label="System" value={systemValue} options={systemOptions} onChange={onSystemChange} />
-            <div className="searchBox">Search parts, requirements, diagrams...</div>
           </div>
           <div className="statusStack">
-            <span className="status">{busy ? "Working..." : message}</span>
-            {error && <span className="error">{error}</span>}
+            <span className={error ? "status statusError" : "status"}>
+              {busy ? "Working…" : error || message}
+            </span>
           </div>
           <div className="userBox">
             <span className="userLabel">{userLabel}</span>
