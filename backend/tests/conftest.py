@@ -6,13 +6,21 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import hash_password
 from app.db import get_db
 from app.main import app
-from app.models import Base
+from app.models import Base, User
+
+TEST_USER_EMAIL = "engineer@fsdp.test"
+TEST_USER_PASSWORD = "fsdp-test-password"
+
+# Hash once per test session; bcrypt is intentionally slow.
+_TEST_PASSWORD_HASH = hash_password(TEST_USER_PASSWORD)
 
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
+    """Authenticated (admin) API client backed by an in-memory database."""
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -30,6 +38,17 @@ def client() -> Generator[TestClient, None, None]:
     Base.metadata.create_all(engine)
     session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
+    with session_local() as db:
+        db.add(
+            User(
+                email=TEST_USER_EMAIL,
+                name="Test Engineer",
+                password_hash=_TEST_PASSWORD_HASH,
+                role="admin",
+            )
+        )
+        db.commit()
+
     def override_get_db() -> Generator[Session, None, None]:
         db = session_local()
         try:
@@ -39,7 +58,12 @@ def client() -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        yield TestClient(app)
+        test_client = TestClient(app)
+        login = test_client.post(
+            "/auth/login", json={"email": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD}
+        )
+        assert login.status_code == 200, login.text
+        yield test_client
     finally:
         app.dependency_overrides.clear()
         Base.metadata.drop_all(engine)

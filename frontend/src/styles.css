@@ -626,3 +626,58 @@ tbody tr:hover,
     display: block;
   }
 }
+
+.authScreen {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.loginCard {
+  background: white;
+  border: 1px solid #d7dfec;
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(22, 32, 51, 0.08);
+  max-width: 360px;
+  padding: 28px;
+  width: 100%;
+}
+
+.loginCard h1 {
+  font-size: 1.3rem;
+  margin: 18px 0 4px;
+}
+
+.loginCard .hint {
+  color: #64748b;
+  font-size: 0.85rem;
+  margin-bottom: 14px;
+}
+
+.loginCard button {
+  margin-top: 12px;
+  width: 100%;
+}
+
+.userBox {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.userLabel {
+  color: #40516a;
+  font-size: 0.85rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+button.signOut {
+  background: transparent;
+  border: 1px solid #c8d1e1;
+  color: #40516a;
+  font-weight: 600;
+  margin: 0;
+  padding: 6px 10px;
+}

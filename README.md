@@ -15,8 +15,24 @@ FSDP is a greenfield web platform for connected fluid-system design data. The MV
 - Frontend: React, TypeScript, Vite, React Flow
 - Local infrastructure: Docker Compose PostgreSQL
 
+## Authentication
+
+All API routes (except `/health` and `/auth/login`) require a signed-in user. Sessions are
+JWTs stored in an httpOnly cookie; the frontend shows a login page until a session exists.
+
+- Configure the backend via environment variables with the `FSDP_` prefix
+  (see `backend/.env.example`). At minimum set a strong `FSDP_SECRET_KEY` in any
+  real deployment, and `FSDP_SESSION_COOKIE_SECURE=true` when serving over HTTPS.
+- The first admin account is created automatically at startup from
+  `FSDP_ADMIN_EMAIL` / `FSDP_ADMIN_PASSWORD` (idempotent; skipped if unset).
+- Admins manage further accounts via `POST /auth/users`, `GET /auth/users`, and
+  `PUT /auth/users/{id}` (roles: `admin`, `engineer`, `viewer`).
+- Every create/update/delete is recorded in the change log with the acting user;
+  recent changes are visible on the Reviews page and via `GET /changes`.
+
 ## Current MVP Capabilities
 
+- Sign in/out with per-user accounts and an actor-stamped change history.
 - Create, select, update, and delete projects and fluid systems.
 - Create, reopen, rename, delete, edit, and save P&ID diagrams.
 - Persist React Flow graph data and normalized diagram nodes/edges.
@@ -42,8 +58,13 @@ FSDP is a greenfield web platform for connected fluid-system design data. The MV
    .\.venv\Scripts\Activate.ps1
    pip install -e ".[dev]"
    alembic upgrade head
+   $env:FSDP_ADMIN_EMAIL = "you@example.com"
+   $env:FSDP_ADMIN_PASSWORD = "a-strong-local-password"
    uvicorn app.main:app --reload
    ```
+
+   The admin variables seed your first login; afterwards create additional users
+   from the API (`POST /auth/users`).
 
 3. Run frontend commands from `frontend/`:
 

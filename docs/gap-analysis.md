@@ -219,8 +219,17 @@ No `.github/workflows`. Add one workflow running: `ruff check`, `pytest`, `tsc -
 6. F5 stop hardcoding qualification status (default `unqualified`, editable); F6 numeric field parsing.
 7. B9 CSV `Content-Disposition` + richer columns.
 
-### Phase 1 — Authentication (≈2–3 days)
+### Phase 1 — Authentication (≈2–3 days) — ✅ IMPLEMENTED
 Users table + migration, password hashing, cookie JWT sessions, auth dependency across routers, login page + session handling + 401 redirect in frontend, actor stamping in `record_change`, `.env.example` + secret settings, delete auditing (closes B8), read endpoint for change history.
+
+> Status 2026-08-03: implemented. bcrypt password hashing, JWT httpOnly-cookie sessions
+> (`SameSite=Lax`, TTL/secure-flag configurable), all API routes locked behind
+> `get_current_user`, admin-only user management (`/auth/users`, roles admin/engineer/viewer),
+> bootstrap admin from `FSDP_ADMIN_EMAIL`/`FSDP_ADMIN_PASSWORD`, actor-stamped audit trail
+> including deletions (B8 closed), `GET /changes` + Recent Changes panel, login page with
+> session check and sign-out, parsed API error messages (closes F9). Covered by
+> `backend/tests/test_auth.py`. Remaining for later phases: per-role write restrictions
+> (viewer is currently read/write like engineer), gating `/docs` in production.
 
 ### Phase 2 — Deployability (≈1–2 days)
 Backend Dockerfile (+migrations on boot), compose `api`/`web` services, `/api` route prefix, `vercel.json` (SPA rewrite + API proxy), Neon + backend host for demo, seed-data script, GitHub Actions CI, pinned frontend dependencies, health check with DB ping, Tailscale serve runbook in `infra/`, pg_dump backup cron.

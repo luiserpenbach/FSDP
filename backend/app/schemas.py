@@ -19,6 +19,86 @@ class OrmModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+VALID_USER_ROLES = {"admin", "engineer", "viewer"}
+
+
+def clean_email(value: str) -> str:
+    cleaned = value.strip().lower()
+    if len(cleaned) < 3 or "@" not in cleaned or " " in cleaned:
+        raise ValueError("must be a valid email address")
+    return cleaned
+
+
+def clean_role(value: str) -> str:
+    if value not in VALID_USER_ROLES:
+        raise ValueError("must be one of: " + ", ".join(sorted(VALID_USER_ROLES)))
+    return value
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class UserCreate(BaseModel):
+    email: str
+    name: str
+    password: str = Field(min_length=8, max_length=72)
+    role: str = "engineer"
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, value: str) -> str:
+        return clean_email(value)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("role")
+    @classmethod
+    def _role(cls, value: str) -> str:
+        return clean_role(value)
+
+
+class UserUpdate(BaseModel):
+    name: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=72)
+    role: str | None = None
+    is_active: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+    @field_validator("role")
+    @classmethod
+    def _role(cls, value: str | None) -> str | None:
+        return None if value is None else clean_role(value)
+
+
+class UserRead(OrmModel):
+    id: str
+    email: str
+    name: str
+    role: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class ChangeEventRead(OrmModel):
+    id: str
+    object_type: str
+    object_id: str
+    action: str
+    summary: str
+    actor: str | None
+    created_at: datetime
+
+
 class ProjectCreate(BaseModel):
     name: str
     description: str | None = None

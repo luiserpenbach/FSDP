@@ -5,9 +5,11 @@ description = "FastAPI backend for the Fluid Systems Development Platform MVP."
 requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.13",
+  "bcrypt>=4.1",
   "fastapi>=0.115",
   "psycopg[binary]>=3.2",
   "pydantic-settings>=2.6",
+  "pyjwt>=2.7",
   "sqlalchemy>=2.0",
   "uvicorn[standard]>=0.32"
 ]

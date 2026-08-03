@@ -285,6 +285,7 @@ Deferred from the first implementation:
 
 Implemented as of the current MVP:
 
+- User accounts with sign-in, roles (admin/engineer/viewer), and an actor-stamped change history.
 - Project creation, selection, update, and delete.
 - Fluid system creation, selection, update, and delete.
 - P&ID diagram creation, listing, reopening, renaming, deletion, and saved graph restoration.
@@ -305,4 +306,4 @@ Not yet implemented:
 - Hazard objects and hazard reports.
 - Verification matrix UI.
 - Certification package generation beyond export stubs.
-- User accounts, permissions, and review workflows.
+- Per-role write restrictions and review/approval workflows.

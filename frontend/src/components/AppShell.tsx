@@ -19,7 +19,9 @@ export function AppShell({
   onSystemChange,
   busy,
   message,
-  error
+  error,
+  userLabel,
+  onSignOut
 }: {
   children: ReactNode;
   navItems: NavItem[];
@@ -32,6 +34,8 @@ export function AppShell({
   busy: boolean;
   message: string;
   error: string;
+  userLabel: string;
+  onSignOut: () => void;
 }) {
   return (
     <div className="appShell">
@@ -63,6 +67,10 @@ export function AppShell({
           <div className="statusStack">
             <span className="status">{busy ? "Working..." : message}</span>
             {error && <span className="error">{error}</span>}
+          </div>
+          <div className="userBox">
+            <span className="userLabel">{userLabel}</span>
+            <button className="signOut" onClick={onSignOut} type="button">Sign out</button>
           </div>
         </header>
         {children}

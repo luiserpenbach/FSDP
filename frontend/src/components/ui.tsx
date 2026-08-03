@@ -22,16 +22,18 @@ export function SummaryCard({ title, value, detail }: { title: string; value: nu
 export function TextInput({
   label,
   value,
-  onChange
+  onChange,
+  type = "text"
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
+  type?: string;
 }) {
   return (
     <label>
       {label}
-      <input value={value} onChange={(event) => onChange(event.target.value)} />
+      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} />
     </label>
   );
 }

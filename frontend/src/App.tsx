@@ -20,11 +20,12 @@ import ReactFlow, {
   type NodeProps
 } from "reactflow";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
-import { api, bomCsvUrl } from "./api";
+import { api, bomCsvUrl, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, SummaryCard, TextArea, TextInput } from "./components/ui";
+import { LoginPage } from "./pages/LoginPage";
 import { PageLayout, PlaceholderPage } from "./pages/PageLayout";
-import type { BomSnapshot, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, Requirement } from "./types";
+import type { BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, Requirement, User } from "./types";
 
 type PidNodeData = {
   label: string;
@@ -246,12 +247,47 @@ function OrthogonalEdge({
 export function App() {
   return (
     <BrowserRouter>
-      <WorkspaceApp />
+      <AuthGate />
     </BrowserRouter>
   );
 }
 
-function WorkspaceApp() {
+function AuthGate() {
+  const [user, setUser] = useState<User | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  useEffect(() => {
+    setUnauthorizedHandler(() => setUser(null));
+    api
+      .me()
+      .then(setUser)
+      .catch(() => setUser(null))
+      .finally(() => setCheckingSession(false));
+    return () => setUnauthorizedHandler(null);
+  }, []);
+
+  async function signOut() {
+    try {
+      await api.logout();
+    } finally {
+      setUser(null);
+    }
+  }
+
+  if (checkingSession) {
+    return (
+      <div className="authScreen">
+        <p className="hint">Checking session...</p>
+      </div>
+    );
+  }
+  if (!user) {
+    return <LoginPage onLogin={setUser} />;
+  }
+  return <WorkspaceApp user={user} onSignOut={() => void signOut()} />;
+}
+
+function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [systems, setSystems] = useState<FluidSystem[]>([]);
   const [diagrams, setDiagrams] = useState<Diagram[]>([]);
@@ -260,6 +296,7 @@ function WorkspaceApp() {
   const [components, setComponents] = useState<ComponentInstance[]>([]);
   const [bom, setBom] = useState<BomSnapshot | null>(null);
   const [impact, setImpact] = useState<Impact | null>(null);
+  const [changes, setChanges] = useState<ChangeLogEvent[]>([]);
 
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedSystemId, setSelectedSystemId] = useState("");
@@ -322,6 +359,9 @@ function WorkspaceApp() {
       const next = await api.listParts();
       setParts(next);
       setSelectedPartId((current) => current || next[0]?.id || "");
+    });
+    void runAction("Loaded change history.", async () => {
+      setChanges(await api.listChanges());
     });
   }, []);
 
@@ -745,6 +785,12 @@ function WorkspaceApp() {
     });
   }
 
+  function refreshChanges() {
+    void runAction("Refreshed change history.", async () => {
+      setChanges(await api.listChanges());
+    });
+  }
+
   const projectOptions = projects.map((project) => ({ value: project.id, label: project.name }));
   const systemOptions = systems.map((system) => ({ value: system.id, label: system.name }));
 
@@ -760,6 +806,8 @@ function WorkspaceApp() {
       busy={busy}
       message={message}
       error={error}
+      userLabel={`${user.name} · ${user.role}`}
+      onSignOut={onSignOut}
     >
       <Routes>
         <Route path="/" element={<Navigate to="/dashboard" replace />} />
@@ -961,6 +1009,19 @@ function WorkspaceApp() {
                 <Panel title="Change Impact">
                   <button disabled={!selectedPart && !selectedComponent} onClick={inspectImpact}>Inspect impact</button>
                   {impact && <div className="impact"><p>{impact.direct_links.length} trace links, {impact.affected_components.length} components, {impact.affected_bom_snapshots.length} BoM snapshots affected.</p></div>}
+                </Panel>
+                <Panel title="Recent Changes">
+                  <button disabled={busy} onClick={refreshChanges}>Refresh</button>
+                  <DataTable
+                    rows={changes}
+                    getKey={(change) => change.id}
+                    columns={[
+                      { header: "Summary", render: (change) => change.summary },
+                      { header: "Action", render: (change) => change.action },
+                      { header: "Actor", render: (change) => change.actor ?? "-" },
+                      { header: "When", render: (change) => new Date(change.created_at).toLocaleString() }
+                    ]}
+                  />
                 </Panel>
                 <PlaceholderPage title="Review Workflows" body="Design review packages, comments, decisions, and approval routing will live here." />
               </section>

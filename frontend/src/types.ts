@@ -1,3 +1,21 @@
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  is_active: boolean;
+};
+
+export type ChangeEvent = {
+  id: string;
+  object_type: string;
+  object_id: string;
+  action: string;
+  summary: string;
+  actor?: string | null;
+  created_at: string;
+};
+
 export type Project = {
   id: string;
   name: string;

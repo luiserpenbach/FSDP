@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.security import get_current_user
 from app.db import get_db
 from app.models import (
     BomSnapshot,
@@ -19,9 +20,11 @@ from app.models import (
     Project,
     Requirement,
     TraceLink,
+    User,
 )
 from app.schemas import (
     BomSnapshotRead,
+    ChangeEventRead,
     ComponentInstanceCreate,
     ComponentInstanceRead,
     ComponentInstanceUpdate,
@@ -59,9 +62,22 @@ def require_model(db: Session, model: type, object_id: str):
     return item
 
 
-def record_change(db: Session, object_type: str, object_id: str, action: str, summary: str) -> None:
+def record_change(
+    db: Session,
+    object_type: str,
+    object_id: str,
+    action: str,
+    summary: str,
+    actor: str | None = None,
+) -> None:
     db.add(
-        ChangeEvent(object_type=object_type, object_id=object_id, action=action, summary=summary)
+        ChangeEvent(
+            object_type=object_type,
+            object_id=object_id,
+            action=action,
+            summary=summary,
+            actor=actor,
+        )
     )
 
 
@@ -82,7 +98,11 @@ def normalized_column(column):
 
 
 @router.post("/projects", response_model=ProjectRead, status_code=201)
-def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Project:
+def create_project(
+    payload: ProjectCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Project:
     clean_name = payload.name.strip()
     if not clean_name:
         raise HTTPException(status_code=422, detail="Project name cannot be blank")
@@ -96,7 +116,9 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     project = Project(**{**payload.model_dump(), "name": clean_name})
     db.add(project)
     db.flush()
-    record_change(db, "project", project.id, "created", f"Created project {project.name}")
+    record_change(
+        db, "project", project.id, "created", f"Created project {project.name}", actor=user.email
+    )
     db.commit()
     db.refresh(project)
     return project
@@ -114,7 +136,10 @@ def get_project(project_id: str, db: Session = Depends(get_db)) -> Project:
 
 @router.put("/projects/{project_id}", response_model=ProjectRead)
 def update_project(
-    project_id: str, payload: ProjectUpdate, db: Session = Depends(get_db)
+    project_id: str,
+    payload: ProjectUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> Project:
     project = require_model(db, Project, project_id)
     if payload.name is not None:
@@ -133,15 +158,24 @@ def update_project(
         payload.name = clean_name
 
     apply_updates(project, payload)
-    record_change(db, "project", project.id, "updated", f"Updated project {project.name}")
+    record_change(
+        db, "project", project.id, "updated", f"Updated project {project.name}", actor=user.email
+    )
     db.commit()
     db.refresh(project)
     return project
 
 
 @router.delete("/projects/{project_id}", status_code=204)
-def delete_project(project_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_project(
+    project_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
     project = require_model(db, Project, project_id)
+    record_change(
+        db, "project", project.id, "deleted", f"Deleted project {project.name}", actor=user.email
+    )
     db.delete(project)
     db.commit()
     return Response(status_code=204)
@@ -149,7 +183,10 @@ def delete_project(project_id: str, db: Session = Depends(get_db)) -> Response:
 
 @router.post("/projects/{project_id}/systems", response_model=FluidSystemRead, status_code=201)
 def create_system(
-    project_id: str, payload: FluidSystemCreate, db: Session = Depends(get_db)
+    project_id: str,
+    payload: FluidSystemCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> FluidSystem:
     require_model(db, Project, project_id)
     clean_name = payload.name.strip()
@@ -168,7 +205,9 @@ def create_system(
     system = FluidSystem(project_id=project_id, **{**payload.model_dump(), "name": clean_name})
     db.add(system)
     db.flush()
-    record_change(db, "fluid_system", system.id, "created", f"Created system {system.name}")
+    record_change(
+        db, "fluid_system", system.id, "created", f"Created system {system.name}", actor=user.email
+    )
     db.commit()
     db.refresh(system)
     return system
@@ -182,7 +221,10 @@ def list_systems(project_id: str, db: Session = Depends(get_db)) -> list[FluidSy
 
 @router.put("/systems/{system_id}", response_model=FluidSystemRead)
 def update_system(
-    system_id: str, payload: FluidSystemUpdate, db: Session = Depends(get_db)
+    system_id: str,
+    payload: FluidSystemUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> FluidSystem:
     system = require_model(db, FluidSystem, system_id)
     if payload.name is not None:
@@ -202,15 +244,24 @@ def update_system(
         payload.name = clean_name
 
     apply_updates(system, payload)
-    record_change(db, "fluid_system", system.id, "updated", f"Updated system {system.name}")
+    record_change(
+        db, "fluid_system", system.id, "updated", f"Updated system {system.name}", actor=user.email
+    )
     db.commit()
     db.refresh(system)
     return system
 
 
 @router.delete("/systems/{system_id}", status_code=204)
-def delete_system(system_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_system(
+    system_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
     system = require_model(db, FluidSystem, system_id)
+    record_change(
+        db, "fluid_system", system.id, "deleted", f"Deleted system {system.name}", actor=user.email
+    )
     db.delete(system)
     db.commit()
     return Response(status_code=204)
@@ -218,7 +269,10 @@ def delete_system(system_id: str, db: Session = Depends(get_db)) -> Response:
 
 @router.post("/systems/{system_id}/diagrams", response_model=DiagramRead, status_code=201)
 def create_diagram(
-    system_id: str, payload: DiagramCreate, db: Session = Depends(get_db)
+    system_id: str,
+    payload: DiagramCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> Diagram:
     require_model(db, FluidSystem, system_id)
     existing = db.scalar(
@@ -233,7 +287,9 @@ def create_diagram(
     diagram = Diagram(system_id=system_id, graph={"nodes": [], "edges": []}, **payload.model_dump())
     db.add(diagram)
     db.flush()
-    record_change(db, "diagram", diagram.id, "created", f"Created diagram {diagram.name}")
+    record_change(
+        db, "diagram", diagram.id, "created", f"Created diagram {diagram.name}", actor=user.email
+    )
     db.commit()
     db.refresh(diagram)
     return diagram
@@ -252,7 +308,10 @@ def get_diagram(diagram_id: str, db: Session = Depends(get_db)) -> Diagram:
 
 @router.put("/diagrams/{diagram_id}", response_model=DiagramRead)
 def update_diagram(
-    diagram_id: str, payload: DiagramUpdate, db: Session = Depends(get_db)
+    diagram_id: str,
+    payload: DiagramUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> Diagram:
     diagram = require_model(db, Diagram, diagram_id)
     if payload.name is not None:
@@ -267,15 +326,24 @@ def update_diagram(
             raise HTTPException(status_code=409, detail="Diagram name already exists in system")
 
     apply_updates(diagram, payload)
-    record_change(db, "diagram", diagram.id, "updated", f"Updated diagram {diagram.name}")
+    record_change(
+        db, "diagram", diagram.id, "updated", f"Updated diagram {diagram.name}", actor=user.email
+    )
     db.commit()
     db.refresh(diagram)
     return diagram
 
 
 @router.delete("/diagrams/{diagram_id}", status_code=204)
-def delete_diagram(diagram_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_diagram(
+    diagram_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
     diagram = require_model(db, Diagram, diagram_id)
+    record_change(
+        db, "diagram", diagram.id, "deleted", f"Deleted diagram {diagram.name}", actor=user.email
+    )
     db.delete(diagram)
     db.commit()
     return Response(status_code=204)
@@ -283,7 +351,10 @@ def delete_diagram(diagram_id: str, db: Session = Depends(get_db)) -> Response:
 
 @router.put("/diagrams/{diagram_id}/graph", response_model=DiagramRead)
 def update_diagram_graph(
-    diagram_id: str, payload: DiagramGraphUpdate, db: Session = Depends(get_db)
+    diagram_id: str,
+    payload: DiagramGraphUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> Diagram:
     diagram = require_model(db, Diagram, diagram_id)
 
@@ -347,14 +418,20 @@ def update_diagram_graph(
         if node is not None:
             component.node_id = node.id
 
-    record_change(db, "diagram", diagram.id, "updated", f"Updated graph for {diagram.name}")
+    record_change(
+        db, "diagram", diagram.id, "updated", f"Updated graph for {diagram.name}", actor=user.email
+    )
     db.commit()
     db.refresh(diagram)
     return diagram
 
 
 @router.post("/parts", response_model=PartRead, status_code=201)
-def create_part(payload: PartCreate, db: Session = Depends(get_db)) -> Part:
+def create_part(
+    payload: PartCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Part:
     existing = db.scalar(select(Part).where(Part.part_number == payload.part_number))
     if existing:
         raise HTTPException(status_code=409, detail="Part number already exists")
@@ -364,7 +441,9 @@ def create_part(payload: PartCreate, db: Session = Depends(get_db)) -> Part:
     part = Part(**data)
     db.add(part)
     db.flush()
-    record_change(db, "part", part.id, "created", f"Created part {part.part_number}")
+    record_change(
+        db, "part", part.id, "created", f"Created part {part.part_number}", actor=user.email
+    )
     db.commit()
     db.refresh(part)
     return part
@@ -399,7 +478,12 @@ def get_part(part_id: str, db: Session = Depends(get_db)) -> Part:
 
 
 @router.put("/parts/{part_id}", response_model=PartRead)
-def update_part(part_id: str, payload: PartUpdate, db: Session = Depends(get_db)) -> Part:
+def update_part(
+    part_id: str,
+    payload: PartUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Part:
     part = require_model(db, Part, part_id)
     if payload.part_number:
         existing = db.scalar(
@@ -409,14 +493,20 @@ def update_part(part_id: str, payload: PartUpdate, db: Session = Depends(get_db)
             raise HTTPException(status_code=409, detail="Part number already exists")
 
     apply_updates(part, payload)
-    record_change(db, "part", part.id, "updated", f"Updated part {part.part_number}")
+    record_change(
+        db, "part", part.id, "updated", f"Updated part {part.part_number}", actor=user.email
+    )
     db.commit()
     db.refresh(part)
     return part
 
 
 @router.delete("/parts/{part_id}", status_code=204)
-def delete_part(part_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_part(
+    part_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
     part = require_model(db, Part, part_id)
     usage_count = db.scalar(
         select(func.count())
@@ -431,6 +521,9 @@ def delete_part(part_id: str, db: Session = Depends(get_db)) -> Response:
                 "Remove those components first or mark the part obsolete instead of deleting it."
             ),
         )
+    record_change(
+        db, "part", part.id, "deleted", f"Deleted part {part.part_number}", actor=user.email
+    )
     db.delete(part)
     db.commit()
     return Response(status_code=204)
@@ -440,7 +533,10 @@ def delete_part(part_id: str, db: Session = Depends(get_db)) -> Response:
     "/diagrams/{diagram_id}/components", response_model=ComponentInstanceRead, status_code=201
 )
 def create_component(
-    diagram_id: str, payload: ComponentInstanceCreate, db: Session = Depends(get_db)
+    diagram_id: str,
+    payload: ComponentInstanceCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> ComponentInstance:
     require_model(db, Diagram, diagram_id)
     if payload.part_id:
@@ -473,7 +569,10 @@ def create_component(
     component = ComponentInstance(diagram_id=diagram_id, **data)
     db.add(component)
     db.flush()
-    record_change(db, "component", component.id, "created", f"Placed component {component.tag}")
+    record_change(
+        db, "component", component.id, "created", f"Placed component {component.tag}",
+        actor=user.email,
+    )
     db.commit()
     db.refresh(component)
     return component
@@ -489,7 +588,10 @@ def list_components(diagram_id: str, db: Session = Depends(get_db)) -> list[Comp
 
 @router.put("/components/{component_id}", response_model=ComponentInstanceRead)
 def update_component(
-    component_id: str, payload: ComponentInstanceUpdate, db: Session = Depends(get_db)
+    component_id: str,
+    payload: ComponentInstanceUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> ComponentInstance:
     component = require_model(db, ComponentInstance, component_id)
     if payload.part_id:
@@ -512,22 +614,37 @@ def update_component(
             raise HTTPException(status_code=400, detail="Component node must belong to diagram")
 
     apply_updates(component, payload)
-    record_change(db, "component", component.id, "updated", f"Updated component {component.tag}")
+    record_change(
+        db, "component", component.id, "updated", f"Updated component {component.tag}",
+        actor=user.email,
+    )
     db.commit()
     db.refresh(component)
     return component
 
 
 @router.delete("/components/{component_id}", status_code=204)
-def delete_component(component_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_component(
+    component_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
     component = require_model(db, ComponentInstance, component_id)
+    record_change(
+        db, "component", component.id, "deleted", f"Deleted component {component.tag}",
+        actor=user.email,
+    )
     db.delete(component)
     db.commit()
     return Response(status_code=204)
 
 
 @router.post("/requirements", response_model=RequirementRead, status_code=201)
-def create_requirement(payload: RequirementCreate, db: Session = Depends(get_db)) -> Requirement:
+def create_requirement(
+    payload: RequirementCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Requirement:
     require_model(db, Project, payload.project_id)
     existing = db.scalar(
         select(Requirement).where(
@@ -542,7 +659,8 @@ def create_requirement(payload: RequirementCreate, db: Session = Depends(get_db)
     db.add(requirement)
     db.flush()
     record_change(
-        db, "requirement", requirement.id, "created", f"Created requirement {requirement.key}"
+        db, "requirement", requirement.id, "created", f"Created requirement {requirement.key}",
+        actor=user.email,
     )
     db.commit()
     db.refresh(requirement)
@@ -557,7 +675,10 @@ def list_requirements(project_id: str, db: Session = Depends(get_db)) -> list[Re
 
 @router.put("/requirements/{requirement_id}", response_model=RequirementRead)
 def update_requirement(
-    requirement_id: str, payload: RequirementUpdate, db: Session = Depends(get_db)
+    requirement_id: str,
+    payload: RequirementUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> Requirement:
     requirement = require_model(db, Requirement, requirement_id)
     if payload.key:
@@ -573,7 +694,8 @@ def update_requirement(
 
     apply_updates(requirement, payload)
     record_change(
-        db, "requirement", requirement.id, "updated", f"Updated requirement {requirement.key}"
+        db, "requirement", requirement.id, "updated", f"Updated requirement {requirement.key}",
+        actor=user.email,
     )
     db.commit()
     db.refresh(requirement)
@@ -581,8 +703,16 @@ def update_requirement(
 
 
 @router.delete("/requirements/{requirement_id}", status_code=204)
-def delete_requirement(requirement_id: str, db: Session = Depends(get_db)) -> Response:
+def delete_requirement(
+    requirement_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> Response:
     requirement = require_model(db, Requirement, requirement_id)
+    record_change(
+        db, "requirement", requirement.id, "deleted", f"Deleted requirement {requirement.key}",
+        actor=user.email,
+    )
     db.delete(requirement)
     db.commit()
     return Response(status_code=204)
@@ -599,7 +729,11 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
 
 
 @router.post("/trace-links", response_model=TraceLinkRead, status_code=201)
-def create_trace_link(payload: TraceLinkCreate, db: Session = Depends(get_db)) -> TraceLink:
+def create_trace_link(
+    payload: TraceLinkCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> TraceLink:
     for kind, type_name, object_id in (
         ("source", payload.source_type, payload.source_id),
         ("target", payload.target_type, payload.target_id),
@@ -630,7 +764,10 @@ def create_trace_link(payload: TraceLinkCreate, db: Session = Depends(get_db)) -
     link = TraceLink(**payload.model_dump())
     db.add(link)
     db.flush()
-    record_change(db, "trace_link", link.id, "created", f"Created {link.link_type} trace link")
+    record_change(
+        db, "trace_link", link.id, "created", f"Created {link.link_type} trace link",
+        actor=user.email,
+    )
     db.commit()
     db.refresh(link)
     return link
@@ -644,10 +781,17 @@ def object_trace(
 
 
 @router.post("/diagrams/{diagram_id}/bom", response_model=BomSnapshotRead, status_code=201)
-def create_bom(diagram_id: str, db: Session = Depends(get_db)):
+def create_bom(
+    diagram_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     diagram = require_model(db, Diagram, diagram_id)
     snapshot = generate_bom_snapshot(db, diagram)
-    record_change(db, "bom_snapshot", snapshot.id, "created", f"Generated BoM for {diagram.name}")
+    record_change(
+        db, "bom_snapshot", snapshot.id, "created", f"Generated BoM for {diagram.name}",
+        actor=user.email,
+    )
     db.commit()
     db.refresh(snapshot)
     return snapshot
@@ -726,3 +870,15 @@ def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
 @router.get("/changes/impact", response_model=ImpactRead)
 def change_impact(object_type: str, object_id: str, db: Session = Depends(get_db)) -> dict:
     return get_change_impact(db, object_type, object_id)
+
+
+@router.get("/changes", response_model=list[ChangeEventRead])
+def list_changes(limit: int = 50, db: Session = Depends(get_db)) -> list[ChangeEvent]:
+    capped = max(1, min(limit, 200))
+    return list(
+        db.scalars(
+            select(ChangeEvent)
+            .order_by(ChangeEvent.created_at.desc(), ChangeEvent.id)
+            .limit(capped)
+        )
+    )

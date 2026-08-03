@@ -1,5 +1,6 @@
 import type {
   BomSnapshot,
+  ChangeEvent,
   ComponentInstance,
   Diagram,
   FluidSystem,
@@ -7,13 +8,40 @@ import type {
   Part,
   Project,
   Requirement,
-  TraceLink
+  TraceLink,
+  User
 } from "./types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+let unauthorizedHandler: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  unauthorizedHandler = handler;
+}
+
+async function toApiError(response: Response): Promise<Error> {
+  const text = await response.text();
+  try {
+    const parsed = JSON.parse(text) as { detail?: unknown };
+    if (typeof parsed.detail === "string") return new Error(parsed.detail);
+    if (Array.isArray(parsed.detail)) {
+      const messages = parsed.detail.map((item) => {
+        const entry = item as { loc?: unknown[]; msg?: string };
+        const field = Array.isArray(entry.loc) ? String(entry.loc[entry.loc.length - 1]) : "";
+        return field && entry.msg ? `${field}: ${entry.msg}` : entry.msg ?? String(item);
+      });
+      return new Error(messages.join("; "));
+    }
+  } catch {
+    // Fall through to the raw text.
+  }
+  return new Error(text || `Request failed (${response.status})`);
+}
+
+async function rawRequest(path: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers ?? {})
@@ -21,25 +49,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init
   });
   if (!response.ok) {
-    throw new Error(await response.text());
+    if (response.status === 401) unauthorizedHandler?.();
+    throw await toApiError(response);
   }
+  return response;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await rawRequest(path, init);
   return response.json() as Promise<T>;
 }
 
 async function requestNoContent(path: string, init?: RequestInit): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers ?? {})
-    },
-    ...init
-  });
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
+  await rawRequest(path, init);
 }
 
 export const api = {
+  login: (email: string, password: string) =>
+    request<User>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
+  logout: () => requestNoContent("/auth/logout", { method: "POST" }),
+  me: () => request<User>("/auth/me"),
+  listChanges: (limit = 50) => request<ChangeEvent[]>(`/changes?limit=${limit}`),
   listProjects: () => request<Project[]>("/projects"),
   createProject: (body: { name: string; description?: string; owner?: string }) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(body) }),
