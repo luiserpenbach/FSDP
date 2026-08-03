@@ -43,6 +43,18 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
 - Generate BoM snapshots and download CSV exports.
 - Inspect basic change impact for selected parts and components.
 
+## Running the Full Stack (Docker)
+
+```bash
+docker compose up -d --build
+docker compose exec api python -m app.seed   # optional demo data
+```
+
+Serves the app at `http://localhost:8080` (frontend + same-origin `/api` proxy) with
+migrations applied automatically. Configure secrets and the admin login via a `.env`
+file next to `docker-compose.yml` — see [infra/README.md](infra/README.md), which also
+documents the internal Tailscale deployment and the Vercel demo setup.
+
 ## Local Development
 
 1. Start the database:

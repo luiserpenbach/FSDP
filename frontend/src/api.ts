@@ -12,7 +12,11 @@ import type {
   User
 } from "./types";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+// Production builds default to same-origin "/api" (served behind nginx or a
+// Vercel rewrite); dev talks to the local backend directly. Override with
+// VITE_API_BASE_URL at build time when needed.
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.PROD ? "/api" : "http://localhost:8000");
 
 let unauthorizedHandler: (() => void) | null = null;
 

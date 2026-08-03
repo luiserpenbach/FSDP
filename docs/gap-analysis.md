@@ -231,8 +231,23 @@ Users table + migration, password hashing, cookie JWT sessions, auth dependency 
 > `backend/tests/test_auth.py`. Remaining for later phases: per-role write restrictions
 > (viewer is currently read/write like engineer), gating `/docs` in production.
 
-### Phase 2 — Deployability (≈1–2 days)
+### Phase 2 — Deployability (≈1–2 days) — ✅ IMPLEMENTED
 Backend Dockerfile (+migrations on boot), compose `api`/`web` services, `/api` route prefix, `vercel.json` (SPA rewrite + API proxy), Neon + backend host for demo, seed-data script, GitHub Actions CI, pinned frontend dependencies, health check with DB ping, Tailscale serve runbook in `infra/`, pg_dump backup cron.
+
+> Status 2026-08-03: implemented. Backend image (python:3.11-slim, non-root, `alembic
+> upgrade head` on boot), web image (nginx serving the built frontend with SPA fallback
+> and a same-origin `/api` proxy), full-stack `docker-compose.yml` (loopback-bound db/api
+> ports, healthchecks, env-driven secrets), `frontend/vercel.json` (SPA + `/api` rewrites),
+> production builds default the API base to `/api`, `/health` now pings the database,
+> idempotent demo seed (`python -m app.seed`), GitHub Actions CI (ruff/pytest +
+> eslint/vitest/tsc/build), all frontend dependencies pinned (React 19 is within
+> reactflow's `>=17` peer range), and deployment runbooks in `infra/README.md`
+> (compose, Tailscale serve + backups, Neon + container host + Vercel).
+> The `/api` prefix is handled at the proxy layer (nginx strip / Vercel rewrite) rather
+> than in FastAPI, so backend routes and tests are unchanged. Docker images were not
+> built in the analysis sandbox (no Docker daemon) — first `docker compose up --build`
+> or CI run validates them. Remaining hardening for later: gate `/docs`, CI tests
+> against a Postgres service container, image builds in CI.
 
 ### Phase 3 — P&ID/BoM usability for real internal work (iterative)
 Line metadata editing (F8) → auto-tagging + tag uniqueness UX → symbol library → placement flow rework (bind by `external_id` at save; placed-part badges on canvas) → BoM history/project BoM/status workflow/procurement readiness endpoint (revive `qualification_warnings`) → BoM diff → undo/redo → diagram PNG/SVG export → trace-link management UI → `@xyflow/react` v12 migration.
