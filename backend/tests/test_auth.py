@@ -1,9 +1,10 @@
 """Authentication, authorization, and audit-trail tests (Phase 1)."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from tests.conftest import TEST_USER_EMAIL
+from tests.conftest import TEST_USER_EMAIL, TEST_USER_PASSWORD
 
 
 def anonymous_client() -> TestClient:
@@ -45,6 +46,33 @@ def test_me_logout_flow(client: TestClient) -> None:
 
     assert logout.status_code == 204
     assert me_after_logout.status_code == 401
+
+
+def test_logout_clears_secure_session_cookie(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTPS deployments set Secure on the session cookie; logout must too.
+
+    Without matching Secure on the deletion Set-Cookie, browsers keep the
+    authenticated session after sign-out (shared machine / demo risk).
+    """
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "session_cookie_secure", True)
+
+    login = anonymous_client().post(
+        "/auth/login", json={"email": TEST_USER_EMAIL, "password": TEST_USER_PASSWORD}
+    )
+    assert login.status_code == 200
+    login_cookie = login.headers.get("set-cookie", "")
+    assert "secure" in login_cookie.lower()
+
+    logout = client.post("/auth/logout")
+    logout_cookie = logout.headers.get("set-cookie", "")
+
+    assert logout.status_code == 204
+    assert "fsdp_session=" in logout_cookie.lower() or settings.session_cookie_name in logout_cookie
+    assert "max-age=0" in logout_cookie.lower() or "expires=" in logout_cookie.lower()
+    assert "secure" in logout_cookie.lower()
+    assert "httponly" in logout_cookie.lower()
 
 
 def test_admin_manages_users_and_non_admin_is_forbidden(client: TestClient) -> None:

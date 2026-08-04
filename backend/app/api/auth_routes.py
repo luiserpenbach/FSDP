@@ -43,7 +43,15 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
 @auth_router.post("/logout", status_code=204)
 def logout() -> Response:
     response = Response(status_code=204)
-    response.delete_cookie(settings.session_cookie_name, path="/")
+    # Cookie attribute flags must match the login Set-Cookie. Browsers will not
+    # clear a Secure cookie unless the deletion response also carries Secure.
+    response.delete_cookie(
+        settings.session_cookie_name,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=settings.session_cookie_secure,
+    )
     return response
 
 
