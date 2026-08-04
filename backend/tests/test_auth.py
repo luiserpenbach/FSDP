@@ -48,7 +48,9 @@ def test_me_logout_flow(client: TestClient) -> None:
     assert me_after_logout.status_code == 401
 
 
-def test_logout_clears_secure_session_cookie(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_logout_clears_secure_session_cookie(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """HTTPS deployments set Secure on the session cookie; logout must too.
 
     Without matching Secure on the deletion Set-Cookie, browsers keep the
