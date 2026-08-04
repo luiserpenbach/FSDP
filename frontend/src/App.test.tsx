@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
 const TEST_USER = { id: "u1", email: "engineer@fsdp.test", name: "Test Engineer", role: "admin", is_active: true };
@@ -64,6 +64,11 @@ function jsonResponse(body: unknown, status = 200) {
 describe("App", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    window.history.pushState({}, "", "/");
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   it("renders the workspace shell for an authenticated user", async () => {
@@ -105,35 +110,46 @@ describe("App", () => {
 
   it("creates a blank P&ID instead of copying the open canvas", async () => {
     let diagrams = [EXISTING_DIAGRAM];
-    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const method = (init?.method ?? "GET").toUpperCase();
-      if (url.includes("/auth/me")) return jsonResponse(TEST_USER);
-      if (url.endsWith("/projects") && method === "GET") return jsonResponse([PROJECT]);
-      if (url.includes("/projects/p1/systems")) return jsonResponse([SYSTEM]);
-      if (url.includes("/projects/p1/requirements")) return jsonResponse([]);
-      if (url.includes("/projects/p1/bom")) return jsonResponse([]);
-      if (url.includes("/parts") && method === "GET") return jsonResponse([]);
-      if (url.includes("/changes")) return jsonResponse([]);
-      if (url.includes("/systems/s1/diagrams") && method === "GET") return jsonResponse(diagrams);
-      if (url.includes("/diagrams/d1/components")) return jsonResponse([]);
-      if (url.includes("/diagrams/d1/bom")) return jsonResponse([]);
-      if (url.includes("/diagrams/d2/components")) return jsonResponse([]);
-      if (url.includes("/diagrams/d2/bom")) return jsonResponse([]);
-      if (url.endsWith("/diagrams/d1") && method === "GET") return jsonResponse(EXISTING_DIAGRAM);
-      if (url.endsWith("/diagrams/d2") && method === "GET") return jsonResponse(NEW_DIAGRAM);
-      if (url.includes("/systems/s1/diagrams") && method === "POST") {
+      const path = new URL(url, "http://localhost").pathname;
+
+      if (path === "/auth/me") return jsonResponse(TEST_USER);
+      if (path === "/projects" && method === "GET") return jsonResponse([PROJECT]);
+      if (path === "/projects/p1/systems") return jsonResponse([SYSTEM]);
+      if (path === "/projects/p1/requirements") return jsonResponse([]);
+      if (path === "/projects/p1/bom") return jsonResponse([]);
+      if (path === "/parts" && method === "GET") return jsonResponse([]);
+      if (path === "/changes") return jsonResponse([]);
+      if (path === "/systems/s1/diagrams" && method === "GET") return jsonResponse(diagrams);
+      if (path === "/systems/s1/diagrams" && method === "POST") {
         diagrams = [EXISTING_DIAGRAM, NEW_DIAGRAM];
         return jsonResponse(NEW_DIAGRAM, 201);
       }
-      return jsonResponse({});
+      if (path === "/diagrams/d1" && method === "GET") return jsonResponse(EXISTING_DIAGRAM);
+      if (path === "/diagrams/d2" && method === "GET") return jsonResponse(NEW_DIAGRAM);
+      if (path === "/diagrams/d1/components" || path === "/diagrams/d2/components") {
+        return jsonResponse([]);
+      }
+      if (path === "/diagrams/d1/bom" || path === "/diagrams/d2/bom") return jsonResponse([]);
+      return jsonResponse({ detail: `unmocked ${method} ${path}` }, 500);
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    window.history.pushState({}, "", "/diagrams");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Diagrams" })).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByLabelText("Open diagram")).toHaveValue("d1"));
+    expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+    await waitFor(() => {
+      const projectSelects = screen.getAllByLabelText("Project");
+      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
+    });
+
+    fireEvent.click(screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!);
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Open diagram")).toHaveValue("d1");
+    });
 
     fireEvent.change(screen.getByLabelText("Diagram name"), {
       target: { value: "Propellant Feed" }
@@ -147,9 +163,10 @@ describe("App", () => {
       )
     );
 
-    const graphWrites = fetchMock.mock.calls.filter(([url, init]) => {
+    const graphWrites = fetchMock.mock.calls.filter(([input, init]) => {
+      const url = typeof input === "string" ? input : String(input);
       const method = ((init as RequestInit | undefined)?.method ?? "GET").toUpperCase();
-      return typeof url === "string" && url.includes("/graph") && method === "PUT";
+      return url.includes("/graph") && method === "PUT";
     });
     expect(graphWrites).toHaveLength(0);
 
