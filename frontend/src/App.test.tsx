@@ -1,8 +1,83 @@
-import { render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
 const TEST_USER = { id: "u1", email: "engineer@fsdp.test", name: "Test Engineer", role: "admin", is_active: true };
+
+const PROJECT_A = {
+  id: "p1",
+  name: "Project A",
+  description: null,
+  owner: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
+const PROJECT_B = {
+  id: "p2",
+  name: "Project B",
+  description: null,
+  owner: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
+const SYSTEM_A = {
+  id: "s1",
+  project_id: "p1",
+  name: "System A",
+  fluid: "GHe",
+  description: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
+const SYSTEM_B = {
+  id: "s2",
+  project_id: "p2",
+  name: "System B",
+  fluid: "LOX",
+  description: null,
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
+const DIAGRAM_A = {
+  id: "d1",
+  system_id: "s1",
+  name: "Diagram A",
+  diagram_type: "pid",
+  revision: 1,
+  graph: {
+    nodes: [
+      {
+        id: "valve-a",
+        type: "pidSymbol",
+        position: { x: 0, y: 0 },
+        data: { label: "Valve A", symbolType: "valve", rotation: 0 }
+      }
+    ],
+    edges: []
+  },
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
+const DIAGRAM_B = {
+  id: "d2",
+  system_id: "s2",
+  name: "Diagram B",
+  diagram_type: "pid",
+  revision: 1,
+  graph: {
+    nodes: [
+      {
+        id: "valve-b",
+        type: "pidSymbol",
+        position: { x: 40, y: 40 },
+        data: { label: "Valve B", symbolType: "valve", rotation: 0 }
+      }
+    ],
+    edges: []
+  },
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
 
 function jsonResponse(body: unknown, status = 200) {
   return Promise.resolve({
@@ -16,6 +91,11 @@ function jsonResponse(body: unknown, status = 200) {
 describe("App", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
+    window.history.pushState({}, "", "/");
+  });
+
+  afterEach(() => {
+    cleanup();
   });
 
   it("renders the workspace shell for an authenticated user", async () => {
@@ -53,5 +133,81 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
+  });
+
+  it("ignores a stale system diagram list so a slower prior response cannot switch the open P&ID", async () => {
+    let resolveDiagramsA!: (body: unknown) => void;
+    const diagramsAPromise = new Promise<unknown>((resolve) => {
+      resolveDiagramsA = resolve;
+    });
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      const path = new URL(url, "http://localhost").pathname;
+
+      if (path === "/auth/me") return jsonResponse(TEST_USER);
+      if (path === "/projects" && method === "GET") return jsonResponse([PROJECT_A, PROJECT_B]);
+      if (path === "/projects/p1/systems") return jsonResponse([SYSTEM_A]);
+      if (path === "/projects/p2/systems") return jsonResponse([SYSTEM_B]);
+      if (path === "/projects/p1/requirements" || path === "/projects/p2/requirements") return jsonResponse([]);
+      if (path === "/projects/p1/bom" || path === "/projects/p2/bom") return jsonResponse([]);
+      if (path === "/parts" && method === "GET") return jsonResponse([]);
+      if (path === "/changes") return jsonResponse([]);
+      if (path === "/systems/s1/diagrams" && method === "GET") {
+        return diagramsAPromise.then((body) => jsonResponse(body));
+      }
+      if (path === "/systems/s2/diagrams" && method === "GET") return jsonResponse([DIAGRAM_B]);
+      if (path === "/diagrams/d1" && method === "GET") return jsonResponse(DIAGRAM_A);
+      if (path === "/diagrams/d2" && method === "GET") return jsonResponse(DIAGRAM_B);
+      if (path === "/diagrams/d1/components" || path === "/diagrams/d2/components") return jsonResponse([]);
+      if (path === "/diagrams/d1/bom" || path === "/diagrams/d2/bom") return jsonResponse([]);
+      return jsonResponse({ detail: `unmocked ${method} ${path}` }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+    await waitFor(() => {
+      const projectSelects = screen.getAllByLabelText("Project");
+      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
+    });
+
+    // Project A auto-selects System A; hold A's diagram list in flight, then switch projects.
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/systems/s1/diagrams"))).toBe(true);
+    });
+
+    const projectSelect = screen.getAllByLabelText("Project").find((el) => el.tagName === "SELECT") as HTMLSelectElement;
+    fireEvent.change(projectSelect, { target: { value: "p2" } });
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/systems/s2/diagrams"))).toBe(true);
+    });
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Open diagram")).toHaveValue("d2");
+    });
+    expect(screen.getByLabelText("Open diagram")).toHaveTextContent("Diagram B");
+
+    // Stale System A list arrives last — must not rewrite selection to Diagram A.
+    resolveDiagramsA([DIAGRAM_A]);
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/diagrams/d2"))).toBe(true);
+    });
+
+    // Give the stale response a turn to apply if the bug is present.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(screen.getByLabelText("Open diagram")).toHaveValue("d2");
+    expect(screen.getByLabelText("Open diagram")).not.toHaveValue("d1");
+    expect(screen.queryByText("Valve A")).not.toBeInTheDocument();
   });
 });
