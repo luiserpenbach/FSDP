@@ -405,6 +405,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   nodesRef.current = nodes;
   edgesRef.current = edges;
   const historyRef = useRef<{ past: GraphSnapshot[]; future: GraphSnapshot[] }>({ past: [], future: [] });
+  // Bumped on every local edit so an in-flight save cannot clear dirty after
+  // newer canvas changes that were not included in the saved payload.
+  const graphDirtyGeneration = useRef(0);
+  const markGraphDirty = useCallback(() => {
+    graphDirtyGeneration.current += 1;
+    setGraphDirty(true);
+  }, []);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -421,18 +428,18 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const nodeTypes = useMemo(
     () => ({
       pidSymbol: (props: NodeProps<PidNodeData>) => (
-        <PidSymbolNode {...props} onDirty={() => setGraphDirty(true)} />
+        <PidSymbolNode {...props} onDirty={markGraphDirty} />
       )
     }),
-    []
+    [markGraphDirty]
   );
   const edgeTypes = useMemo(
     () => ({
       orthogonal: (props: EdgeProps<OrthogonalEdgeData>) => (
-        <OrthogonalEdge {...props} onDirty={() => setGraphDirty(true)} />
+        <OrthogonalEdge {...props} onDirty={markGraphDirty} />
       )
     }),
-    []
+    [markGraphDirty]
   );
 
   const graphPayload = useMemo(() => buildGraphPayload(nodes, edges), [edges, nodes]);
@@ -667,9 +674,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     history.future.push({ nodes: nodesRef.current, edges: edgesRef.current });
     setNodes(previous.nodes);
     setEdges(previous.edges);
-    setGraphDirty(true);
+    markGraphDirty();
     setHistoryVersion((version) => version + 1);
-  }, [setEdges, setNodes]);
+  }, [markGraphDirty, setEdges, setNodes]);
 
   const redo = useCallback(() => {
     const history = historyRef.current;
@@ -678,9 +685,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     history.past.push({ nodes: nodesRef.current, edges: edgesRef.current });
     setNodes(next.nodes);
     setEdges(next.edges);
-    setGraphDirty(true);
+    markGraphDirty();
     setHistoryVersion((version) => version + 1);
-  }, [setEdges, setNodes]);
+  }, [markGraphDirty, setEdges, setNodes]);
 
   useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {
@@ -707,11 +714,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         recordHistory();
       }
       if (changes.some((change) => change.type === "position" || change.type === "add" || change.type === "remove")) {
-        setGraphDirty(true);
+        markGraphDirty();
       }
       onNodesChangeBase(changes);
     },
-    [onNodesChangeBase, recordHistory]
+    [markGraphDirty, onNodesChangeBase, recordHistory]
   );
 
   const onEdgesChange = useCallback(
@@ -720,16 +727,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         recordHistory();
       }
       if (changes.some((change) => change.type === "add" || change.type === "remove")) {
-        setGraphDirty(true);
+        markGraphDirty();
       }
       onEdgesChangeBase(changes);
     },
-    [onEdgesChangeBase, recordHistory]
+    [markGraphDirty, onEdgesChangeBase, recordHistory]
   );
 
   function onConnect(connection: Connection) {
     recordHistory();
-    setGraphDirty(true);
+    markGraphDirty();
     setEdges((current) =>
       addEdge({ ...connection, type: "orthogonal", label: "New line", markerEnd: EDGE_MARKER }, current)
     );
@@ -877,10 +884,18 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function saveGraph() {
     if (!selectedDiagram) return;
+    const diagramId = selectedDiagram.id;
+    const systemId = selectedDiagram.system_id;
+    const payload = graphPayload;
+    const generationAtSave = graphDirtyGeneration.current;
     void runAction("Saved graph.", async () => {
-      await api.updateDiagramGraph(selectedDiagram.id, graphPayload);
-      setGraphDirty(false);
-      setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
+      await api.updateDiagramGraph(diagramId, payload);
+      // Mid-save canvas edits bump the generation; keep dirty so discard
+      // guards and the badge still protect those unsaved changes.
+      if (graphDirtyGeneration.current === generationAtSave) {
+        setGraphDirty(false);
+      }
+      setDiagrams(await api.listDiagrams(systemId));
     }, "diagram");
   }
 
@@ -910,7 +925,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setNodes((current) =>
       current.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, label } } : node))
     );
-    setGraphDirty(true);
+    markGraphDirty();
     setMessage("Renamed node — save the graph to persist.");
   }
 
@@ -932,7 +947,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
             : edge
         )
       );
-      setGraphDirty(true);
+      markGraphDirty();
     }, "edge");
   }
 
@@ -974,7 +989,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       }
     ]);
     setSelectedNodeId(id);
-    setGraphDirty(true);
+    markGraphDirty();
   }
 
   function placeComponent() {
