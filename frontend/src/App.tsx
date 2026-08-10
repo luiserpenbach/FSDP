@@ -763,10 +763,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function submitProject(event: FormEvent) {
     event.preventDefault();
+    // Creating a project rewrites the selected project/system/diagram chain and
+    // unloads the open canvas. Ask before discarding unsaved P&ID edits.
+    if (!confirmDiscardUnsaved()) return;
     void runAction("Created project.", async () => {
       const project = await api.createProject(projectForm);
       setProjects(await api.listProjects());
       setSelectedProjectId(project.id);
+      setSelectedSystemId("");
+      setSelectedDiagramId("");
+      setImpact(null);
     }, "project");
   }
 
@@ -791,10 +797,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   function submitSystem(event: FormEvent) {
     event.preventDefault();
     if (!selectedProject) return;
+    // Creating a system switches the open system and clears the diagram canvas.
+    // Ask before discarding unsaved P&ID edits.
+    if (!confirmDiscardUnsaved()) return;
     void runAction("Created system.", async () => {
       const system = await api.createSystem(selectedProject.id, systemForm);
       setSystems(await api.listSystems(selectedProject.id));
       setSelectedSystemId(system.id);
+      setSelectedDiagramId("");
     }, "system");
   }
 
