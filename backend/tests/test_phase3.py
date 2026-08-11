@@ -151,6 +151,126 @@ def test_trace_link_delete(client: TestClient) -> None:
     assert remaining == []
 
 
+def test_deleting_component_removes_its_trace_links(client: TestClient) -> None:
+    diagram, _, _ = make_diagram_with_bom(client)
+    projects = client.get("/projects").json()
+    requirement = client.post(
+        "/requirements",
+        json={
+            "project_id": projects[0]["id"],
+            "key": "P3-REQ-ORPHAN",
+            "title": "t",
+            "text": "x",
+            "requirement_type": "safety",
+        },
+    ).json()
+    component = client.get(f"/diagrams/{diagram['id']}/components").json()[0]
+    client.post(
+        "/trace-links",
+        json={
+            "source_type": "requirement",
+            "source_id": requirement["id"],
+            "target_type": "component",
+            "target_id": component["id"],
+            "link_type": "satisfied_by",
+        },
+    )
+
+    deleted = client.delete(f"/components/{component['id']}")
+    remaining = client.get(f"/objects/requirement/{requirement['id']}/trace").json()
+
+    assert deleted.status_code == 204
+    assert remaining == []
+
+
+def test_deleting_requirement_removes_its_trace_links(client: TestClient) -> None:
+    diagram, _, _ = make_diagram_with_bom(client)
+    projects = client.get("/projects").json()
+    requirement = client.post(
+        "/requirements",
+        json={
+            "project_id": projects[0]["id"],
+            "key": "P3-REQ-DEL",
+            "title": "t",
+            "text": "x",
+            "requirement_type": "safety",
+        },
+    ).json()
+    component = client.get(f"/diagrams/{diagram['id']}/components").json()[0]
+    client.post(
+        "/trace-links",
+        json={
+            "source_type": "requirement",
+            "source_id": requirement["id"],
+            "target_type": "component",
+            "target_id": component["id"],
+            "link_type": "satisfied_by",
+        },
+    )
+
+    deleted = client.delete(f"/requirements/{requirement['id']}")
+    remaining = client.get(f"/objects/component/{component['id']}/trace").json()
+
+    assert deleted.status_code == 204
+    assert remaining == []
+
+
+def test_deleting_project_removes_cascaded_object_trace_links(client: TestClient) -> None:
+    diagram, _, _ = make_diagram_with_bom(client)
+    projects = client.get("/projects").json()
+    project_id = projects[0]["id"]
+    other = client.post("/projects", json={"name": "Survivor Project"}).json()
+    other_req = client.post(
+        "/requirements",
+        json={
+            "project_id": other["id"],
+            "key": "KEEP-1",
+            "title": "keep",
+            "text": "x",
+            "requirement_type": "safety",
+        },
+    ).json()
+    requirement = client.post(
+        "/requirements",
+        json={
+            "project_id": project_id,
+            "key": "P3-REQ-CASCADE",
+            "title": "t",
+            "text": "x",
+            "requirement_type": "safety",
+        },
+    ).json()
+    component = client.get(f"/diagrams/{diagram['id']}/components").json()[0]
+    client.post(
+        "/trace-links",
+        json={
+            "source_type": "requirement",
+            "source_id": requirement["id"],
+            "target_type": "component",
+            "target_id": component["id"],
+            "link_type": "satisfied_by",
+        },
+    )
+    kept_link = client.post(
+        "/trace-links",
+        json={
+            "source_type": "requirement",
+            "source_id": other_req["id"],
+            "target_type": "project",
+            "target_id": other["id"],
+            "link_type": "related_to",
+        },
+    ).json()
+
+    deleted = client.delete(f"/projects/{project_id}")
+    orphaned = client.get(f"/objects/requirement/{requirement['id']}/trace").json()
+    surviving = client.get(f"/objects/requirement/{other_req['id']}/trace").json()
+
+    assert deleted.status_code == 204
+    assert orphaned == []
+    assert [link["id"] for link in surviving] == [kept_link["id"]]
+
+
 def test_viewer_role_is_read_only(client: TestClient) -> None:
     diagram, _, snapshot = make_diagram_with_bom(client)
     client.post(

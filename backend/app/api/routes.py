@@ -55,7 +55,11 @@ from app.schemas import (
 from app.services.bom import generate_bom_snapshot
 from app.services.catalog import qualification_warnings
 from app.services.change_impact import get_change_impact
-from app.services.traceability import get_trace_links
+from app.services.traceability import (
+    delete_trace_links_for,
+    delete_trace_links_for_many,
+    get_trace_links,
+)
 
 router = APIRouter()
 
@@ -96,6 +100,31 @@ def apply_updates(item, payload) -> None:
 
 def normalized_name(name: str) -> str:
     return name.strip().lower()
+
+
+def _diagram_trace_endpoints(db: Session, diagram_id: str) -> list[tuple[str, str]]:
+    endpoints: list[tuple[str, str]] = [("diagram", diagram_id)]
+    for component in db.scalars(
+        select(ComponentInstance).where(ComponentInstance.diagram_id == diagram_id)
+    ):
+        endpoints.append(("component", component.id))
+    return endpoints
+
+
+def _system_trace_endpoints(db: Session, system_id: str) -> list[tuple[str, str]]:
+    endpoints: list[tuple[str, str]] = [("fluid_system", system_id)]
+    for diagram in db.scalars(select(Diagram).where(Diagram.system_id == system_id)):
+        endpoints.extend(_diagram_trace_endpoints(db, diagram.id))
+    return endpoints
+
+
+def _project_trace_endpoints(db: Session, project_id: str) -> list[tuple[str, str]]:
+    endpoints: list[tuple[str, str]] = [("project", project_id)]
+    for system in db.scalars(select(FluidSystem).where(FluidSystem.project_id == project_id)):
+        endpoints.extend(_system_trace_endpoints(db, system.id))
+    for requirement in db.scalars(select(Requirement).where(Requirement.project_id == project_id)):
+        endpoints.append(("requirement", requirement.id))
+    return endpoints
 
 
 def normalized_column(column):
@@ -178,6 +207,7 @@ def delete_project(
     user: User = Depends(require_writer),
 ) -> Response:
     project = require_model(db, Project, project_id)
+    delete_trace_links_for_many(db, _project_trace_endpoints(db, project_id))
     record_change(
         db, "project", project.id, "deleted", f"Deleted project {project.name}", actor=user.email
     )
@@ -264,6 +294,7 @@ def delete_system(
     user: User = Depends(require_writer),
 ) -> Response:
     system = require_model(db, FluidSystem, system_id)
+    delete_trace_links_for_many(db, _system_trace_endpoints(db, system_id))
     record_change(
         db, "fluid_system", system.id, "deleted", f"Deleted system {system.name}", actor=user.email
     )
@@ -346,6 +377,7 @@ def delete_diagram(
     user: User = Depends(require_writer),
 ) -> Response:
     diagram = require_model(db, Diagram, diagram_id)
+    delete_trace_links_for_many(db, _diagram_trace_endpoints(db, diagram_id))
     record_change(
         db, "diagram", diagram.id, "deleted", f"Deleted diagram {diagram.name}", actor=user.email
     )
@@ -526,6 +558,7 @@ def delete_part(
                 "Remove those components first or mark the part obsolete instead of deleting it."
             ),
         )
+    delete_trace_links_for(db, "part", part.id)
     record_change(
         db, "part", part.id, "deleted", f"Deleted part {part.part_number}", actor=user.email
     )
@@ -635,6 +668,7 @@ def delete_component(
     user: User = Depends(require_writer),
 ) -> Response:
     component = require_model(db, ComponentInstance, component_id)
+    delete_trace_links_for(db, "component", component.id)
     record_change(
         db, "component", component.id, "deleted", f"Deleted component {component.tag}",
         actor=user.email,
@@ -714,6 +748,7 @@ def delete_requirement(
     user: User = Depends(require_writer),
 ) -> Response:
     requirement = require_model(db, Requirement, requirement_id)
+    delete_trace_links_for(db, "requirement", requirement.id)
     record_change(
         db, "requirement", requirement.id, "deleted", f"Deleted requirement {requirement.key}",
         actor=user.email,
