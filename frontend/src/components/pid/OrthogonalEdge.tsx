@@ -1,12 +1,17 @@
 /**
  * Orthogonal (pipe-run) edge with draggable bend handles.
  *
- * Styling lives on edge.data (color, stroke style, arrow) so the hover
- * editor bar can restyle lines in place. Bend handles fade/scale in when the
- * line is hovered or selected, and the path glows on hover.
+ * Routing: the line leaves each port through a short perpendicular stub in
+ * the direction the port faces (which follows symbol rotation), then runs an
+ * H-V-H backbone controlled by three draggable, grid-snapped parameters
+ * (startX, bendY, endX). Unset parameters get orientation-aware defaults and
+ * keep following the nodes; dragged ones stick until reset (double-click).
+ *
+ * Styling lives on edge.data (color, stroke style/width, arrow) so the hover
+ * editor bar can restyle lines in place.
  */
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
-import { BaseEdge, EdgeLabelRenderer, MarkerType, useReactFlow, type EdgeProps } from "reactflow";
+import { BaseEdge, EdgeLabelRenderer, MarkerType, Position, useReactFlow, type EdgeProps } from "reactflow";
 
 export type EdgeStrokeStyle = "solid" | "dashed" | "dotted";
 
@@ -89,6 +94,101 @@ export function roundedOrthogonalPath(points: Point[]): string {
   return `${path} L ${last.x},${last.y}`;
 }
 
+/** Minimum straight run leaving a port before the first bend. */
+export const ROUTE_STUB = 14;
+
+function isHorizontal(position: Position): boolean {
+  return position === Position.Left || position === Position.Right;
+}
+
+function stubPoint(x: number, y: number, position: Position): Point {
+  switch (position) {
+    case Position.Left:
+      return { x: x - ROUTE_STUB, y };
+    case Position.Right:
+      return { x: x + ROUTE_STUB, y };
+    case Position.Top:
+      return { x, y: y - ROUTE_STUB };
+    default:
+      return { x, y: y + ROUTE_STUB };
+  }
+}
+
+/**
+ * Default x for the vertical backbone segment nearest a port: a third of the
+ * way toward the far end, but never behind the port's stub — a left-facing
+ * port routes out to the left even when its partner sits to the right.
+ */
+function defaultBackboneX(portX: number, position: Position, towardX: number): number {
+  const natural = portX + (towardX - portX) / 3;
+  if (isHorizontal(position)) {
+    const sign = position === Position.Right ? 1 : -1;
+    if ((natural - portX) * sign < ROUTE_STUB) return portX + sign * ROUTE_STUB;
+  }
+  return natural;
+}
+
+export type OrthogonalRoute = {
+  points: Point[];
+  startX: number;
+  endX: number;
+  bendY: number;
+  exit: Point;
+  entry: Point;
+};
+
+export function buildOrthogonalRoute({
+  sourceX,
+  sourceY,
+  sourcePosition,
+  targetX,
+  targetY,
+  targetPosition,
+  data
+}: {
+  sourceX: number;
+  sourceY: number;
+  sourcePosition: Position;
+  targetX: number;
+  targetY: number;
+  targetPosition: Position;
+  data?: OrthogonalEdgeData;
+}): OrthogonalRoute {
+  const exit = stubPoint(sourceX, sourceY, sourcePosition);
+  const entry = stubPoint(targetX, targetY, targetPosition);
+  const startX =
+    typeof data?.startX === "number" ? data.startX : defaultBackboneX(sourceX, sourcePosition, targetX);
+  const endX =
+    typeof data?.endX === "number" ? data.endX : defaultBackboneX(targetX, targetPosition, sourceX);
+  // Vertical ports pull the horizontal run to their stub level so the line
+  // clears the symbol before turning; otherwise run midway between the ports.
+  const bendY =
+    typeof data?.bendY === "number"
+      ? data.bendY
+      : !isHorizontal(sourcePosition)
+        ? exit.y
+        : !isHorizontal(targetPosition)
+          ? entry.y
+          : sourceY + (targetY - sourceY) / 2;
+  return {
+    points: [
+      { x: sourceX, y: sourceY },
+      exit,
+      { x: startX, y: exit.y },
+      { x: startX, y: bendY },
+      { x: endX, y: bendY },
+      { x: endX, y: entry.y },
+      entry,
+      { x: targetX, y: targetY }
+    ],
+    startX,
+    endX,
+    bendY,
+    exit,
+    entry
+  };
+}
+
 type EdgeCallbacks = {
   onDirty: () => void;
   onHistory: () => void;
@@ -98,8 +198,10 @@ export function OrthogonalEdge({
   id,
   sourceX,
   sourceY,
+  sourcePosition,
   targetX,
   targetY,
+  targetPosition,
   markerEnd,
   selected,
   label,
@@ -109,18 +211,16 @@ export function OrthogonalEdge({
 }: EdgeProps<OrthogonalEdgeData> & EdgeCallbacks) {
   const { screenToFlowPosition, setEdges, setNodes } = useReactFlow();
   const [hovered, setHovered] = useState(false);
-  const deltaX = targetX - sourceX;
-  const startX = typeof data?.startX === "number" ? data.startX : sourceX + deltaX / 3;
-  const endX = typeof data?.endX === "number" ? data.endX : sourceX + (deltaX * 2) / 3;
-  const bendY = typeof data?.bendY === "number" ? data.bendY : sourceY + (targetY - sourceY) / 2;
-  const path = roundedOrthogonalPath([
-    { x: sourceX, y: sourceY },
-    { x: startX, y: sourceY },
-    { x: startX, y: bendY },
-    { x: endX, y: bendY },
-    { x: endX, y: targetY },
-    { x: targetX, y: targetY }
-  ]);
+  const { points, startX, endX, bendY, exit, entry } = buildOrthogonalRoute({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+    data
+  });
+  const path = roundedOrthogonalPath(points);
 
   const color = data?.color ?? EDGE_DEFAULT_COLOR;
   const baseWidth = data?.strokeWidth ?? EDGE_DEFAULT_WIDTH;
@@ -172,6 +272,14 @@ export function OrthogonalEdge({
     window.addEventListener("pointerup", stopDrag);
   }
 
+  function resetParams(patch: Partial<OrthogonalEdgeData>) {
+    onHistory();
+    setEdges((currentEdges) =>
+      currentEdges.map((edge) => (edge.id === id ? { ...edge, data: { ...edge.data, ...patch } } : edge))
+    );
+    onDirty();
+  }
+
   return (
     <>
       <BaseEdge
@@ -204,24 +312,27 @@ export function OrthogonalEdge({
       >
         <BendHandle
           x={startX}
-          y={(sourceY + bendY) / 2}
+          y={(exit.y + bendY) / 2}
           orientation="vertical"
-          title="Drag to move first vertical line segment"
+          title="Drag to move first vertical line segment · double-click to reset"
           onPointerDown={(event) => beginDrag(event, (position) => ({ startX: position.x, bendX: undefined }))}
+          onDoubleClick={() => resetParams({ startX: undefined, bendX: undefined })}
         />
         <BendHandle
           x={(startX + endX) / 2}
           y={bendY}
           orientation="horizontal"
-          title="Drag to move horizontal line segment"
+          title="Drag to move horizontal line segment · double-click to reset"
           onPointerDown={(event) => beginDrag(event, (position) => ({ bendY: position.y }))}
+          onDoubleClick={() => resetParams({ bendY: undefined })}
         />
         <BendHandle
           x={endX}
-          y={(bendY + targetY) / 2}
+          y={(bendY + entry.y) / 2}
           orientation="vertical"
-          title="Drag to move last vertical line segment"
+          title="Drag to move last vertical line segment · double-click to reset"
           onPointerDown={(event) => beginDrag(event, (position) => ({ endX: position.x, bendX: undefined }))}
+          onDoubleClick={() => resetParams({ endX: undefined, bendX: undefined })}
         />
       </g>
       <EdgeLabelRenderer>
@@ -245,13 +356,15 @@ function BendHandle({
   y,
   orientation,
   title,
-  onPointerDown
+  onPointerDown,
+  onDoubleClick
 }: {
   x: number;
   y: number;
   orientation: "vertical" | "horizontal";
   title: string;
   onPointerDown: (event: ReactPointerEvent<SVGRectElement>) => void;
+  onDoubleClick: () => void;
 }) {
   return (
     <rect
@@ -262,6 +375,10 @@ function BendHandle({
       height={BEND_HANDLE_SIZE}
       rx={2.5}
       onPointerDown={onPointerDown}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        onDoubleClick();
+      }}
     >
       <title>{title}</title>
     </rect>

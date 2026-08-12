@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { Position } from "reactflow";
 import { rotatedPortFraction } from "./pid/nodes";
-import { roundedOrthogonalPath } from "./pid/OrthogonalEdge";
+import { ROUTE_STUB, buildOrthogonalRoute, roundedOrthogonalPath } from "./pid/OrthogonalEdge";
 import { importSvgMarkup } from "./pid/SymbolEditorModal";
 import {
   PALETTE_SYMBOLS,
@@ -71,6 +72,93 @@ describe("rotatedPortFraction", () => {
     const { fx, fy } = rotatedPortFraction(32, 2, viewBox, 90);
     expect(fx).toBeCloseTo(0.78125);
     expect(fy).toBeCloseTo(0.5);
+  });
+});
+
+describe("buildOrthogonalRoute", () => {
+  it("keeps the classic thirds route for a plain right-to-left run", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Right,
+      targetX: 300,
+      targetY: 0,
+      targetPosition: Position.Left
+    });
+    expect(route.startX).toBe(100);
+    expect(route.endX).toBe(200);
+    expect(route.bendY).toBe(0);
+    // Same-height ports collapse to a straight line.
+    expect(route.points.every((point) => point.y === 0)).toBe(true);
+  });
+
+  it("leaves a top port vertically and runs the bend at stub level", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 100,
+      sourcePosition: Position.Top,
+      targetX: 300,
+      targetY: 200,
+      targetPosition: Position.Left
+    });
+    expect(route.points[1]).toEqual({ x: 0, y: 100 - ROUTE_STUB });
+    expect(route.bendY).toBe(100 - ROUTE_STUB);
+  });
+
+  it("routes out through a left port even when the target is to the right", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Left,
+      targetX: 300,
+      targetY: 100,
+      targetPosition: Position.Left
+    });
+    expect(route.startX).toBe(-ROUTE_STUB);
+    // Target's left port keeps its natural approach from the left.
+    expect(route.endX).toBe(200);
+  });
+
+  it("enforces a minimum straight run when nodes are close", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Right,
+      targetX: 20,
+      targetY: 80,
+      targetPosition: Position.Left
+    });
+    expect(route.startX).toBe(ROUTE_STUB);
+    expect(route.endX).toBe(20 - ROUTE_STUB);
+  });
+
+  it("respects stored bend parameters over defaults", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Right,
+      targetX: 300,
+      targetY: 100,
+      targetPosition: Position.Left,
+      data: { startX: 42, bendY: 77 }
+    });
+    expect(route.startX).toBe(42);
+    expect(route.bendY).toBe(77);
+    expect(route.endX).toBe(200);
+  });
+
+  it("enters the target perpendicular to a bottom port", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Right,
+      targetX: 200,
+      targetY: 150,
+      targetPosition: Position.Bottom
+    });
+    const [entry, target] = route.points.slice(-2);
+    expect(entry).toEqual({ x: 200, y: 150 + ROUTE_STUB });
+    expect(target).toEqual({ x: 200, y: 150 });
   });
 });
 
