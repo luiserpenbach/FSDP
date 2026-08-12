@@ -34,6 +34,7 @@ import {
   edgeMarker,
   hasStoredGeometry,
   junctionHandleToward,
+  splitRoutePath,
   translateEdgeGeometry,
   type OrthogonalEdgeData
 } from "./components/pid/OrthogonalEdge";
@@ -1170,27 +1171,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     const dropPoint = rfInstanceRef.current?.screenToFlowPosition({ x: pointer.clientX, y: pointer.clientY });
     if (!pathElement || !dropPoint) return;
 
-    // The path's coordinates are flow coordinates; sample it for the point
-    // nearest the drop location.
-    const totalLength = pathElement.getTotalLength();
-    let nearest = dropPoint;
-    let nearestDistance = Number.POSITIVE_INFINITY;
-    for (let step = 0; step <= 100; step += 1) {
-      const sample = pathElement.getPointAtLength((totalLength * step) / 100);
-      const distance = Math.hypot(sample.x - dropPoint.x, sample.y - dropPoint.y);
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        nearest = { x: sample.x, y: sample.y };
-      }
-    }
-    if (nearestDistance > 40) return;
+    // Split the rendered route at the drop point, keeping each half's
+    // original corners so joining a line never changes its path.
+    const split = splitRoutePath(pathElement.getAttribute("d") ?? "", dropPoint);
+    if (!split || split.distance > 40) return;
 
     recordHistory();
     const junctionId = makeNodeId("junction");
-    const center = {
-      x: Math.round(nearest.x / gridSize) * gridSize,
-      y: Math.round(nearest.y / gridSize) * gridSize
-    };
+    const center = split.point;
     setNodes((current) =>
       sortSectionsFirst([
         ...current,
@@ -1231,7 +1219,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         target: junctionId,
         targetHandle: towards(targetEdge.source),
         type: "orthogonal",
-        data: upstreamData,
+        data: { ...upstreamData, waypoints: split.upstream },
         markerEnd: edgeMarker(upstreamData)
       },
       {
@@ -1242,7 +1230,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         targetHandle: targetEdge.targetHandle,
         type: "orthogonal",
         label: targetEdge.label,
-        data: carried,
+        data: { ...carried, waypoints: split.downstream },
         markerEnd: edgeMarker(carried)
       },
       {

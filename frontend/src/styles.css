@@ -1831,7 +1831,9 @@ button.symbolListDelete:hover:not(:disabled) {
   border-radius: var(--radius-sm);
   display: flex;
   justify-content: center;
+  overflow: hidden;
   padding: 18px;
+  position: relative;
 }
 
 .symbolPreview {
@@ -2098,6 +2100,68 @@ button.symbolShapeName {
 .symbolShapeChip > button:last-child:hover:not(:disabled) {
   background: transparent;
   color: var(--red);
+}
+
+.symbolZoomControls {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(8, 15, 28, 0.08);
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  z-index: 2;
+}
+
+button.symbolZoomButton {
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  height: 22px;
+  line-height: 1;
+  margin: 0;
+  min-width: 22px;
+  padding: 0;
+}
+
+button.symbolZoomButton:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+button.symbolZoomLabel {
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  height: 22px;
+  margin: 0;
+  min-width: 40px;
+  padding: 0 4px;
+}
+
+button.symbolZoomLabel:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+span.symbolListPendingName {
+  flex: 1;
+  font-size: 12.5px;
+  padding: 6px 8px;
+}
+
+span.symbolListPendingName.untitled {
+  color: var(--text-3);
+  font-style: italic;
 }
 
 /* ---------- Auth ---------- */

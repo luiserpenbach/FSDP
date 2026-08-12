@@ -128,8 +128,8 @@ export function dominantDirection(fromX: number, fromY: number, toX: number, toY
   return deltaY >= 0 ? Position.Bottom : Position.Top;
 }
 
-/** Short straight run leaving a junction's center before the first bend. */
-export const JUNCTION_STUB = 8;
+/** Minimum standoff leaving a junction's center before the first bend. */
+export const JUNCTION_STUB = 12;
 
 const POSITION_TO_JUNCTION_HANDLE: Record<Position, "l" | "r" | "t" | "b"> = {
   [Position.Left]: "l",
@@ -303,6 +303,78 @@ export function translateEdgeGeometry(
   return changed ? next : data;
 }
 
+/**
+ * Recover the unrounded route polyline from a rendered path. The path is
+ * M/L segments with `Q` rounding whose control point is the true corner, so
+ * the vertex sequence is: M point, then every L endpoint and Q control point
+ * in order (Q curve exits lie on the following segment and can be skipped).
+ */
+export function parseRoutePolyline(d: string): Point[] {
+  const vertices: Point[] = [];
+  const tokens = d.match(/[MLQ]|-?[\d.]+,-?[\d.]+/g) ?? [];
+  let command = "";
+  let pairIndex = 0;
+  for (const token of tokens) {
+    if (token === "M" || token === "L" || token === "Q") {
+      command = token;
+      pairIndex = 0;
+      continue;
+    }
+    const [x, y] = token.split(",").map(Number);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    // Q contributes control + exit pairs; keep only the control (the exact
+    // corner) — the exit lies on the following segment.
+    if (command !== "Q" || pairIndex === 0) vertices.push({ x, y });
+    pairIndex += 1;
+  }
+  return vertices;
+}
+
+/**
+ * Split a rendered route at the point nearest `drop`: returns the on-line
+ * split point (kept on the segment's axis) and the interior corners of each
+ * half as ready-to-store waypoint lists, preserving the original geometry.
+ */
+export function splitRoutePath(
+  d: string,
+  drop: Point
+): { point: Point; distance: number; upstream: Point[]; downstream: Point[] } | null {
+  const vertices = parseRoutePolyline(d);
+  if (vertices.length < 2) return null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestIndex = 0;
+  let bestPoint = vertices[0];
+  for (let index = 0; index < vertices.length - 1; index += 1) {
+    const a = vertices[index];
+    const b = vertices[index + 1];
+    const abX = b.x - a.x;
+    const abY = b.y - a.y;
+    const lengthSquared = abX * abX + abY * abY;
+    const t = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, ((drop.x - a.x) * abX + (drop.y - a.y) * abY) / lengthSquared));
+    const candidate = { x: a.x + abX * t, y: a.y + abY * t };
+    const distance = Math.hypot(candidate.x - drop.x, candidate.y - drop.y);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+      bestPoint = candidate;
+    }
+  }
+  // Round the split point without leaving the line: only along the segment's axis.
+  const segmentA = vertices[bestIndex];
+  const segmentB = vertices[bestIndex + 1];
+  const point =
+    segmentA.x === segmentB.x
+      ? { x: segmentA.x, y: Math.round(bestPoint.y) }
+      : segmentA.y === segmentB.y
+        ? { x: Math.round(bestPoint.x), y: segmentA.y }
+        : { x: Math.round(bestPoint.x), y: Math.round(bestPoint.y) };
+  const source = vertices[0];
+  const target = vertices[vertices.length - 1];
+  const upstream = cleanupWaypoints(vertices.slice(1, bestIndex + 1), source, point);
+  const downstream = cleanupWaypoints(vertices.slice(bestIndex + 1, vertices.length - 1), point, target);
+  return { point, distance: bestDistance, upstream, downstream };
+}
+
 /** True when the line carries hand-placed geometry that should move with its nodes. */
 export function hasStoredGeometry(data: OrthogonalEdgeData | undefined): boolean {
   return (
@@ -341,18 +413,26 @@ export function OrthogonalEdge({
   const { screenToFlowPosition, setEdges, setNodes, getNode } = useReactFlow();
   const [hovered, setHovered] = useState(false);
 
-  // Junction endpoints anchor at the junction's center; the connected
-  // handle's Position (one of four discrete directions) steers the exit, with
-  // a short stub so the line clears the dot before bending.
+  // Junction endpoints anchor at the junction's center and re-evaluate their
+  // exit direction on every render, so dragging things around lets the line
+  // flip between the four directions (aimed at the nearest routed corner when
+  // the line is hand-routed, else at the far end), with a minimum standoff.
   const sourceIsJunction = getNode(source)?.type === "pidJunction";
   const targetIsJunction = getNode(target)?.type === "pidJunction";
+  const routedCorners = Array.isArray(data?.waypoints) && data.waypoints.length ? data.waypoints : null;
+  const sourceAim = routedCorners ? routedCorners[0] : { x: targetX, y: targetY };
+  const targetAim = routedCorners ? routedCorners[routedCorners.length - 1] : { x: sourceX, y: sourceY };
   const route = buildOrthogonalRoute({
     sourceX,
     sourceY,
-    sourcePosition,
+    sourcePosition: sourceIsJunction
+      ? dominantDirection(sourceX, sourceY, sourceAim.x, sourceAim.y)
+      : sourcePosition,
     targetX,
     targetY,
-    targetPosition,
+    targetPosition: targetIsJunction
+      ? dominantDirection(targetX, targetY, targetAim.x, targetAim.y)
+      : targetPosition,
     sourceStub: sourceIsJunction ? JUNCTION_STUB : ROUTE_STUB,
     targetStub: targetIsJunction ? JUNCTION_STUB : ROUTE_STUB,
     data

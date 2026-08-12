@@ -6,10 +6,19 @@ import {
   buildOrthogonalRoute,
   cleanupWaypoints,
   dominantDirection,
+  parseRoutePolyline,
   roundedOrthogonalPath,
+  splitRoutePath,
   translateEdgeGeometry
 } from "./pid/OrthogonalEdge";
-import { centerOffsetLabel, importSvgMarkup, linePath, normalizedRect, serializeShape } from "./pid/SymbolEditorModal";
+import {
+  centerOffsetLabel,
+  importSvgMarkup,
+  linePath,
+  normalizedRect,
+  serializeShape,
+  zoomedViewBox
+} from "./pid/SymbolEditorModal";
 import {
   PALETTE_SYMBOLS,
   SYMBOL_PORTS,
@@ -324,5 +333,51 @@ describe("centerOffsetLabel", () => {
 
   it("honors a non-zero viewBox origin", () => {
     expect(centerOffsetLabel({ x: 0, y: 0 }, { x: -20, y: -10, width: 40, height: 20 })).toBe("x +0 · y +0");
+  });
+});
+
+describe("zoomedViewBox", () => {
+  it("windows the viewBox around its center when zooming in", () => {
+    expect(zoomedViewBox({ x: 0, y: 0, width: 64, height: 40 }, 2)).toEqual({ x: 16, y: 10, width: 32, height: 20 });
+  });
+
+  it("returns the original box at 100%", () => {
+    expect(zoomedViewBox({ x: -20, y: -10, width: 40, height: 20 }, 1)).toEqual({ x: -20, y: -10, width: 40, height: 20 });
+  });
+
+  it("expands the window around the same center when zooming out", () => {
+    expect(zoomedViewBox({ x: 0, y: 0, width: 64, height: 40 }, 0.5)).toEqual({ x: -32, y: -20, width: 128, height: 80 });
+  });
+});
+
+describe("route splitting", () => {
+  // A rendered L-shaped route: right 60, then down 40, with a rounded corner.
+  const d = "M 0,0 L 57,0 Q 60,0 60,3 L 60,40";
+
+  it("parseRoutePolyline recovers the unrounded corners", () => {
+    // The Q control (60,0) is the true corner; the curve exit (60,3) lies on
+    // the following segment and is skipped.
+    expect(parseRoutePolyline(d)).toEqual([
+      { x: 0, y: 0 },
+      { x: 57, y: 0 },
+      { x: 60, y: 0 },
+      { x: 60, y: 40 }
+    ]);
+  });
+
+  it("splitRoutePath keeps each half's corners and stays on the line", () => {
+    const split = splitRoutePath(d, { x: 30, y: 6 });
+    expect(split).not.toBeNull();
+    // Nearest point on the horizontal run, pinned to its axis.
+    expect(split?.point).toEqual({ x: 30, y: 0 });
+    expect(split?.distance).toBeCloseTo(6);
+    // Upstream half is straight; downstream keeps the corner at (60, 0).
+    expect(split?.upstream).toEqual([]);
+    expect(split?.downstream).toEqual([{ x: 60, y: 0 }]);
+  });
+
+  it("splitRoutePath clamps to segment ends beyond the route", () => {
+    const split = splitRoutePath(d, { x: 90, y: 60 });
+    expect(split?.point).toEqual({ x: 60, y: 40 });
   });
 });
