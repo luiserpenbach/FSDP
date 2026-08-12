@@ -9,7 +9,7 @@ import {
   roundedOrthogonalPath,
   translateEdgeGeometry
 } from "./pid/OrthogonalEdge";
-import { importSvgMarkup, linePath, normalizedRect } from "./pid/SymbolEditorModal";
+import { centerOffsetLabel, importSvgMarkup, linePath, normalizedRect, serializeShape } from "./pid/SymbolEditorModal";
 import {
   PALETTE_SYMBOLS,
   SYMBOL_PORTS,
@@ -294,5 +294,35 @@ describe("normalizedRect", () => {
   it("rejects rects under two units on either side", () => {
     expect(normalizedRect({ x: 0, y: 0 }, { x: 1, y: 40 })).toBeNull();
     expect(normalizedRect({ x: 0, y: 0 }, { x: 0, y: 0 })).toBeNull();
+  });
+});
+
+describe("serializeShape", () => {
+  it("omits stroke attributes on default shapes so they inherit currentColor", () => {
+    expect(serializeShape({ kind: "rect", x: 2, y: 4, width: 10, height: 6 })).toBe(
+      '<rect x="2" y="4" width="10" height="6" />'
+    );
+    expect(serializeShape({ kind: "path", d: "M 0 0 L 8 0" })).toBe('<path d="M 0 0 L 8 0" />');
+  });
+
+  it("carries explicit color and stroke width", () => {
+    expect(serializeShape({ kind: "circle", cx: 0, cy: 2, r: 5, color: "#2257c4", strokeWidth: 1.4 })).toBe(
+      '<circle cx="0" cy="2" r="5" stroke="#2257c4" stroke-width="1.4" />'
+    );
+    expect(serializeShape({ kind: "path", d: "M 0 0 L 8 0", strokeWidth: 3.2 })).toBe(
+      '<path d="M 0 0 L 8 0" stroke-width="3.2" />'
+    );
+  });
+});
+
+describe("centerOffsetLabel", () => {
+  it("reports the cursor relative to the viewBox center with signed offsets", () => {
+    const viewBox = { x: 0, y: 0, width: 64, height: 40 };
+    expect(centerOffsetLabel({ x: 44, y: 16 }, viewBox)).toBe("x +12 · y −4");
+    expect(centerOffsetLabel({ x: 32, y: 20 }, viewBox)).toBe("x +0 · y +0");
+  });
+
+  it("honors a non-zero viewBox origin", () => {
+    expect(centerOffsetLabel({ x: 0, y: 0 }, { x: -20, y: -10, width: 40, height: 20 })).toBe("x +0 · y +0");
   });
 });

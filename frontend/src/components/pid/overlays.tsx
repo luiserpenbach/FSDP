@@ -256,7 +256,8 @@ export function FloatingToolbar({
 
 export const DEFAULT_SYMBOL_SIZE = { width: 56, height: 50 };
 export const DEFAULT_SECTION_SIZE = { width: 320, height: 220 };
-export const JUNCTION_SIZE = 14;
+/** Junction node box: a 10px dot centered in a 20px draggable ring. */
+export const JUNCTION_SIZE = 20;
 
 /**
  * Semi-transparent preview of the armed element following the cursor,

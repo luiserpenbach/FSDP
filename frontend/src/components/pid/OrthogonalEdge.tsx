@@ -120,12 +120,32 @@ function stubPoint(x: number, y: number, position: Position, length: number): Po
   }
 }
 
-/** Which way a stub-less endpoint (junction) should face: toward the far end. */
+/** Which way an endpoint should face to head toward the far end. */
 export function dominantDirection(fromX: number, fromY: number, toX: number, toY: number): Position {
   const deltaX = toX - fromX;
   const deltaY = toY - fromY;
   if (Math.abs(deltaX) >= Math.abs(deltaY)) return deltaX >= 0 ? Position.Right : Position.Left;
   return deltaY >= 0 ? Position.Bottom : Position.Top;
+}
+
+/** Short straight run leaving a junction's center before the first bend. */
+export const JUNCTION_STUB = 8;
+
+const POSITION_TO_JUNCTION_HANDLE: Record<Position, "l" | "r" | "t" | "b"> = {
+  [Position.Left]: "l",
+  [Position.Right]: "r",
+  [Position.Top]: "t",
+  [Position.Bottom]: "b"
+};
+
+/** The junction handle whose direction points from the junction toward (toX, toY). */
+export function junctionHandleToward(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number
+): "l" | "r" | "t" | "b" {
+  return POSITION_TO_JUNCTION_HANDLE[dominantDirection(fromX, fromY, toX, toY)];
 }
 
 /**
@@ -321,17 +341,20 @@ export function OrthogonalEdge({
   const { screenToFlowPosition, setEdges, setNodes, getNode } = useReactFlow();
   const [hovered, setHovered] = useState(false);
 
+  // Junction endpoints anchor at the junction's center; the connected
+  // handle's Position (one of four discrete directions) steers the exit, with
+  // a short stub so the line clears the dot before bending.
   const sourceIsJunction = getNode(source)?.type === "pidJunction";
   const targetIsJunction = getNode(target)?.type === "pidJunction";
   const route = buildOrthogonalRoute({
     sourceX,
     sourceY,
-    sourcePosition: sourceIsJunction ? dominantDirection(sourceX, sourceY, targetX, targetY) : sourcePosition,
+    sourcePosition,
     targetX,
     targetY,
-    targetPosition: targetIsJunction ? dominantDirection(targetX, targetY, sourceX, sourceY) : targetPosition,
-    sourceStub: sourceIsJunction ? 0 : ROUTE_STUB,
-    targetStub: targetIsJunction ? 0 : ROUTE_STUB,
+    targetPosition,
+    sourceStub: sourceIsJunction ? JUNCTION_STUB : ROUTE_STUB,
+    targetStub: targetIsJunction ? JUNCTION_STUB : ROUTE_STUB,
     data
   });
   const { points, corners, exit, entry } = route;

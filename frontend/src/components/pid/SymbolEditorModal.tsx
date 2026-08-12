@@ -6,11 +6,13 @@
  * grid with the toolbar) → click the preview in Ports mode to drop a port
  * exactly on the drawing → drag ports to fine-tune → save. Ports are stored
  * in viewBox coordinates alongside the sanitized SVG; drawn shapes are kept
- * as separate SVG element strings and merged with the imported base on save.
+ * as structured objects (individually selectable, restylable and deletable)
+ * and serialized into the imported base's SVG on save.
  */
 import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { api } from "../../api";
-import { parseViewBox } from "../PidSymbols";
+import { parseViewBox, type ViewBox } from "../PidSymbols";
+import { EDGE_COLORS } from "./OrthogonalEdge";
 import type { PidSymbolDef, SymbolPort, SymbolPortSide } from "../../types";
 
 const DEFAULT_VIEWBOX = "0 0 64 40";
@@ -59,10 +61,25 @@ export function importSvgMarkup(raw: string): { viewBox: string; inner: string }
 
 export type DrawPoint = { x: number; y: number };
 
+/** A shape drawn in the editor; color/strokeWidth unset = inherit defaults. */
+export type DrawnShape =
+  | { kind: "path"; d: string; color?: string; strokeWidth?: number }
+  | { kind: "rect"; x: number; y: number; width: number; height: number; color?: string; strokeWidth?: number }
+  | { kind: "circle"; cx: number; cy: number; r: number; color?: string; strokeWidth?: number };
+
 type ToolMode = "port" | "line" | "rect" | "circle";
 
 /** Grid pitch (in viewBox units) that drawn coordinates snap to. */
 const DRAW_GRID = 2;
+
+/** Stroke widths offered by the drawing toolbar; the middle one matches the
+ *  preview's inherited stroke and is stored as "unset". */
+const DRAW_WIDTHS = [1.4, 2.2, 3.2];
+const DRAW_DEFAULT_WIDTH = 2.2;
+const DRAW_WIDTH_TITLES = ["Thin stroke", "Regular stroke", "Thick stroke"];
+const DRAW_WIDTH_ICONS = [1.2, 2.2, 3.4];
+
+const SHAPE_LABELS: Record<DrawnShape["kind"], string> = { path: "Line", rect: "Rect", circle: "Circle" };
 
 const TOOL_MODES: Array<{ id: ToolMode; label: string; title: string }> = [
   { id: "port", label: "Ports", title: "Click to add connection ports" },
@@ -111,6 +128,33 @@ function circleRadius(center: DrawPoint, edge: DrawPoint): number {
   return Math.round(Math.hypot(edge.x - center.x, edge.y - center.y));
 }
 
+/**
+ * Serialize a drawn shape to an SVG element string. Stroke attributes are
+ * omitted when unset so default shapes keep inheriting currentColor and the
+ * symbol's base stroke width.
+ */
+export function serializeShape(shape: DrawnShape): string {
+  const style =
+    (shape.color ? ` stroke="${shape.color}"` : "") +
+    (typeof shape.strokeWidth === "number" ? ` stroke-width="${shape.strokeWidth}"` : "");
+  switch (shape.kind) {
+    case "path":
+      return `<path d="${shape.d}"${style} />`;
+    case "rect":
+      return `<rect x="${shape.x}" y="${shape.y}" width="${shape.width}" height="${shape.height}"${style} />`;
+    default:
+      return `<circle cx="${shape.cx}" cy="${shape.cy}" r="${shape.r}"${style} />`;
+  }
+}
+
+/** Cursor readout relative to the viewBox center, e.g. "x +12 · y −4". */
+export function centerOffsetLabel(point: DrawPoint, viewBox: ViewBox): string {
+  const part = (value: number) => `${value < 0 ? "−" : "+"}${Math.abs(value)}`;
+  const dx = Math.round(point.x - (viewBox.x + viewBox.width / 2));
+  const dy = Math.round(point.y - (viewBox.y + viewBox.height / 2));
+  return `x ${part(dx)} · y ${part(dy)}`;
+}
+
 function nearestSide(x: number, y: number, viewBox: { x: number; y: number; width: number; height: number }): SymbolPortSide {
   const distances: Array<[SymbolPortSide, number]> = [
     ["left", x - viewBox.x],
@@ -127,7 +171,7 @@ const EMPTY_DRAFT = {
   name: "",
   viewBox: DEFAULT_VIEWBOX,
   svg: "",
-  drawn: [] as string[],
+  drawn: [] as DrawnShape[],
   ports: [] as SymbolPort[]
 };
 
@@ -147,6 +191,11 @@ export function SymbolEditorModal({
   const [tool, setTool] = useState<ToolMode>("port");
   const [linePoints, setLinePoints] = useState<DrawPoint[]>([]);
   const [shapeDraft, setShapeDraft] = useState<{ start: DrawPoint; end: DrawPoint } | null>(null);
+  const [selectedShape, setSelectedShape] = useState<number | null>(null);
+  const [hoverShape, setHoverShape] = useState<number | null>(null);
+  const [strokeColor, setStrokeColor] = useState<string | undefined>(undefined);
+  const [strokeWidthPick, setStrokeWidthPick] = useState<number | undefined>(undefined);
+  const [cursor, setCursor] = useState<DrawPoint | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
@@ -158,6 +207,9 @@ export function SymbolEditorModal({
       setTool("port");
       setLinePoints([]);
       setShapeDraft(null);
+      setSelectedShape(null);
+      setHoverShape(null);
+      setCursor(null);
       setError("");
     }
   }, [open]);
@@ -169,8 +221,13 @@ export function SymbolEditorModal({
       if (event.target instanceof Element && event.target.closest("input, textarea")) return;
       if (event.key === "Enter") {
         event.preventDefault();
-        const path = linePath(linePoints);
-        if (path) setDraft((current) => ({ ...current, drawn: [...current.drawn, `<path d="${path}" />`] }));
+        const d = linePath(linePoints);
+        if (d) {
+          setDraft((current) => ({
+            ...current,
+            drawn: [...current.drawn, { kind: "path", d, color: strokeColor, strokeWidth: strokeWidthPick }]
+          }));
+        }
         setLinePoints([]);
       } else if (event.key === "Escape") {
         setLinePoints([]);
@@ -178,14 +235,28 @@ export function SymbolEditorModal({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, linePoints]);
+  }, [open, linePoints, strokeColor, strokeWidthPick]);
+
+  // Escape drops the shape-chip selection.
+  useEffect(() => {
+    if (!open || selectedShape === null) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setSelectedShape(null);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, selectedShape]);
 
   if (!open) return null;
 
   const viewBox = parseViewBox(draft.viewBox);
-  const combinedSvg = [draft.svg, ...draft.drawn].filter(Boolean).join("\n");
+  const combinedSvg = [draft.svg, ...draft.drawn.map(serializeShape)].filter(Boolean).join("\n");
   const shapeRect = shapeDraft && tool === "rect" ? normalizedRect(shapeDraft.start, shapeDraft.end) : null;
   const shapeR = shapeDraft && tool === "circle" ? circleRadius(shapeDraft.start, shapeDraft.end) : 0;
+  // The stroke controls target the selected shape, or the drawing defaults.
+  const activeShape = selectedShape !== null ? draft.drawn[selectedShape] : null;
+  const controlColor = activeShape ? activeShape.color : strokeColor;
+  const controlWidth = (activeShape ? activeShape.strokeWidth : strokeWidthPick) ?? DRAW_DEFAULT_WIDTH;
 
   function applyMarkup(raw: string) {
     try {
@@ -202,6 +273,8 @@ export function SymbolEditorModal({
     setMarkupDraft(symbol.svg);
     setLinePoints([]);
     setShapeDraft(null);
+    setSelectedShape(null);
+    setHoverShape(null);
     setError("");
   }
 
@@ -223,8 +296,11 @@ export function SymbolEditorModal({
     return { x: snapToGrid(x, grid), y: snapToGrid(y, grid) };
   }
 
-  function appendShape(element: string) {
-    setDraft((current) => ({ ...current, drawn: [...current.drawn, element] }));
+  function appendShape(shape: DrawnShape) {
+    setDraft((current) => ({
+      ...current,
+      drawn: [...current.drawn, { ...shape, color: strokeColor, strokeWidth: strokeWidthPick }]
+    }));
   }
 
   function selectTool(next: ToolMode) {
@@ -234,7 +310,37 @@ export function SymbolEditorModal({
   }
 
   function undoShape() {
+    const lastIndex = draft.drawn.length - 1;
     setDraft((current) => ({ ...current, drawn: current.drawn.slice(0, -1) }));
+    setSelectedShape((current) => (current !== null && current >= lastIndex ? null : current));
+    setHoverShape(null);
+  }
+
+  function removeShape(index: number) {
+    setDraft((current) => ({ ...current, drawn: current.drawn.filter((_, i) => i !== index) }));
+    setSelectedShape((current) => {
+      if (current === null || current === index) return null;
+      return current > index ? current - 1 : current;
+    });
+    setHoverShape(null);
+  }
+
+  function updateShape(index: number, patch: { color?: string; strokeWidth?: number }) {
+    setDraft((current) => ({
+      ...current,
+      drawn: current.drawn.map((shape, i) => (i === index ? { ...shape, ...patch } : shape))
+    }));
+  }
+
+  function pickStrokeColor(color: string | undefined) {
+    if (selectedShape !== null) updateShape(selectedShape, { color });
+    else setStrokeColor(color);
+  }
+
+  function pickStrokeWidth(width: number) {
+    const value = width === DRAW_DEFAULT_WIDTH ? undefined : width;
+    if (selectedShape !== null) updateShape(selectedShape, { strokeWidth: value });
+    else setStrokeWidthPick(value);
   }
 
   function addLinePoint(event: ReactPointerEvent<HTMLDivElement>) {
@@ -244,8 +350,8 @@ export function SymbolEditorModal({
   }
 
   function finishLine() {
-    const path = linePath(linePoints);
-    if (path) appendShape(`<path d="${path}" />`);
+    const d = linePath(linePoints);
+    if (d) appendShape({ kind: "path", d });
     setLinePoints([]);
   }
 
@@ -267,10 +373,10 @@ export function SymbolEditorModal({
       const end = previewCoords(upEvent.clientX, upEvent.clientY, DRAW_GRID) ?? start;
       if (shapeTool === "rect") {
         const rect = normalizedRect(start, end);
-        if (rect) appendShape(`<rect x="${rect.x}" y="${rect.y}" width="${rect.width}" height="${rect.height}" />`);
+        if (rect) appendShape({ kind: "rect", ...rect });
       } else {
         const r = circleRadius(start, end);
-        if (r >= 1) appendShape(`<circle cx="${start.x}" cy="${start.y}" r="${r}" />`);
+        if (r >= 1) appendShape({ kind: "circle", cx: start.x, cy: start.y, r });
       }
     }
 
@@ -286,6 +392,35 @@ export function SymbolEditorModal({
     event.preventDefault();
     if (tool === "line") addLinePoint(event);
     else startShape(event, tool);
+  }
+
+  function previewPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    setCursor(previewCoords(event.clientX, event.clientY));
+  }
+
+  /** Render a drawn shape; hover/selection recolors it and thickens the stroke. */
+  function renderDrawnShape(shape: DrawnShape, index: number) {
+    const highlighted = hoverShape === index || selectedShape === index;
+    const stroke = highlighted ? "var(--accent)" : shape.color;
+    const strokeWidth = highlighted ? (shape.strokeWidth ?? DRAW_DEFAULT_WIDTH) + 0.8 : shape.strokeWidth;
+    switch (shape.kind) {
+      case "path":
+        return <path key={index} d={shape.d} stroke={stroke} strokeWidth={strokeWidth} />;
+      case "rect":
+        return (
+          <rect
+            key={index}
+            x={shape.x}
+            y={shape.y}
+            width={shape.width}
+            height={shape.height}
+            stroke={stroke}
+            strokeWidth={strokeWidth}
+          />
+        );
+      default:
+        return <circle key={index} cx={shape.cx} cy={shape.cy} r={shape.r} stroke={stroke} strokeWidth={strokeWidth} />;
+    }
   }
 
   function addPort(event: ReactPointerEvent<HTMLDivElement>) {
@@ -376,7 +511,15 @@ export function SymbolEditorModal({
             <button
               className="primary"
               type="button"
-              onClick={() => { setDraft(EMPTY_DRAFT); setMarkupDraft(""); setLinePoints([]); setShapeDraft(null); setError(""); }}
+              onClick={() => {
+                setDraft(EMPTY_DRAFT);
+                setMarkupDraft("");
+                setLinePoints([]);
+                setShapeDraft(null);
+                setSelectedShape(null);
+                setHoverShape(null);
+                setError("");
+              }}
             >
               + New symbol
             </button>
@@ -422,6 +565,39 @@ export function SymbolEditorModal({
                   {mode.label}
                 </button>
               ))}
+              <span className="symbolToolDivider" />
+              <span className="symbolSwatchRow">
+                <button
+                  className={controlColor === undefined ? "symbolSwatch symbolSwatchDefault active" : "symbolSwatch symbolSwatchDefault"}
+                  title="Default (symbol color)"
+                  type="button"
+                  onClick={() => pickStrokeColor(undefined)}
+                />
+                {EDGE_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    className={controlColor === color ? "symbolSwatch active" : "symbolSwatch"}
+                    style={{ background: color }}
+                    title={color}
+                    type="button"
+                    onClick={() => pickStrokeColor(color)}
+                  />
+                ))}
+              </span>
+              <span className="symbolToolDivider" />
+              {DRAW_WIDTHS.map((width, index) => (
+                <button
+                  key={width}
+                  className={controlWidth === width ? "symbolToolButton symbolStrokeButton active" : "symbolToolButton symbolStrokeButton"}
+                  title={DRAW_WIDTH_TITLES[index]}
+                  type="button"
+                  onClick={() => pickStrokeWidth(width)}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={DRAW_WIDTH_ICONS[index]} strokeLinecap="round">
+                    <path d="M4 12 H20" />
+                  </svg>
+                </button>
+              ))}
               <button
                 className="symbolToolButton symbolToolUndo"
                 disabled={draft.drawn.length === 0}
@@ -432,17 +608,43 @@ export function SymbolEditorModal({
                 Undo shape
               </button>
             </div>
-            <p className="hint">{TOOL_HINTS[tool]}</p>
+            <div className="symbolHintRow">
+              <p className="hint">
+                {selectedShape !== null
+                  ? "Stroke controls restyle the selected shape; Escape or a second click deselects."
+                  : TOOL_HINTS[tool]}
+              </p>
+              {cursor && <span className="symbolCursorChip">{centerOffsetLabel(cursor, viewBox)}</span>}
+            </div>
             <div className="symbolPreviewWrap">
               <div
                 className="symbolPreview"
                 ref={previewRef}
                 style={{ aspectRatio: `${viewBox.width} / ${viewBox.height}` }}
                 onPointerDown={previewPointerDown}
+                onPointerMove={previewPointerMove}
+                onPointerLeave={() => setCursor(null)}
                 onDoubleClick={tool === "line" ? finishLine : undefined}
               >
+                <svg className="symbolAxes" viewBox={draft.viewBox} preserveAspectRatio="none" aria-hidden="true">
+                  <line
+                    x1={viewBox.x + viewBox.width / 2}
+                    y1={viewBox.y}
+                    x2={viewBox.x + viewBox.width / 2}
+                    y2={viewBox.y + viewBox.height}
+                    strokeDasharray="2 2"
+                  />
+                  <line
+                    x1={viewBox.x}
+                    y1={viewBox.y + viewBox.height / 2}
+                    x2={viewBox.x + viewBox.width}
+                    y2={viewBox.y + viewBox.height / 2}
+                    strokeDasharray="2 2"
+                  />
+                </svg>
                 {combinedSvg ? (
                   <svg
+                    className="symbolDrawing"
                     viewBox={draft.viewBox}
                     fill="none"
                     stroke="currentColor"
@@ -450,8 +652,10 @@ export function SymbolEditorModal({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     preserveAspectRatio="none"
-                    dangerouslySetInnerHTML={{ __html: combinedSvg }}
-                  />
+                  >
+                    {draft.svg && <g dangerouslySetInnerHTML={{ __html: draft.svg }} />}
+                    {draft.drawn.map(renderDrawnShape)}
+                  </svg>
                 ) : (
                   <span className="symbolPreviewEmpty">Draw with the tools above, or import/paste SVG</span>
                 )}
@@ -494,6 +698,28 @@ export function SymbolEditorModal({
                 ))}
               </div>
             </div>
+            {draft.drawn.length > 0 && (
+              <div className="symbolShapeList">
+                {draft.drawn.map((shape, index) => (
+                  <span
+                    key={index}
+                    className={selectedShape === index ? "symbolShapeChip selected" : "symbolShapeChip"}
+                    onPointerEnter={() => setHoverShape(index)}
+                    onPointerLeave={() => setHoverShape((current) => (current === index ? null : current))}
+                  >
+                    <button
+                      className="symbolShapeName"
+                      title={selectedShape === index ? "Deselect shape" : "Select shape to restyle it"}
+                      type="button"
+                      onClick={() => setSelectedShape((current) => (current === index ? null : index))}
+                    >
+                      {SHAPE_LABELS[shape.kind]} {index + 1}
+                    </button>
+                    <button type="button" title="Delete shape" onClick={() => removeShape(index)}>&#215;</button>
+                  </span>
+                ))}
+              </div>
+            )}
             {draft.ports.length > 0 && (
               <div className="symbolPortList">
                 {draft.ports.map((port) => (
