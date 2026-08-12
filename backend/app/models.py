@@ -177,6 +177,22 @@ class ComponentInstance(TimestampMixin, Base):
     part: Mapped[Part | None] = relationship()
 
 
+class PidSymbolDef(TimestampMixin, Base):
+    """User-defined P&ID symbol: sanitized SVG markup plus connection ports.
+
+    Ports are stored in viewBox coordinates as
+    ``[{"id": str, "x": float, "y": float, "side": str}, ...]``.
+    """
+
+    __tablename__ = "pid_symbols"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    view_box: Mapped[str] = mapped_column(String(80), nullable=False, default="0 0 64 40")
+    svg: Mapped[str] = mapped_column(Text, nullable=False)
+    ports: Mapped[list] = mapped_column(JSON, default=list)
+
+
 class Requirement(TimestampMixin, Base):
     __tablename__ = "requirements"
 

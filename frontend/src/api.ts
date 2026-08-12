@@ -8,6 +8,7 @@ import type {
   FluidSystem,
   Impact,
   Part,
+  PidSymbolDef,
   Project,
   ProjectBom,
   Requirement,
@@ -106,6 +107,12 @@ export const api = {
     requestNoContent(`/diagrams/${diagramId}`, { method: "DELETE" }),
   updateDiagramGraph: (diagramId: string, body: unknown) =>
     request<Diagram>(`/diagrams/${diagramId}/graph`, { method: "PUT", body: JSON.stringify(body) }),
+  listSymbols: () => request<PidSymbolDef[]>("/symbols"),
+  createSymbol: (body: Omit<PidSymbolDef, "id" | "created_at" | "updated_at">) =>
+    request<PidSymbolDef>("/symbols", { method: "POST", body: JSON.stringify(body) }),
+  updateSymbol: (symbolId: string, body: Partial<Omit<PidSymbolDef, "id">>) =>
+    request<PidSymbolDef>(`/symbols/${symbolId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteSymbol: (symbolId: string) => requestNoContent(`/symbols/${symbolId}`, { method: "DELETE" }),
   listParts: () => request<Part[]>("/parts"),
   createPart: (body: Partial<Part> & { part_number: string; description: string; part_type: string }) =>
     request<Part>("/parts", { method: "POST", body: JSON.stringify(body) }),

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
+import { PanelResizer, useStoredWidth } from "./resizable";
 import { Select } from "./ui";
 
 export type NavItem = {
@@ -56,8 +57,10 @@ export function AppShell({
   userLabel: string;
   onSignOut: () => void;
 }) {
+  const [sidebarWidth, setSidebarWidth] = useStoredWidth("fsdp.sidebarWidth", 248, 180, 420);
+
   return (
-    <div className="appShell">
+    <div className="appShell" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}>
       <aside className="sidebar">
         <Brand />
         <nav className="sideNav" aria-label="Primary navigation">
@@ -68,6 +71,7 @@ export function AppShell({
             </NavLink>
           ))}
         </nav>
+        <PanelResizer width={sidebarWidth} onResize={setSidebarWidth} direction={1} label="Resize navigation panel" />
       </aside>
 
       <div className="appMain">

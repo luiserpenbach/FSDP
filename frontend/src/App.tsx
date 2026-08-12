@@ -1,58 +1,64 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { toPng } from "html-to-image";
 import ReactFlow, {
   Background,
   BackgroundVariant,
-  BaseEdge,
+  ConnectionMode,
   Controls,
-  EdgeLabelRenderer,
-  Handle,
-  MarkerType,
   MiniMap,
-  NodeResizer,
-  Position,
   addEdge,
   useEdgesState,
   useNodesState,
-  useReactFlow,
   type Connection,
   type Edge,
   type EdgeChange,
   type EdgeProps,
   type Node,
   type NodeChange,
-  type NodeProps
+  type NodeProps,
+  type ReactFlowInstance
 } from "reactflow";
-import { PALETTE_SYMBOLS, PidGlyph, SYMBOL_LABELS } from "./components/PidSymbols";
+import { CustomSymbolsContext, PALETTE_SYMBOLS, SYMBOL_LABELS, customSymbolId } from "./components/PidSymbols";
+import {
+  CommentNode,
+  PidSymbolNode,
+  SECTION_COLORS,
+  SectionNode,
+  TextNode
+} from "./components/pid/nodes";
+import { OrthogonalEdge, edgeMarker, type OrthogonalEdgeData } from "./components/pid/OrthogonalEdge";
+import {
+  CanvasContextMenu,
+  FloatingToolbar,
+  SelectionToolbar,
+  type ContextMenuState,
+  type PlacementTool
+} from "./components/pid/overlays";
+import { SymbolEditorModal } from "./components/pid/SymbolEditorModal";
+import { PanelResizer, useStoredWidth } from "./components/resizable";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { api, bomCsvUrl, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { LoginPage } from "./pages/LoginPage";
 import { PageLayout, PlaceholderPage } from "./pages/PageLayout";
-import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
+import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
-type PidNodeData = {
-  label: string;
-  symbolType: string;
-  rotation: number;
+/** Loose union of the data carried by the four canvas node types. */
+type CanvasNodeData = {
+  label?: string;
+  symbolType?: string;
+  rotation?: number;
   hasComponent?: boolean;
-};
-
-type OrthogonalEdgeData = {
-  bendX?: number;
-  bendY?: number;
-  startX?: number;
-  endX?: number;
-  fluid?: string | null;
-  pressure_bar?: number | null;
-  temperature_c?: number | null;
-  diameter_mm?: number | null;
-  material?: string | null;
+  color?: string;
+  text?: string;
+  fontSize?: number;
+  author?: string;
+  created_at?: string;
 };
 
 type GraphSnapshot = {
-  nodes: Node<PidNodeData>[];
+  nodes: Node<CanvasNodeData>[];
   edges: Edge<OrthogonalEdgeData>[];
 };
 
@@ -110,15 +116,25 @@ function makeNodeId(kind: string): string {
   return `${kind}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
-function buildGraphPayload(nodes: Node<PidNodeData>[], edges: Edge<OrthogonalEdgeData>[]) {
+const NODE_TYPE_TO_GRAPH_TYPE: Record<string, string> = {
+  pidSection: "section",
+  pidText: "text",
+  pidComment: "comment"
+};
+
+function graphNodeType(node: Node<CanvasNodeData>): string {
+  return NODE_TYPE_TO_GRAPH_TYPE[node.type ?? ""] ?? String(node.data?.symbolType ?? "component");
+}
+
+function buildGraphPayload(nodes: Node<CanvasNodeData>[], edges: Edge<OrthogonalEdgeData>[]) {
   return {
     graph: { nodes, edges },
     nodes: nodes.map((node) => ({
       external_id: node.id,
-      node_type: String(node.data?.symbolType ?? node.type ?? "component"),
-      label: String(node.data?.label ?? node.id),
+      node_type: graphNodeType(node),
+      label: String(node.data?.label ?? node.data?.text ?? node.id),
       position: node.position,
-      properties: { ...(node.data ?? {}), style: node.style ?? {} }
+      properties: { ...(node.data ?? {}), style: node.style ?? {}, parentNode: node.parentNode ?? null }
     })),
     edges: edges.map((edge) => ({
       external_id: edge.id,
@@ -135,8 +151,29 @@ function buildGraphPayload(nodes: Node<PidNodeData>[], edges: Edge<OrthogonalEdg
   };
 }
 
-function normalizePidNode(node: Node): Node<PidNodeData> {
-  const label = String(node.data?.label ?? node.id);
+/** Parent (section) nodes must come before their children in React Flow's node array. */
+function sortSectionsFirst(nodes: Node<CanvasNodeData>[]): Node<CanvasNodeData>[] {
+  return [...nodes].sort(
+    (a, b) => (a.type === "pidSection" ? 0 : 1) - (b.type === "pidSection" ? 0 : 1)
+  );
+}
+
+function normalizeGraphNode(node: Node): Node<CanvasNodeData> {
+  const data = (node.data ?? {}) as CanvasNodeData;
+  if (node.type === "pidSection") {
+    return {
+      ...node,
+      zIndex: -1,
+      style: { width: 320, height: 220, ...node.style },
+      data: { label: String(data.label ?? "Section"), color: data.color }
+    };
+  }
+  if (node.type === "pidText") {
+    return { ...node, data: { text: String(data.text ?? ""), fontSize: data.fontSize, color: data.color } };
+  }
+  if (node.type === "pidComment") {
+    return { ...node, data: { text: String(data.text ?? ""), author: data.author, created_at: data.created_at } };
+  }
   return {
     ...node,
     type: "pidSymbol",
@@ -146,21 +183,20 @@ function normalizePidNode(node: Node): Node<PidNodeData> {
       ...node.style
     },
     data: {
-      label,
-      symbolType: String(node.data?.symbolType ?? node.type ?? "component"),
-      rotation: Number(node.data?.rotation ?? 0)
+      label: String(data.label ?? node.id),
+      symbolType: String(data.symbolType ?? node.type ?? "component"),
+      rotation: Number(data.rotation ?? 0),
+      color: data.color
     }
   };
 }
-
-const EDGE_MARKER = { type: MarkerType.ArrowClosed, width: 13, height: 13, color: "#41536b" };
 
 function normalizeOrthogonalEdge(edge: Edge): Edge<OrthogonalEdgeData> {
   const legacyBendX = typeof edge.data?.bendX === "number" ? edge.data.bendX : undefined;
   return {
     ...edge,
     type: "orthogonal",
-    markerEnd: EDGE_MARKER,
+    markerEnd: edgeMarker(edge.data),
     data: {
       ...edge.data,
       bendX: legacyBendX,
@@ -169,146 +205,6 @@ function normalizeOrthogonalEdge(edge: Edge): Edge<OrthogonalEdgeData> {
       endX: typeof edge.data?.endX === "number" ? edge.data.endX : legacyBendX
     }
   };
-}
-
-function PidSymbolNode({
-  id,
-  data,
-  selected,
-  onDirty
-}: NodeProps<PidNodeData> & { onDirty: () => void }) {
-  const { setNodes } = useReactFlow();
-
-  function rotateSymbol() {
-    setNodes((currentNodes) =>
-      currentNodes.map((node) =>
-        node.id === id
-          ? {
-              ...node,
-              data: {
-                ...node.data,
-                rotation: (Number(node.data?.rotation ?? 0) + 90) % 360
-              }
-            }
-          : node
-      )
-    );
-    onDirty();
-  }
-
-  return (
-    <div className={selected ? "pidSymbolNode selected" : "pidSymbolNode"}>
-      <NodeResizer isVisible={selected} minWidth={80} minHeight={56} onResizeEnd={onDirty} />
-      <Handle type="target" position={Position.Left} />
-      <Handle type="target" position={Position.Top} />
-      <div className="pidSymbolBody" style={{ transform: `rotate(${data.rotation}deg)` }}>
-        <PidGlyph type={data.symbolType} />
-      </div>
-      {data.hasComponent && <span className="componentDot" title="Catalog part placed" />}
-      <button className="rotateHandle" onClick={rotateSymbol} title="Rotate symbol 90 degrees" type="button">
-        &#8635;
-      </button>
-      <div className="pidSymbolLabel">{data.label}</div>
-      <Handle type="source" position={Position.Right} />
-      <Handle type="source" position={Position.Bottom} />
-    </div>
-  );
-}
-
-function OrthogonalEdge({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  markerEnd,
-  selected,
-  label,
-  data,
-  onDirty
-}: EdgeProps<OrthogonalEdgeData> & { onDirty: () => void }) {
-  const { screenToFlowPosition, setEdges } = useReactFlow();
-  const deltaX = targetX - sourceX;
-  const startX = typeof data?.startX === "number" ? data.startX : sourceX + deltaX / 3;
-  const endX = typeof data?.endX === "number" ? data.endX : sourceX + (deltaX * 2) / 3;
-  const bendY = typeof data?.bendY === "number" ? data.bendY : sourceY + (targetY - sourceY) / 2;
-  const path = `M ${sourceX},${sourceY} L ${startX},${sourceY} L ${startX},${bendY} L ${endX},${bendY} L ${endX},${targetY} L ${targetX},${targetY}`;
-
-  function beginDrag(
-    event: ReactPointerEvent<HTMLDivElement>,
-    update: (position: { x: number; y: number }) => Partial<OrthogonalEdgeData>
-  ) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    function drag(moveEvent: PointerEvent) {
-      const position = screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY });
-      setEdges((currentEdges) =>
-        currentEdges.map((edge) =>
-          edge.id === id
-            ? {
-                ...edge,
-                data: {
-                  ...edge.data,
-                  ...update(position)
-                }
-              }
-            : edge
-        )
-      );
-    }
-
-    function stopDrag() {
-      window.removeEventListener("pointermove", drag);
-      window.removeEventListener("pointerup", stopDrag);
-      onDirty();
-    }
-
-    window.addEventListener("pointermove", drag);
-    window.addEventListener("pointerup", stopDrag);
-  }
-
-  return (
-    <>
-      <BaseEdge
-        id={id}
-        markerEnd={markerEnd}
-        path={path}
-        style={{
-          stroke: selected ? "#2257c4" : "#41536b",
-          strokeWidth: selected ? 2.4 : 1.8
-        }}
-      />
-      <EdgeLabelRenderer>
-        {label ? (
-          <div
-            className="edgeLabelChip"
-            style={{ transform: `translate(-50%, -100%) translate(${(startX + endX) / 2}px, ${bendY - 6}px)` }}
-          >
-            {String(label)}
-          </div>
-        ) : null}
-        <div
-          className="edgeBendHandle vertical"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ startX: position.x, bendX: undefined }))}
-          style={{ transform: `translate(-50%, -50%) translate(${startX}px, ${(sourceY + bendY) / 2}px)` }}
-          title="Drag to move first vertical line segment"
-        />
-        <div
-          className="edgeBendHandle horizontal"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ bendY: position.y }))}
-          style={{ transform: `translate(-50%, -50%) translate(${(startX + endX) / 2}px, ${bendY}px)` }}
-          title="Drag to move horizontal line segment"
-        />
-        <div
-          className="edgeBendHandle vertical"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ endX: position.x, bendX: undefined }))}
-          style={{ transform: `translate(-50%, -50%) translate(${endX}px, ${(bendY + targetY) / 2}px)` }}
-          title="Drag to move last vertical line segment"
-        />
-      </EdgeLabelRenderer>
-    </>
-  );
 }
 
 export function App() {
@@ -394,17 +290,28 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [error, setError] = useState("");
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [graphDirty, setGraphDirty] = useState(false);
-  const [nodes, setNodes, onNodesChangeBase] = useNodesState<PidNodeData>([]);
+  const [nodes, setNodes, onNodesChangeBase] = useNodesState<CanvasNodeData>([]);
   const [edges, setEdges, onEdgesChangeBase] = useEdgesState<OrthogonalEdgeData>([]);
   const [nodeLabelDraft, setNodeLabelDraft] = useState("");
   const [edgeForm, setEdgeForm] = useState({ label: "", fluid: "", pressure_bar: "", temperature_c: "", diameter_mm: "", material: "" });
   const [historyVersion, setHistoryVersion] = useState(0);
 
-  const nodesRef = useRef<Node<PidNodeData>[]>(nodes);
+  const [customSymbols, setCustomSymbols] = useState<PidSymbolDef[]>([]);
+  const [showGrid, setShowGrid] = useState(() => localStorage.getItem("fsdp.showGrid") !== "0");
+  const [showComments, setShowComments] = useState(true);
+  const [placementTool, setPlacementTool] = useState<PlacementTool | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [symbolEditorOpen, setSymbolEditorOpen] = useState(false);
+  const [inspectorWidth, setInspectorWidth] = useStoredWidth("fsdp.inspectorWidth", 300, 240, 560);
+
+  const nodesRef = useRef<Node<CanvasNodeData>[]>(nodes);
   const edgesRef = useRef<Edge<OrthogonalEdgeData>[]>(edges);
   nodesRef.current = nodes;
   edgesRef.current = edges;
   const historyRef = useRef<{ past: GraphSnapshot[]; future: GraphSnapshot[] }>({ past: [], future: [] });
+  const rfInstanceRef = useRef<ReactFlowInstance | null>(null);
+  const diagramContainerRef = useRef<HTMLDivElement | null>(null);
+  const edgeLabelHistoryRef = useRef<string | null>(null);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -418,22 +325,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const canUndo = historyVersion >= 0 && historyRef.current.past.length > 0;
   const canRedo = historyRef.current.future.length > 0;
   const isAdmin = user.role === "admin";
-  const nodeTypes = useMemo(
-    () => ({
-      pidSymbol: (props: NodeProps<PidNodeData>) => (
-        <PidSymbolNode {...props} onDirty={() => setGraphDirty(true)} />
-      )
-    }),
-    []
-  );
-  const edgeTypes = useMemo(
-    () => ({
-      orthogonal: (props: EdgeProps<OrthogonalEdgeData>) => (
-        <OrthogonalEdge {...props} onDirty={() => setGraphDirty(true)} />
-      )
-    }),
-    []
-  );
 
   const graphPayload = useMemo(() => buildGraphPayload(nodes, edges), [edges, nodes]);
 
@@ -502,7 +393,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     void runAction("Loaded saved diagram.", async () => {
       const diagram = await api.getDiagram(selectedDiagramId);
       setDiagramName(diagram.name);
-      setNodes((diagram.graph.nodes ?? []).map(normalizePidNode));
+      setNodes(sortSectionsFirst((diagram.graph.nodes ?? []).map(normalizeGraphNode)));
       setEdges((diagram.graph.edges ?? []).map(normalizeOrthogonalEdge));
       setComponents(await api.listComponents(diagram.id));
       const snapshots = await api.listDiagramBoms(diagram.id);
@@ -682,8 +573,327 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setHistoryVersion((version) => version + 1);
   }, [setEdges, setNodes]);
 
+  const markDirty = useCallback(() => setGraphDirty(true), []);
+
+  const nodeTypes = useMemo(
+    () => ({
+      pidSymbol: (props: NodeProps<CanvasNodeData>) => (
+        <PidSymbolNode
+          {...(props as unknown as Parameters<typeof PidSymbolNode>[0])}
+          onDirty={markDirty}
+          onHistory={recordHistory}
+        />
+      ),
+      pidSection: (props: NodeProps<CanvasNodeData>) => (
+        <SectionNode
+          {...(props as unknown as Parameters<typeof SectionNode>[0])}
+          onDirty={markDirty}
+          onHistory={recordHistory}
+        />
+      ),
+      pidText: (props: NodeProps<CanvasNodeData>) => (
+        <TextNode
+          {...(props as unknown as Parameters<typeof TextNode>[0])}
+          onDirty={markDirty}
+          onHistory={recordHistory}
+        />
+      ),
+      pidComment: (props: NodeProps<CanvasNodeData>) => (
+        <CommentNode
+          {...(props as unknown as Parameters<typeof CommentNode>[0])}
+          onDirty={markDirty}
+          onHistory={recordHistory}
+        />
+      )
+    }),
+    [markDirty, recordHistory]
+  );
+  const edgeTypes = useMemo(
+    () => ({
+      orthogonal: (props: EdgeProps<OrthogonalEdgeData>) => (
+        <OrthogonalEdge {...props} onDirty={markDirty} onHistory={recordHistory} />
+      )
+    }),
+    [markDirty, recordHistory]
+  );
+
+  const customSymbolsById = useMemo(
+    () => Object.fromEntries(customSymbols.map((symbol) => [symbol.id, symbol])),
+    [customSymbols]
+  );
+
+  const displayNodes = useMemo(
+    () =>
+      showComments
+        ? nodes
+        : nodes.map((node) => (node.type === "pidComment" ? { ...node, hidden: true } : node)),
+    [nodes, showComments]
+  );
+
+  const refreshSymbols = useCallback(() => {
+    api
+      .listSymbols()
+      .then((list) => setCustomSymbols(Array.isArray(list) ? list : []))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    refreshSymbols();
+  }, [refreshSymbols]);
+
+  useEffect(() => {
+    edgeLabelHistoryRef.current = null;
+  }, [selectedEdgeId]);
+
+  function toggleGrid() {
+    setShowGrid((current) => {
+      localStorage.setItem("fsdp.showGrid", current ? "0" : "1");
+      return !current;
+    });
+  }
+
+  const placeElement = useCallback(
+    (tool: PlacementTool, flowX: number, flowY: number) => {
+      recordHistory();
+      let node: Node<CanvasNodeData>;
+      if (tool.kind === "symbol") {
+        const customId = customSymbolId(tool.symbolType);
+        const label = customId
+          ? customSymbolsById[customId]?.name ?? "Symbol"
+          : SYMBOL_LABELS[tool.symbolType] ?? tool.symbolType;
+        node = {
+          id: makeNodeId(customId ? "custom" : tool.symbolType),
+          type: "pidSymbol",
+          position: { x: flowX - 56, y: flowY - 42 },
+          style: { width: 112, height: 84 },
+          data: { label, symbolType: tool.symbolType, rotation: 0 }
+        };
+      } else if (tool.kind === "section") {
+        node = {
+          id: makeNodeId("section"),
+          type: "pidSection",
+          position: { x: flowX - 160, y: flowY - 110 },
+          style: { width: 320, height: 220 },
+          zIndex: -1,
+          data: { label: "Section", color: SECTION_COLORS[0] }
+        };
+      } else if (tool.kind === "text") {
+        node = {
+          id: makeNodeId("text"),
+          type: "pidText",
+          position: { x: flowX - 60, y: flowY - 14 },
+          data: { text: "", fontSize: 14 }
+        };
+      } else {
+        node = {
+          id: makeNodeId("comment"),
+          type: "pidComment",
+          position: { x: flowX - 14, y: flowY - 14 },
+          data: { text: "", author: user.name, created_at: new Date().toISOString() }
+        };
+      }
+      const placed = { ...node, selected: true };
+      setNodes((current) =>
+        sortSectionsFirst([...current.map((entry) => ({ ...entry, selected: false })), placed])
+      );
+      setSelectedNodeId(node.id);
+      setSelectedEdgeId("");
+      if (tool.kind === "comment") setShowComments(true);
+      setGraphDirty(true);
+    },
+    [customSymbolsById, recordHistory, setNodes, user.name]
+  );
+
+  const deleteNodeById = useCallback(
+    (id: string) => {
+      recordHistory();
+      setNodes((current) => {
+        const target = current.find((node) => node.id === id);
+        if (!target) return current;
+        return current
+          .filter((node) => node.id !== id)
+          .map((node) =>
+            node.parentNode === id
+              ? {
+                  ...node,
+                  parentNode: undefined,
+                  position: {
+                    x: node.position.x + target.position.x,
+                    y: node.position.y + target.position.y
+                  }
+                }
+              : node
+          );
+      });
+      setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
+      setSelectedNodeId((current) => (current === id ? "" : current));
+      setGraphDirty(true);
+    },
+    [recordHistory, setEdges, setNodes]
+  );
+
+  const deleteEdgeById = useCallback(
+    (id: string) => {
+      recordHistory();
+      setEdges((current) => current.filter((edge) => edge.id !== id));
+      setSelectedEdgeId((current) => (current === id ? "" : current));
+      setGraphDirty(true);
+    },
+    [recordHistory, setEdges]
+  );
+
+  const rotateNodeById = useCallback(
+    (id: string) => {
+      recordHistory();
+      setNodes((current) =>
+        current.map((node) =>
+          node.id === id
+            ? { ...node, data: { ...node.data, rotation: (Number(node.data?.rotation ?? 0) + 90) % 360 } }
+            : node
+        )
+      );
+      setGraphDirty(true);
+    },
+    [recordHistory, setNodes]
+  );
+
+  const duplicateNodeById = useCallback(
+    (id: string) => {
+      const source = nodesRef.current.find((node) => node.id === id);
+      if (!source) return;
+      recordHistory();
+      const copy: Node<CanvasNodeData> = {
+        ...source,
+        id: makeNodeId(source.type === "pidSymbol" ? String(source.data?.symbolType ?? "component") : "node"),
+        position: { x: source.position.x + 24, y: source.position.y + 24 },
+        data: { ...source.data, hasComponent: false },
+        selected: true
+      };
+      setNodes((current) =>
+        sortSectionsFirst([...current.map((entry) => ({ ...entry, selected: false })), copy])
+      );
+      setSelectedNodeId(copy.id);
+      setGraphDirty(true);
+    },
+    [recordHistory, setNodes]
+  );
+
+  const updateNodeDataById = useCallback(
+    (id: string, patch: Record<string, unknown>) => {
+      recordHistory();
+      setNodes((current) =>
+        current.map((node) => (node.id === id ? { ...node, data: { ...node.data, ...patch } } : node))
+      );
+      setGraphDirty(true);
+    },
+    [recordHistory, setNodes]
+  );
+
+  const updateEdgeFromToolbar = useCallback(
+    (id: string, patch: Partial<OrthogonalEdgeData>, label?: string) => {
+      if (label !== undefined) {
+        // Record one history entry per label-editing burst, not per keystroke.
+        if (edgeLabelHistoryRef.current !== id) {
+          recordHistory();
+          edgeLabelHistoryRef.current = id;
+        }
+      } else {
+        recordHistory();
+      }
+      setEdges((current) =>
+        current.map((edge) => {
+          if (edge.id !== id) return edge;
+          const data = { ...edge.data, ...patch };
+          return {
+            ...edge,
+            ...(label !== undefined ? { label: label || undefined } : {}),
+            data,
+            markerEnd: edgeMarker(data)
+          };
+        })
+      );
+      setGraphDirty(true);
+    },
+    [recordHistory, setEdges]
+  );
+
+  const handleNodeDragStop = useCallback(
+    (_event: unknown, draggedNode: Node<CanvasNodeData>, draggedNodes?: Node<CanvasNodeData>[]) => {
+      const dragged = draggedNodes?.length ? draggedNodes : [draggedNode];
+      setNodes((current) => {
+        const sections = current.filter((node) => node.type === "pidSection");
+        let changed = false;
+        const next = current.map((node) => {
+          if (node.type === "pidSection") return node;
+          const draggedVersion = dragged.find((entry) => entry.id === node.id);
+          if (!draggedVersion) return node;
+          const absolute = draggedVersion.positionAbsolute ?? draggedVersion.position;
+          const centerX = absolute.x + (draggedVersion.width ?? 0) / 2;
+          const centerY = absolute.y + (draggedVersion.height ?? 0) / 2;
+          const hit = sections.find((section) => {
+            const width = section.width ?? Number(section.style?.width ?? 0);
+            const height = section.height ?? Number(section.style?.height ?? 0);
+            return (
+              centerX >= section.position.x &&
+              centerX <= section.position.x + width &&
+              centerY >= section.position.y &&
+              centerY <= section.position.y + height
+            );
+          });
+          if ((node.parentNode ?? undefined) === hit?.id) return node;
+          changed = true;
+          if (hit) {
+            return {
+              ...node,
+              parentNode: hit.id,
+              position: { x: absolute.x - hit.position.x, y: absolute.y - hit.position.y }
+            };
+          }
+          return { ...node, parentNode: undefined, position: absolute };
+        });
+        return changed ? sortSectionsFirst(next) : current;
+      });
+    },
+    [setNodes]
+  );
+
+  const openContextMenu = useCallback(
+    (event: ReactMouseEvent, kind: ContextMenuState["kind"], targetId?: string) => {
+      event.preventDefault();
+      const container = diagramContainerRef.current?.getBoundingClientRect();
+      if (!container) return;
+      const flow = rfInstanceRef.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY }) ?? { x: 0, y: 0 };
+      setContextMenu({
+        x: Math.min(event.clientX - container.left, container.width - 200),
+        y: Math.min(event.clientY - container.top, container.height - 180),
+        flowX: flow.x,
+        flowY: flow.y,
+        kind,
+        targetId
+      });
+    },
+    []
+  );
+
+  function handlePaneClick(event: ReactMouseEvent) {
+    setContextMenu(null);
+    if (placementTool && rfInstanceRef.current) {
+      const position = rfInstanceRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      placeElement(placementTool, position.x, position.y);
+      setPlacementTool(null);
+      return;
+    }
+    setSelectedNodeId("");
+    setSelectedEdgeId("");
+  }
+
   useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setPlacementTool(null);
+        setContextMenu(null);
+        return;
+      }
       const target = event.target as HTMLElement | null;
       if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
@@ -731,7 +941,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     recordHistory();
     setGraphDirty(true);
     setEdges((current) =>
-      addEdge({ ...connection, type: "orthogonal", label: "New line", markerEnd: EDGE_MARKER }, current)
+      addEdge({ ...connection, type: "orthogonal", markerEnd: edgeMarker(undefined) }, current)
     );
   }
 
@@ -949,7 +1159,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           return (
             !classes.contains("react-flow__minimap") &&
             !classes.contains("react-flow__controls") &&
-            !classes.contains("react-flow__attribution")
+            !classes.contains("react-flow__attribution") &&
+            !classes.contains("floatingToolbar") &&
+            !classes.contains("selectionToolbar") &&
+            !classes.contains("canvasContextMenu")
           );
         }
       });
@@ -960,25 +1173,8 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     });
   }
 
-  function addGraphNode(kind: string) {
-    recordHistory();
-    const id = makeNodeId(kind);
-    setNodes((current) => [
-      ...current,
-      {
-        id,
-        type: "pidSymbol",
-        position: { x: 120 + nodes.length * 40, y: 180 + nodes.length * 20 },
-        style: { width: 112, height: 84 },
-        data: { label: SYMBOL_LABELS[kind] ?? kind, symbolType: kind, rotation: 0 }
-      }
-    ]);
-    setSelectedNodeId(id);
-    setGraphDirty(true);
-  }
-
   function placeComponent() {
-    if (!selectedDiagram || !selectedPart || !selectedNode) return;
+    if (!selectedDiagram || !selectedPart || !selectedNode || selectedNode.type !== "pidSymbol") return;
     void runAction("Placed component.", async () => {
       if (graphDirty) {
         throw new Error("Save the diagram first — parts can only be placed on saved nodes.");
@@ -1118,7 +1314,25 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const projectOptions = projects.map((project) => ({ value: project.id, label: project.name }));
   const systemOptions = systems.map((system) => ({ value: system.id, label: system.name }));
 
+  const symbolNodeSelected = selectedNode?.type === "pidSymbol";
+  const toolbarParent = selectedNode?.parentNode
+    ? nodes.find((node) => node.id === selectedNode.parentNode) ?? null
+    : null;
+  const edgeSource = selectedEdge ? nodes.find((node) => node.id === selectedEdge.source) : undefined;
+  const edgeTarget = selectedEdge ? nodes.find((node) => node.id === selectedEdge.target) : undefined;
+  const withAbsolutePosition = (node: Node<CanvasNodeData>): Node<CanvasNodeData> => {
+    const parent = node.parentNode ? nodes.find((entry) => entry.id === node.parentNode) : undefined;
+    return parent
+      ? { ...node, position: { x: parent.position.x + node.position.x, y: parent.position.y + node.position.y } }
+      : node;
+  };
+  const toolbarEdgeEndpoints =
+    edgeSource && edgeTarget
+      ? ([withAbsolutePosition(edgeSource), withAbsolutePosition(edgeTarget)] as [Node, Node])
+      : null;
+
   return (
+    <CustomSymbolsContext.Provider value={customSymbolsById}>
     <AppShell
       navItems={navItems}
       projectValue={selectedProjectId}
@@ -1191,7 +1405,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           path="/diagrams"
           element={
             <PageLayout className="diagramPage" title="Diagrams" description="P&ID workspace">
-              <section className="diagramLayout">
+              <section
+                className="diagramLayout"
+                style={{ gridTemplateColumns: `minmax(0, 1fr) auto ${inspectorWidth}px` }}
+              >
                 <div className="workspace">
                   <div className="toolbar">
                     <form className="inlineForm" onSubmit={submitDiagram}>
@@ -1207,37 +1424,54 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     <button className="primary" disabled={busy || !selectedDiagram || !graphDirty} onClick={saveGraph}>Save graph</button>
                     {selectedDiagram && <span className={graphDirty ? "dirtyBadge" : "cleanBadge"}>{graphDirty ? "Unsaved changes" : "Saved"}</span>}
                   </div>
-                  <div className="nodePalette">
-                    <span className="paletteLabel">Symbols</span>
-                    {PALETTE_SYMBOLS.map((kind) => (
-                      <button className="paletteItem" key={kind} onClick={() => addGraphNode(kind)} type="button">
-                        <span className="paletteGlyph"><PidGlyph type={kind} /></span>
-                        <span>{SYMBOL_LABELS[kind] ?? kind}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="diagram">
+                  <div className={placementTool ? "diagram placing" : "diagram"} ref={diagramContainerRef}>
                     <ReactFlow
-                      nodes={nodes}
+                      nodes={displayNodes}
                       edges={edges}
                       nodeTypes={nodeTypes}
                       edgeTypes={edgeTypes}
+                      onInit={(instance) => {
+                        rfInstanceRef.current = instance;
+                      }}
+                      connectionMode={ConnectionMode.Loose}
                       onNodesChange={onNodesChange}
                       onEdgesChange={onEdgesChange}
                       onConnect={onConnect}
                       onNodeClick={(_, node) => {
                         setSelectedNodeId(node.id);
-                        if (!node.data?.hasComponent) {
+                        setSelectedEdgeId("");
+                        if (node.type === "pidSymbol" && !node.data?.hasComponent) {
                           setComponentTag(suggestTag(String(node.data?.symbolType ?? "component"), components));
                         }
                       }}
-                      onEdgeClick={(_, edge) => setSelectedEdgeId(edge.id)}
+                      onEdgeClick={(_, edge) => {
+                        setSelectedEdgeId(edge.id);
+                        setSelectedNodeId("");
+                      }}
+                      onSelectionChange={({ nodes: selectionNodes, edges: selectionEdges }) => {
+                        if (!selectionNodes.length && !selectionEdges.length) {
+                          setSelectedNodeId("");
+                          setSelectedEdgeId("");
+                        }
+                      }}
+                      onPaneClick={handlePaneClick}
+                      onPaneContextMenu={(event) => openContextMenu(event, "pane")}
+                      onNodeContextMenu={(event, node) => {
+                        setSelectedNodeId(node.id);
+                        openContextMenu(event, "node", node.id);
+                      }}
+                      onEdgeContextMenu={(event, edge) => {
+                        setSelectedEdgeId(edge.id);
+                        openContextMenu(event, "edge", edge.id);
+                      }}
                       onNodeDragStart={recordHistory}
+                      onNodeDragStop={handleNodeDragStop}
+                      deleteKeyCode={["Backspace", "Delete"]}
                       snapToGrid
                       snapGrid={[10, 10]}
                       fitView
                     >
-                      <Background color="#c3cede" gap={14} size={1.4} variant={BackgroundVariant.Dots} />
+                      {showGrid && <Background color="#c3cede" gap={20} size={1.6} variant={BackgroundVariant.Dots} />}
                       <MiniMap
                         maskColor="rgba(238, 241, 245, 0.7)"
                         nodeColor="#c8d4e4"
@@ -1246,17 +1480,53 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                         zoomable
                       />
                       <Controls />
+                      <SelectionToolbar
+                        node={selectedNode ?? null}
+                        parent={toolbarParent}
+                        edge={selectedNode ? null : selectedEdge ?? null}
+                        edgeEndpoints={toolbarEdgeEndpoints}
+                        onUpdateNodeData={updateNodeDataById}
+                        onUpdateEdge={updateEdgeFromToolbar}
+                        onRotateNode={rotateNodeById}
+                        onDuplicateNode={duplicateNodeById}
+                        onDeleteNode={deleteNodeById}
+                        onDeleteEdge={deleteEdgeById}
+                      />
                     </ReactFlow>
+                    {contextMenu && (
+                      <CanvasContextMenu
+                        menu={contextMenu}
+                        showGrid={showGrid}
+                        showComments={showComments}
+                        nodeType={contextMenu.targetId ? nodes.find((node) => node.id === contextMenu.targetId)?.type : undefined}
+                        onToggleGrid={toggleGrid}
+                        onToggleComments={() => setShowComments((current) => !current)}
+                        onAddElement={placeElement}
+                        onRotateNode={rotateNodeById}
+                        onDuplicateNode={duplicateNodeById}
+                        onDeleteNode={deleteNodeById}
+                        onDeleteEdge={deleteEdgeById}
+                        onClose={() => setContextMenu(null)}
+                      />
+                    )}
+                    <FloatingToolbar
+                      activeTool={placementTool}
+                      builtinSymbols={PALETTE_SYMBOLS}
+                      customSymbols={customSymbols}
+                      onArmTool={setPlacementTool}
+                      onOpenSymbolEditor={() => setSymbolEditorOpen(true)}
+                    />
                   </div>
                 </div>
-                <aside className="inspector">
+                <PanelResizer width={inspectorWidth} onResize={setInspectorWidth} direction={-1} label="Resize inspector panel" />
+                <aside className="inspector" style={{ width: inspectorWidth }}>
                   <Panel title="Node Inspector">
-                    <p><strong>Selected:</strong> {selectedNode ? <span className="mono">{String(selectedNode.data?.symbolType ?? "node")}</span> : "None"}{selectedNode?.data?.hasComponent ? <span className="pill pill-good" style={{ marginLeft: 6 }}>part placed</span> : null}</p>
+                    <p><strong>Selected:</strong> {selectedNode ? <span className="mono">{symbolNodeSelected ? String(selectedNode.data?.symbolType ?? "node") : String(selectedNode.type ?? "node").replace("pid", "").toLowerCase()}</span> : "None"}{selectedNode?.data?.hasComponent ? <span className="pill pill-good" style={{ marginLeft: 6 }}>part placed</span> : null}</p>
                     <TextInput label="Node label" value={nodeLabelDraft} onChange={setNodeLabelDraft} />
-                    <button disabled={busy || !selectedNode || !nodeLabelDraft.trim()} onClick={applyNodeLabel}>Rename node</button>
+                    <button disabled={busy || !symbolNodeSelected || !nodeLabelDraft.trim()} onClick={applyNodeLabel}>Rename node</button>
                     <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
                     <FormError message={formErrors.component} />
-                    <button className="primary" disabled={busy || !selectedDiagram || !selectedPart || !selectedNode || !componentTag.trim()} onClick={placeComponent}>Place selected part</button>
+                    <button className="primary" disabled={busy || !selectedDiagram || !selectedPart || !symbolNodeSelected || !componentTag.trim()} onClick={placeComponent}>Place selected part</button>
                     <p className="hint">Placing uses the selected catalog part ({selectedPart?.part_number ?? "none selected"}).</p>
                   </Panel>
                   <Panel title="Line Metadata">
@@ -1280,6 +1550,12 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                   </Panel>
                 </aside>
               </section>
+              <SymbolEditorModal
+                open={symbolEditorOpen}
+                symbols={customSymbols}
+                onClose={() => setSymbolEditorOpen(false)}
+                onChanged={refreshSymbols}
+              />
             </PageLayout>
           }
         />
@@ -1492,5 +1768,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         />
       </Routes>
     </AppShell>
+    </CustomSymbolsContext.Provider>
   );
 }
