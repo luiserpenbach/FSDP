@@ -6,7 +6,7 @@
  *    (must be rendered as a <ReactFlow> child — it uses the viewport transform)
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useStore, useViewport, type Edge, type Node } from "reactflow";
+import { useReactFlow, useStore, useViewport, type Edge, type Node } from "reactflow";
 import { PidGlyph, SYMBOL_LABELS, customSymbolType } from "../PidSymbols";
 import type { PidSymbolDef } from "../../types";
 import {
@@ -252,6 +252,89 @@ export function FloatingToolbar({
   );
 }
 
+/* ---------- Placement ghost ---------- */
+
+export const DEFAULT_SYMBOL_SIZE = { width: 56, height: 50 };
+export const DEFAULT_SECTION_SIZE = { width: 320, height: 220 };
+export const JUNCTION_SIZE = 14;
+
+/**
+ * Semi-transparent preview of the armed element following the cursor,
+ * grid-snapped like the real placement. Must be rendered as a <ReactFlow>
+ * child (it uses the viewport transform); pointer-events stay off so clicks
+ * land on the pane/section beneath.
+ */
+export function PlacementGhost({ tool, gridSize }: { tool: PlacementTool; gridSize: number }) {
+  const { screenToFlowPosition } = useReactFlow();
+  const { x: viewportX, y: viewportY, zoom } = useViewport();
+  const canvasWidth = useStore((state) => state.width);
+  const canvasHeight = useStore((state) => state.height);
+  const [flowPosition, setFlowPosition] = useState<{ x: number; y: number } | null>(null);
+
+  useEffect(() => {
+    setFlowPosition(null);
+    function move(event: MouseEvent) {
+      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      setFlowPosition({
+        x: Math.round(position.x / gridSize) * gridSize,
+        y: Math.round(position.y / gridSize) * gridSize
+      });
+    }
+    window.addEventListener("mousemove", move);
+    return () => window.removeEventListener("mousemove", move);
+  }, [gridSize, screenToFlowPosition, tool]);
+
+  if (!flowPosition) return null;
+  const screenX = flowPosition.x * zoom + viewportX;
+  const screenY = flowPosition.y * zoom + viewportY;
+  if (screenX < 0 || screenY < 0 || screenX > canvasWidth || screenY > canvasHeight) return null;
+
+  let body: ReactNode;
+  let width: number;
+  let height: number;
+  if (tool.kind === "symbol" && tool.symbolType === "junction") {
+    width = JUNCTION_SIZE;
+    height = JUNCTION_SIZE;
+    body = <span className="ghostJunction" />;
+  } else if (tool.kind === "symbol") {
+    width = DEFAULT_SYMBOL_SIZE.width;
+    height = DEFAULT_SYMBOL_SIZE.height;
+    body = <span className="ghostGlyph"><PidGlyph type={tool.symbolType} /></span>;
+  } else if (tool.kind === "section") {
+    width = DEFAULT_SECTION_SIZE.width;
+    height = DEFAULT_SECTION_SIZE.height;
+    body = <span className="ghostSection" />;
+  } else if (tool.kind === "text") {
+    width = 80;
+    height = 24;
+    body = <span className="ghostText">Aa</span>;
+  } else {
+    width = 28;
+    height = 28;
+    body = (
+      <span className="ghostComment">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.3 8.9 8.9 0 0 1-3.2-.6L3 21l1.8-5.2a8 8 0 0 1-1.3-4.3A8.38 8.38 0 0 1 12 3.2a8.38 8.38 0 0 1 9 8.3z" />
+        </svg>
+      </span>
+    );
+  }
+
+  return (
+    <div
+      className="placementGhost"
+      style={{
+        left: screenX,
+        top: screenY,
+        width: width * zoom,
+        height: height * zoom
+      }}
+    >
+      {body}
+    </div>
+  );
+}
+
 /* ---------- Hovering selection editor bar ---------- */
 
 function Swatches({
@@ -322,17 +405,24 @@ export function SelectionToolbar({
     anchorX = absX + (node.width ?? 0) / 2;
     anchorY = absY;
   } else if (edge && edgeEndpoints) {
-    // Anchor at the line's horizontal run (where the label sits) so the bar
-    // hovers over the line itself, not over its endpoint symbols.
-    const [source, target] = edgeEndpoints;
-    const sourceCenterX = source.position.x + (source.width ?? 0) / 2;
-    const targetCenterX = target.position.x + (target.width ?? 0) / 2;
-    const sourceCenterY = source.position.y + (source.height ?? 0) / 2;
-    const targetCenterY = target.position.y + (target.height ?? 0) / 2;
-    const startX = edge.data?.startX ?? sourceCenterX + (targetCenterX - sourceCenterX) / 3;
-    const endX = edge.data?.endX ?? sourceCenterX + ((targetCenterX - sourceCenterX) * 2) / 3;
-    anchorX = (startX + endX) / 2;
-    anchorY = edge.data?.bendY ?? (sourceCenterY + targetCenterY) / 2;
+    // Anchor over the line itself: at the middle waypoint when the line was
+    // hand-routed, otherwise near the midpoint between the endpoint symbols.
+    const waypoints = edge.data?.waypoints;
+    if (Array.isArray(waypoints) && waypoints.length) {
+      const middle = waypoints[Math.floor((waypoints.length - 1) / 2)];
+      anchorX = middle.x;
+      anchorY = middle.y;
+    } else {
+      const [source, target] = edgeEndpoints;
+      const sourceCenterX = source.position.x + (source.width ?? 0) / 2;
+      const targetCenterX = target.position.x + (target.width ?? 0) / 2;
+      const sourceCenterY = source.position.y + (source.height ?? 0) / 2;
+      const targetCenterY = target.position.y + (target.height ?? 0) / 2;
+      const startX = edge.data?.startX ?? sourceCenterX + (targetCenterX - sourceCenterX) / 3;
+      const endX = edge.data?.endX ?? sourceCenterX + ((targetCenterX - sourceCenterX) * 2) / 3;
+      anchorX = (startX + endX) / 2;
+      anchorY = edge.data?.bendY ?? (sourceCenterY + targetCenterY) / 2;
+    }
   }
   if (anchorX == null || anchorY == null) return null;
 

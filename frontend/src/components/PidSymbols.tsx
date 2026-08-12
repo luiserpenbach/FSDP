@@ -164,6 +164,15 @@ function ComponentGlyph() {
   );
 }
 
+function JunctionGlyph() {
+  return (
+    <Svg>
+      <path d="M8 20 H56 M32 20 V6" />
+      <circle cx="32" cy="20" r="4" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
 const GLYPHS: Record<string, () => ReactNode> = {
   valve: ValveGlyph,
   check_valve: CheckValveGlyph,
@@ -175,6 +184,7 @@ const GLYPHS: Record<string, () => ReactNode> = {
   tank: SourceGlyph,
   sink: SinkGlyph,
   pump: PumpGlyph,
+  junction: JunctionGlyph,
 };
 
 const INLINE_PORTS: SymbolPort[] = [
@@ -228,6 +238,7 @@ export const SYMBOL_LABELS: Record<string, string> = {
   source: "Tank / Source",
   sink: "Sink / Interface",
   pump: "Pump",
+  junction: "Junction",
 };
 
 export const PALETTE_SYMBOLS = [
@@ -240,6 +251,7 @@ export const PALETTE_SYMBOLS = [
   "pump",
   "source",
   "sink",
+  "junction",
 ];
 
 export function CustomGlyph({ symbol }: { symbol: PidSymbolDef }) {

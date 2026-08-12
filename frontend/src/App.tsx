@@ -7,6 +7,7 @@ import ReactFlow, {
   Controls,
   MiniMap,
   addEdge,
+  updateEdge,
   useEdgesState,
   useNodesState,
   type Connection,
@@ -16,24 +17,37 @@ import ReactFlow, {
   type Node,
   type NodeChange,
   type NodeProps,
+  type OnConnectStartParams,
   type ReactFlowInstance
 } from "reactflow";
 import { CustomSymbolsContext, PALETTE_SYMBOLS, SYMBOL_LABELS, customSymbolId } from "./components/PidSymbols";
 import {
   CommentNode,
+  JunctionNode,
   PidSymbolNode,
   SECTION_COLORS,
   SectionNode,
   TextNode
 } from "./components/pid/nodes";
-import { OrthogonalEdge, edgeMarker, type OrthogonalEdgeData } from "./components/pid/OrthogonalEdge";
+import {
+  OrthogonalEdge,
+  edgeMarker,
+  hasStoredGeometry,
+  translateEdgeGeometry,
+  type OrthogonalEdgeData
+} from "./components/pid/OrthogonalEdge";
 import {
   CanvasContextMenu,
+  DEFAULT_SECTION_SIZE,
+  DEFAULT_SYMBOL_SIZE,
   FloatingToolbar,
+  JUNCTION_SIZE,
+  PlacementGhost,
   SelectionToolbar,
   type ContextMenuState,
   type PlacementTool
 } from "./components/pid/overlays";
+import { EditorSettingsContext, type LabelMode } from "./components/pid/settings";
 import { SymbolEditorModal } from "./components/pid/SymbolEditorModal";
 import { PanelResizer, useStoredWidth } from "./components/resizable";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
@@ -44,12 +58,13 @@ import { LoginPage } from "./pages/LoginPage";
 import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
-/** Loose union of the data carried by the four canvas node types. */
+/** Loose union of the data carried by the canvas node types. */
 type CanvasNodeData = {
   label?: string;
   symbolType?: string;
   rotation?: number;
   hasComponent?: boolean;
+  tag?: string;
   color?: string;
   text?: string;
   fontSize?: number;
@@ -119,7 +134,8 @@ function makeNodeId(kind: string): string {
 const NODE_TYPE_TO_GRAPH_TYPE: Record<string, string> = {
   pidSection: "section",
   pidText: "text",
-  pidComment: "comment"
+  pidComment: "comment",
+  pidJunction: "junction"
 };
 
 function graphNodeType(node: Node<CanvasNodeData>): string {
@@ -183,18 +199,25 @@ function normalizeGraphNode(node: Node): Node<CanvasNodeData> {
   if (node.type === "pidComment") {
     return { ...base, data: { text: String(data.text ?? ""), author: data.author, created_at: data.created_at } };
   }
+  if (node.type === "pidJunction") {
+    return { ...base, style: { width: JUNCTION_SIZE, height: JUNCTION_SIZE, ...node.style }, data: {} };
+  }
+  // Symbols placed before the size reduction keep the old 112x84 default;
+  // scale those down, but leave user-resized nodes alone.
+  const style = { width: DEFAULT_SYMBOL_SIZE.width, height: DEFAULT_SYMBOL_SIZE.height, ...node.style };
+  if (style.width === 112 && style.height === 84) {
+    style.width = DEFAULT_SYMBOL_SIZE.width;
+    style.height = DEFAULT_SYMBOL_SIZE.height;
+  }
   return {
     ...base,
     type: "pidSymbol",
-    style: {
-      width: 112,
-      height: 84,
-      ...node.style
-    },
+    style,
     data: {
       label: String(data.label ?? node.id),
       symbolType: String(data.symbolType ?? node.type ?? "component"),
       rotation: Number(data.rotation ?? 0),
+      tag: data.tag,
       color: data.color
     }
   };
@@ -309,6 +332,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [customSymbols, setCustomSymbols] = useState<PidSymbolDef[]>([]);
   const [showGrid, setShowGrid] = useState(() => localStorage.getItem("fsdp.showGrid") !== "0");
   const [showComments, setShowComments] = useState(true);
+  const [gridSize, setGridSize] = useState(() => {
+    const stored = Number(localStorage.getItem("fsdp.gridSize"));
+    return [2, 5, 10, 20].includes(stored) ? stored : 5;
+  });
+  const [labelMode, setLabelMode] = useState<LabelMode>(() =>
+    localStorage.getItem("fsdp.labelMode") === "name" ? "name" : "tag"
+  );
   const [placementTool, setPlacementTool] = useState<PlacementTool | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [symbolEditorOpen, setSymbolEditorOpen] = useState(false);
@@ -322,6 +352,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const rfInstanceRef = useRef<ReactFlowInstance | null>(null);
   const diagramContainerRef = useRef<HTMLDivElement | null>(null);
   const edgeLabelHistoryRef = useRef<string | null>(null);
+  const dragPositionsRef = useRef<Record<string, { x: number; y: number }>>({});
+  const connectStartRef = useRef<OnConnectStartParams | null>(null);
+  const connectCompletedRef = useRef(false);
+  const edgeUpdateSucceededRef = useRef(false);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -614,6 +648,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           onDirty={markDirty}
           onHistory={recordHistory}
         />
+      ),
+      pidJunction: (props: NodeProps<CanvasNodeData>) => (
+        <JunctionNode {...(props as unknown as Parameters<typeof JunctionNode>[0])} />
       )
     }),
     [markDirty, recordHistory]
@@ -621,10 +658,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const edgeTypes = useMemo(
     () => ({
       orthogonal: (props: EdgeProps<OrthogonalEdgeData>) => (
-        <OrthogonalEdge {...props} onDirty={markDirty} onHistory={recordHistory} />
+        <OrthogonalEdge {...props} onDirty={markDirty} onHistory={recordHistory} gridSize={gridSize} />
       )
     }),
-    [markDirty, recordHistory]
+    [markDirty, recordHistory, gridSize]
   );
 
   const customSymbolsById = useMemo(
@@ -663,10 +700,20 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   }
 
   const placeElement = useCallback(
-    (tool: PlacementTool, flowX: number, flowY: number) => {
+    (tool: PlacementTool, rawFlowX: number, rawFlowY: number, parent?: Node<CanvasNodeData>) => {
       recordHistory();
+      const flowX = Math.round(rawFlowX / gridSize) * gridSize;
+      const flowY = Math.round(rawFlowY / gridSize) * gridSize;
       let node: Node<CanvasNodeData>;
-      if (tool.kind === "symbol") {
+      if (tool.kind === "symbol" && tool.symbolType === "junction") {
+        node = {
+          id: makeNodeId("junction"),
+          type: "pidJunction",
+          position: { x: flowX - JUNCTION_SIZE / 2, y: flowY - JUNCTION_SIZE / 2 },
+          style: { width: JUNCTION_SIZE, height: JUNCTION_SIZE },
+          data: {}
+        };
+      } else if (tool.kind === "symbol") {
         const customId = customSymbolId(tool.symbolType);
         const label = customId
           ? customSymbolsById[customId]?.name ?? "Symbol"
@@ -674,16 +721,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         node = {
           id: makeNodeId(customId ? "custom" : tool.symbolType),
           type: "pidSymbol",
-          position: { x: flowX - 56, y: flowY - 42 },
-          style: { width: 112, height: 84 },
+          position: { x: flowX - DEFAULT_SYMBOL_SIZE.width / 2, y: flowY - DEFAULT_SYMBOL_SIZE.height / 2 },
+          style: { width: DEFAULT_SYMBOL_SIZE.width, height: DEFAULT_SYMBOL_SIZE.height },
           data: { label, symbolType: tool.symbolType, rotation: 0 }
         };
       } else if (tool.kind === "section") {
         node = {
           id: makeNodeId("section"),
           type: "pidSection",
-          position: { x: flowX - 160, y: flowY - 110 },
-          style: { width: 320, height: 220 },
+          position: { x: flowX - DEFAULT_SECTION_SIZE.width / 2, y: flowY - DEFAULT_SECTION_SIZE.height / 2 },
+          style: { ...DEFAULT_SECTION_SIZE },
           zIndex: -1,
           data: { label: "Section", color: SECTION_COLORS[0] }
         };
@@ -702,6 +749,17 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           data: { text: "", author: user.name, created_at: new Date().toISOString() }
         };
       }
+      // Placing onto a section makes the element part of it (sections don't nest).
+      if (parent && tool.kind !== "section") {
+        node = {
+          ...node,
+          parentNode: parent.id,
+          position: {
+            x: node.position.x - parent.position.x,
+            y: node.position.y - parent.position.y
+          }
+        };
+      }
       const placed = { ...node, selected: true };
       setNodes((current) =>
         sortSectionsFirst([...current.map((entry) => ({ ...entry, selected: false })), placed])
@@ -711,8 +769,18 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       if (tool.kind === "comment") setShowComments(true);
       setGraphDirty(true);
     },
-    [customSymbolsById, recordHistory, setNodes, user.name]
+    [customSymbolsById, gridSize, recordHistory, setNodes, user.name]
   );
+
+  function changeGridSize(next: number) {
+    setGridSize(next);
+    localStorage.setItem("fsdp.gridSize", String(next));
+  }
+
+  function changeLabelMode(next: LabelMode) {
+    setLabelMode(next);
+    localStorage.setItem("fsdp.labelMode", next);
+  }
 
   const deleteNodeById = useCallback(
     (id: string) => {
@@ -825,6 +893,53 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setGraphDirty(true);
     },
     [recordHistory, setEdges]
+  );
+
+  const handleNodeDragStart = useCallback(
+    (_event: unknown, node: Node<CanvasNodeData>, draggedNodes?: Node<CanvasNodeData>[]) => {
+      recordHistory();
+      dragPositionsRef.current = {};
+      (draggedNodes?.length ? draggedNodes : [node]).forEach((entry) => {
+        dragPositionsRef.current[entry.id] = { ...entry.position };
+      });
+    },
+    [recordHistory]
+  );
+
+  // Hand-routed lines whose two endpoints move together (a dragged section's
+  // contents, or a multi-selection) are translated along, so the routing
+  // keeps its shape. Lines with a stationary endpoint keep their absolute
+  // waypoints (draw.io behavior).
+  const handleNodeDrag = useCallback(
+    (_event: unknown, node: Node<CanvasNodeData>, draggedNodes?: Node<CanvasNodeData>[]) => {
+      const dragged = draggedNodes?.length ? draggedNodes : [node];
+      const previous = dragPositionsRef.current[node.id];
+      dragged.forEach((entry) => {
+        dragPositionsRef.current[entry.id] = { ...entry.position };
+      });
+      if (!previous) return;
+      const deltaX = node.position.x - previous.x;
+      const deltaY = node.position.y - previous.y;
+      if (!deltaX && !deltaY) return;
+      const movingIds = new Set(dragged.map((entry) => entry.id));
+      nodesRef.current.forEach((entry) => {
+        if (entry.parentNode && movingIds.has(entry.parentNode)) movingIds.add(entry.id);
+      });
+      setEdges((current) => {
+        let changed = false;
+        const next = current.map((edge) => {
+          if (!movingIds.has(edge.source) || !movingIds.has(edge.target) || !hasStoredGeometry(edge.data)) {
+            return edge;
+          }
+          const data = translateEdgeGeometry(edge.data, deltaX, deltaY);
+          if (data === edge.data) return edge;
+          changed = true;
+          return { ...edge, data };
+        });
+        return changed ? next : current;
+      });
+    },
+    [setEdges]
   );
 
   const handleNodeDragStop = useCallback(
@@ -948,11 +1063,141 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   );
 
   function onConnect(connection: Connection) {
+    connectCompletedRef.current = true;
     recordHistory();
     setGraphDirty(true);
     setEdges((current) =>
       addEdge({ ...connection, type: "orthogonal", markerEnd: edgeMarker(undefined) }, current)
     );
+  }
+
+  function handleConnectStart(_event: unknown, params: OnConnectStartParams) {
+    connectStartRef.current = params;
+    connectCompletedRef.current = false;
+  }
+
+  // Dropping a connection onto an existing line joins them: a junction node
+  // is placed at the nearest point of that line, the line is split in two
+  // through it, and the dragged connection attaches to the junction.
+  function handleConnectEnd(event: MouseEvent | TouchEvent) {
+    const start = connectStartRef.current;
+    connectStartRef.current = null;
+    if (connectCompletedRef.current || !start?.nodeId) return;
+    const startNodeId = start.nodeId;
+    const pointer = "changedTouches" in event ? event.changedTouches[0] : event;
+    if (!pointer) return;
+    const element = document.elementFromPoint(pointer.clientX, pointer.clientY);
+    const edgeGroup = element?.closest?.(".react-flow__edge");
+    if (!edgeGroup) return;
+    const edgeId = (edgeGroup.getAttribute("data-testid") ?? "").replace("rf__edge-", "");
+    const targetEdge = edgesRef.current.find((edge) => edge.id === edgeId);
+    if (!targetEdge || targetEdge.source === start.nodeId || targetEdge.target === start.nodeId) return;
+    const pathElement = edgeGroup.querySelector<SVGPathElement>(".react-flow__edge-path");
+    const dropPoint = rfInstanceRef.current?.screenToFlowPosition({ x: pointer.clientX, y: pointer.clientY });
+    if (!pathElement || !dropPoint) return;
+
+    // The path's coordinates are flow coordinates; sample it for the point
+    // nearest the drop location.
+    const totalLength = pathElement.getTotalLength();
+    let nearest = dropPoint;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (let step = 0; step <= 100; step += 1) {
+      const sample = pathElement.getPointAtLength((totalLength * step) / 100);
+      const distance = Math.hypot(sample.x - dropPoint.x, sample.y - dropPoint.y);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = { x: sample.x, y: sample.y };
+      }
+    }
+    if (nearestDistance > 40) return;
+
+    recordHistory();
+    const junctionId = makeNodeId("junction");
+    const center = {
+      x: Math.round(nearest.x / gridSize) * gridSize,
+      y: Math.round(nearest.y / gridSize) * gridSize
+    };
+    setNodes((current) =>
+      sortSectionsFirst([
+        ...current,
+        {
+          id: junctionId,
+          type: "pidJunction",
+          position: { x: center.x - JUNCTION_SIZE / 2, y: center.y - JUNCTION_SIZE / 2 },
+          style: { width: JUNCTION_SIZE, height: JUNCTION_SIZE },
+          data: {}
+        }
+      ])
+    );
+    const carried: OrthogonalEdgeData = {
+      ...targetEdge.data,
+      waypoints: undefined,
+      startX: undefined,
+      endX: undefined,
+      bendX: undefined,
+      bendY: undefined
+    };
+    const upstreamData = { ...carried, showArrow: false };
+    setEdges((current) => [
+      ...current.filter((edge) => edge.id !== targetEdge.id),
+      {
+        id: makeNodeId("line"),
+        source: targetEdge.source,
+        sourceHandle: targetEdge.sourceHandle,
+        target: junctionId,
+        targetHandle: "j",
+        type: "orthogonal",
+        data: upstreamData,
+        markerEnd: edgeMarker(upstreamData)
+      },
+      {
+        id: makeNodeId("line"),
+        source: junctionId,
+        sourceHandle: "j",
+        target: targetEdge.target,
+        targetHandle: targetEdge.targetHandle,
+        type: "orthogonal",
+        label: targetEdge.label,
+        data: carried,
+        markerEnd: edgeMarker(carried)
+      },
+      {
+        id: makeNodeId("line"),
+        source: startNodeId,
+        sourceHandle: start.handleId ?? undefined,
+        target: junctionId,
+        targetHandle: "j",
+        type: "orthogonal",
+        data: {},
+        markerEnd: edgeMarker(undefined)
+      }
+    ]);
+    setGraphDirty(true);
+    setMessage("Lines joined with a junction.");
+  }
+
+  // Dragging a line end off its port: reconnect on a valid drop, remove the
+  // line when dropped on empty canvas.
+  function handleEdgeUpdateStart() {
+    edgeUpdateSucceededRef.current = false;
+  }
+
+  function handleEdgeUpdate(oldEdge: Edge<OrthogonalEdgeData>, connection: Connection) {
+    edgeUpdateSucceededRef.current = true;
+    recordHistory();
+    setEdges((current) => updateEdge(oldEdge, connection, current, { shouldReplaceId: false }));
+    setGraphDirty(true);
+  }
+
+  function handleEdgeUpdateEnd(_event: unknown, edge: Edge<OrthogonalEdgeData>) {
+    if (!edgeUpdateSucceededRef.current) {
+      recordHistory();
+      setEdges((current) => current.filter((entry) => entry.id !== edge.id));
+      setSelectedEdgeId((current) => (current === edge.id ? "" : current));
+      setGraphDirty(true);
+      setMessage("Line detached.");
+    }
+    edgeUpdateSucceededRef.current = true;
   }
 
   function confirmDiscardUnsaved(): boolean {
@@ -1190,7 +1435,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         throw new Error("Save the diagram first — parts can only be placed on saved nodes.");
       }
       const component = await api.createComponent(selectedDiagram.id, { tag: componentTag, part_id: selectedPart.id, quantity: 1, properties: { node_external_id: selectedNode.id } });
-      const nextNodes = nodes.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, label: `${component.tag}: ${selectedPart.part_number}` } } : node));
+      // Keep the descriptive label; the tag is carried separately so the
+      // caption setting can switch between them.
+      const nextNodes = nodes.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, tag: component.tag } } : node));
       setNodes(nextNodes);
       await api.updateDiagramGraph(selectedDiagram.id, buildGraphPayload(nextNodes, edges));
       const nextComponents = await api.listComponents(selectedDiagram.id);
@@ -1325,6 +1572,27 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const systemOptions = systems.map((system) => ({ value: system.id, label: system.name }));
 
   const symbolNodeSelected = selectedNode?.type === "pidSymbol";
+  const resizableNodeSelected = symbolNodeSelected || selectedNode?.type === "pidSection";
+  const selectedNodeWidth = Math.round(selectedNode?.width ?? Number(selectedNode?.style?.width ?? 0)) || 0;
+  const selectedNodeHeight = Math.round(selectedNode?.height ?? Number(selectedNode?.style?.height ?? 0)) || 0;
+  const editorSettings = useMemo(() => ({ labelMode }), [labelMode]);
+
+  function commitNodeSize(dimension: "width" | "height", raw: string) {
+    if (!selectedNode) return;
+    const parsed = Math.round(Number(raw));
+    if (!Number.isFinite(parsed) || parsed < 16 || parsed > 4000) return;
+    const current = dimension === "width" ? selectedNodeWidth : selectedNodeHeight;
+    if (parsed === current) return;
+    recordHistory();
+    setNodes((currentNodes) =>
+      currentNodes.map((node) =>
+        node.id === selectedNode.id
+          ? { ...node, [dimension]: parsed, style: { ...node.style, [dimension]: parsed } }
+          : node
+      )
+    );
+    setGraphDirty(true);
+  }
   const toolbarParent = selectedNode?.parentNode
     ? nodes.find((node) => node.id === selectedNode.parentNode) ?? null
     : null;
@@ -1343,6 +1611,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   return (
     <CustomSymbolsContext.Provider value={customSymbolsById}>
+    <EditorSettingsContext.Provider value={editorSettings}>
     <AppShell
       navItems={navItems}
       projectValue={selectedProjectId}
@@ -1447,7 +1716,24 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                       onNodesChange={onNodesChange}
                       onEdgesChange={onEdgesChange}
                       onConnect={onConnect}
-                      onNodeClick={(_, node) => {
+                      onConnectStart={handleConnectStart}
+                      onConnectEnd={handleConnectEnd}
+                      edgesUpdatable
+                      edgeUpdaterRadius={12}
+                      onEdgeUpdateStart={handleEdgeUpdateStart}
+                      onEdgeUpdate={handleEdgeUpdate}
+                      onEdgeUpdateEnd={handleEdgeUpdateEnd}
+                      onNodeClick={(event, node) => {
+                        // Clicking a section with an armed tool places into it.
+                        if (placementTool && node.type === "pidSection" && rfInstanceRef.current) {
+                          const position = rfInstanceRef.current.screenToFlowPosition({
+                            x: event.clientX,
+                            y: event.clientY
+                          });
+                          placeElement(placementTool, position.x, position.y, node as Node<CanvasNodeData>);
+                          setPlacementTool(null);
+                          return;
+                        }
                         setSelectedNodeId(node.id);
                         setSelectedEdgeId("");
                         if (node.type === "pidSymbol" && !node.data?.hasComponent) {
@@ -1474,15 +1760,24 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                         setSelectedEdgeId(edge.id);
                         openContextMenu(event, "edge", edge.id);
                       }}
-                      onNodeDragStart={recordHistory}
+                      onNodeDragStart={handleNodeDragStart}
+                      onNodeDrag={handleNodeDrag}
                       onNodeDragStop={handleNodeDragStop}
                       elevateNodesOnSelect={false}
                       deleteKeyCode={["Backspace", "Delete"]}
                       snapToGrid
-                      snapGrid={[10, 10]}
+                      snapGrid={[gridSize, gridSize]}
                       fitView
                     >
-                      {showGrid && <Background color="#c3cede" gap={20} size={1.6} variant={BackgroundVariant.Dots} />}
+                      {showGrid && (
+                        <Background
+                          color="#c3cede"
+                          gap={gridSize <= 5 ? gridSize * 4 : gridSize * 2}
+                          size={1.6}
+                          variant={BackgroundVariant.Dots}
+                        />
+                      )}
+                      {placementTool && <PlacementGhost tool={placementTool} gridSize={gridSize} />}
                       <MiniMap
                         maskColor="rgba(238, 241, 245, 0.7)"
                         nodeColor="#c8d4e4"
@@ -1531,10 +1826,67 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                 </div>
                 <PanelResizer width={inspectorWidth} onResize={setInspectorWidth} direction={-1} label="Resize inspector panel" />
                 <aside className="inspector" style={{ width: inspectorWidth }}>
+                  {!selectedNode && !selectedEdge && (
+                    <Panel title="Canvas">
+                      <Select
+                        label="Snap grid"
+                        value={String(gridSize)}
+                        options={[2, 5, 10, 20].map((value) => ({ value: String(value), label: `${value} px` }))}
+                        onChange={(value) => changeGridSize(Number(value))}
+                      />
+                      <Select
+                        label="Symbol caption"
+                        value={labelMode}
+                        options={[
+                          { value: "tag", label: "Component tag" },
+                          { value: "name", label: "Name" }
+                        ]}
+                        onChange={(value) => changeLabelMode(value === "name" ? "name" : "tag")}
+                      />
+                      <label className="checkRow">
+                        <input type="checkbox" checked={showGrid} onChange={toggleGrid} />
+                        <span>Show grid</span>
+                      </label>
+                      <label className="checkRow">
+                        <input type="checkbox" checked={showComments} onChange={() => setShowComments((current) => !current)} />
+                        <span>Show comments</span>
+                      </label>
+                    </Panel>
+                  )}
                   <Panel title="Node Inspector">
                     <p><strong>Selected:</strong> {selectedNode ? <span className="mono">{symbolNodeSelected ? String(selectedNode.data?.symbolType ?? "node") : String(selectedNode.type ?? "node").replace("pid", "").toLowerCase()}</span> : "None"}{selectedNode?.data?.hasComponent ? <span className="pill pill-good" style={{ marginLeft: 6 }}>part placed</span> : null}</p>
                     <TextInput label="Node label" value={nodeLabelDraft} onChange={setNodeLabelDraft} />
                     <button disabled={busy || !symbolNodeSelected || !nodeLabelDraft.trim()} onClick={applyNodeLabel}>Rename node</button>
+                    {resizableNodeSelected && (
+                      <div className="sizeRow">
+                        <label>
+                          Width px
+                          <input
+                            key={`w-${selectedNode?.id}-${selectedNodeWidth}`}
+                            type="number"
+                            min={16}
+                            defaultValue={selectedNodeWidth}
+                            onBlur={(event) => commitNodeSize("width", event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+                            }}
+                          />
+                        </label>
+                        <label>
+                          Height px
+                          <input
+                            key={`h-${selectedNode?.id}-${selectedNodeHeight}`}
+                            type="number"
+                            min={16}
+                            defaultValue={selectedNodeHeight}
+                            onBlur={(event) => commitNodeSize("height", event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+                            }}
+                          />
+                        </label>
+                      </div>
+                    )}
                     <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
                     <FormError message={formErrors.component} />
                     <button className="primary" disabled={busy || !selectedDiagram || !selectedPart || !symbolNodeSelected || !componentTag.trim()} onClick={placeComponent}>Place selected part</button>
@@ -1779,6 +2131,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         />
       </Routes>
     </AppShell>
+    </EditorSettingsContext.Provider>
     </CustomSymbolsContext.Provider>
   );
 }
