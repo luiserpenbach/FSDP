@@ -41,7 +41,7 @@ import { api, bomCsvUrl, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { LoginPage } from "./pages/LoginPage";
-import { PageLayout, PlaceholderPage } from "./pages/PageLayout";
+import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
 /** Loose union of the data carried by the four canvas node types. */
@@ -1705,7 +1705,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     ]}
                   />
                 </Panel>
-                <PlaceholderPage title="Review Workflows" body="Design review packages, comments, decisions, and approval routing will live here." />
+                <PlaceholderCard title="Review Workflows" body="Design review packages, comments, decisions, and approval routing will live here." />
               </section>
             </PageLayout>
           }
@@ -1761,7 +1761,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     <p className="hint">You are signed in as {user.email} ({user.role}). Ask an administrator to manage accounts.</p>
                   </Panel>
                 )}
-                <PlaceholderPage title="Project Configuration" body="Unit systems, templates, and controlled vocabularies will live here." />
+                <PlaceholderCard title="Project Configuration" body="Unit systems, templates, and controlled vocabularies will live here." />
               </section>
             </PageLayout>
           }
