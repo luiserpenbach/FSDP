@@ -6,10 +6,16 @@
  *    (must be rendered as a <ReactFlow> child — it uses the viewport transform)
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useViewport, type Edge, type Node } from "reactflow";
+import { useStore, useViewport, type Edge, type Node } from "reactflow";
 import { PidGlyph, SYMBOL_LABELS, customSymbolType } from "../PidSymbols";
 import type { PidSymbolDef } from "../../types";
-import { EDGE_COLORS, type EdgeStrokeStyle, type OrthogonalEdgeData } from "./OrthogonalEdge";
+import {
+  EDGE_COLORS,
+  EDGE_DEFAULT_WIDTH,
+  EDGE_WIDTHS,
+  type EdgeStrokeStyle,
+  type OrthogonalEdgeData
+} from "./OrthogonalEdge";
 import { SECTION_COLORS, SYMBOL_COLORS } from "./nodes";
 
 export type PlacementTool =
@@ -305,6 +311,8 @@ export function SelectionToolbar({
   onDeleteEdge: (id: string) => void;
 }) {
   const { x: viewportX, y: viewportY, zoom } = useViewport();
+  const canvasWidth = useStore((state) => state.width);
+  const canvasHeight = useStore((state) => state.height);
 
   let anchorX: number | null = null;
   let anchorY: number | null = null;
@@ -314,14 +322,29 @@ export function SelectionToolbar({
     anchorX = absX + (node.width ?? 0) / 2;
     anchorY = absY;
   } else if (edge && edgeEndpoints) {
+    // Anchor at the line's horizontal run (where the label sits) so the bar
+    // hovers over the line itself, not over its endpoint symbols.
     const [source, target] = edgeEndpoints;
-    anchorX = (source.position.x + (source.width ?? 0) / 2 + target.position.x + (target.width ?? 0) / 2) / 2;
-    anchorY = Math.min(source.position.y, target.position.y);
+    const sourceCenterX = source.position.x + (source.width ?? 0) / 2;
+    const targetCenterX = target.position.x + (target.width ?? 0) / 2;
+    const sourceCenterY = source.position.y + (source.height ?? 0) / 2;
+    const targetCenterY = target.position.y + (target.height ?? 0) / 2;
+    const startX = edge.data?.startX ?? sourceCenterX + (targetCenterX - sourceCenterX) / 3;
+    const endX = edge.data?.endX ?? sourceCenterX + ((targetCenterX - sourceCenterX) * 2) / 3;
+    anchorX = (startX + endX) / 2;
+    anchorY = edge.data?.bendY ?? (sourceCenterY + targetCenterY) / 2;
   }
   if (anchorX == null || anchorY == null) return null;
 
-  const left = anchorX * zoom + viewportX;
-  const top = anchorY * zoom + viewportY - 14;
+  // Keep the bar inside the canvas (the wrapper clips overflow): clamp
+  // horizontally, and flip below the anchor when it would poke out the top.
+  const rawLeft = anchorX * zoom + viewportX;
+  const rawTop = anchorY * zoom + viewportY - 14;
+  const left = Math.min(Math.max(rawLeft, 130), Math.max(canvasWidth - 130, 130));
+  const flip = rawTop < 52;
+  const top = flip
+    ? Math.min(anchorY * zoom + viewportY + 18, Math.max(canvasHeight - 60, 18))
+    : rawTop;
 
   let content: ReactNode = null;
   if (node?.type === "pidSymbol") {
@@ -359,6 +382,7 @@ export function SelectionToolbar({
     content = <BarButton title="Delete comment" danger onClick={() => onDeleteNode(node.id)}>&#128465;</BarButton>;
   } else if (edge) {
     const strokeStyle = edge.data?.strokeStyle ?? "solid";
+    const strokeWidth = edge.data?.strokeWidth ?? EDGE_DEFAULT_WIDTH;
     const strokeButton = (style: EdgeStrokeStyle, title: string, dash?: string) => (
       <button
         className={strokeStyle === style ? "barButton active" : "barButton"}
@@ -368,6 +392,18 @@ export function SelectionToolbar({
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
           <path d="M3 12 H21" strokeDasharray={dash} />
+        </svg>
+      </button>
+    );
+    const widthButton = (width: number, title: string, iconWidth: number) => (
+      <button
+        className={Math.abs(strokeWidth - width) < 0.01 ? "barButton active" : "barButton"}
+        title={title}
+        type="button"
+        onClick={() => onUpdateEdge(edge.id, { strokeWidth: width })}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={iconWidth} strokeLinecap="round">
+          <path d="M4 12 H20" />
         </svg>
       </button>
     );
@@ -381,6 +417,10 @@ export function SelectionToolbar({
         />
         <span className="barDivider" />
         <Swatches colors={EDGE_COLORS} current={edge.data?.color} onPick={(color) => onUpdateEdge(edge.id, { color })} />
+        <span className="barDivider" />
+        {widthButton(EDGE_WIDTHS[0], "Thin line", 1.2)}
+        {widthButton(EDGE_WIDTHS[1], "Regular line", 2.2)}
+        {widthButton(EDGE_WIDTHS[2], "Thick line", 3.4)}
         <span className="barDivider" />
         {strokeButton("solid", "Solid line")}
         {strokeButton("dashed", "Dashed line", "5 4")}
@@ -405,7 +445,7 @@ export function SelectionToolbar({
 
   return (
     <div
-      className="selectionToolbar nodrag nopan"
+      className={flip ? "selectionToolbar below nodrag nopan" : "selectionToolbar nodrag nopan"}
       style={{ left, top }}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => event.stopPropagation()}
