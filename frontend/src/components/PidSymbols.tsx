@@ -8,6 +8,7 @@
  * rendered from this data land on the symbol lines with no visual gap.
  */
 import { createContext, useContext, type ReactNode } from "react";
+import { sanitizeSvgInner } from "./pid/svgSanitize";
 import type { PidSymbolDef, SymbolPort } from "../types";
 
 const STROKE = 2.2;
@@ -255,6 +256,9 @@ export const PALETTE_SYMBOLS = [
 ];
 
 export function CustomGlyph({ symbol }: { symbol: PidSymbolDef }) {
+  // Re-scrub on render so symbols stored before the API blocklist tighten
+  // (or written via a bypass) cannot execute via innerHTML.
+  const safeSvg = sanitizeSvgInner(symbol.svg);
   return (
     <svg
       className="pidGlyphSvg"
@@ -265,8 +269,7 @@ export function CustomGlyph({ symbol }: { symbol: PidSymbolDef }) {
       strokeLinecap="round"
       strokeLinejoin="round"
       preserveAspectRatio="xMidYMid meet"
-      // Sanitized on import (frontend) and on write (API).
-      dangerouslySetInnerHTML={{ __html: symbol.svg }}
+      dangerouslySetInnerHTML={{ __html: safeSvg }}
     />
   );
 }

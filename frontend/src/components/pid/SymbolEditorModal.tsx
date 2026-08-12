@@ -11,6 +11,7 @@
 import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { api } from "../../api";
 import { parseViewBox } from "../PidSymbols";
+import { sanitizeSvgInner, scrubSvgElement } from "./svgSanitize";
 import type { PidSymbolDef, SymbolPort, SymbolPortSide } from "../../types";
 
 const DEFAULT_VIEWBOX = "0 0 64 40";
@@ -19,6 +20,8 @@ const EXAMPLE_SVG = [
   '<path d="M52 10 L32 20 L52 30 Z" />',
   '<path d="M2 20 H12 M52 20 H62" />'
 ].join("\n");
+
+export { sanitizeSvgInner, scrubSvgElement } from "./svgSanitize";
 
 /** Strip active content and return { viewBox, inner } from raw SVG text. */
 export function importSvgMarkup(raw: string): { viewBox: string; inner: string } {
@@ -33,16 +36,7 @@ export function importSvgMarkup(raw: string): { viewBox: string; inner: string }
   const svg = doc.querySelector("svg");
   if (!svg) throw new Error("No <svg> element found.");
 
-  svg.querySelectorAll("script, foreignObject, iframe, style").forEach((element) => element.remove());
-  doc.querySelectorAll("*").forEach((element) => {
-    for (const attribute of [...element.attributes]) {
-      const name = attribute.name.toLowerCase();
-      const value = attribute.value.toLowerCase();
-      if (name.startsWith("on") || ((name === "href" || name === "xlink:href") && !value.startsWith("#"))) {
-        element.removeAttribute(attribute.name);
-      }
-    }
-  });
+  scrubSvgElement(svg);
 
   let viewBox = svg.getAttribute("viewBox");
   if (!viewBox) {
@@ -184,6 +178,7 @@ export function SymbolEditorModal({
 
   const viewBox = parseViewBox(draft.viewBox);
   const combinedSvg = [draft.svg, ...draft.drawn].filter(Boolean).join("\n");
+  const safeCombinedSvg = sanitizeSvgInner(combinedSvg);
   const shapeRect = shapeDraft && tool === "rect" ? normalizedRect(shapeDraft.start, shapeDraft.end) : null;
   const shapeR = shapeDraft && tool === "circle" ? circleRadius(shapeDraft.start, shapeDraft.end) : 0;
 
@@ -289,7 +284,7 @@ export function SymbolEditorModal({
   }
 
   function addPort(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!combinedSvg) return;
+    if (!safeCombinedSvg) return;
     const coords = previewCoords(event.clientX, event.clientY);
     if (!coords) return;
     setDraft((current) => {
@@ -331,11 +326,16 @@ export function SymbolEditorModal({
   }
 
   async function save() {
-    if (!draft.name.trim() || !combinedSvg) return;
+    if (!draft.name.trim() || !safeCombinedSvg) return;
     setBusy(true);
     setError("");
     try {
-      const body = { name: draft.name.trim(), view_box: draft.viewBox, svg: combinedSvg, ports: draft.ports };
+      const body = {
+        name: draft.name.trim(),
+        view_box: draft.viewBox,
+        svg: safeCombinedSvg,
+        ports: draft.ports
+      };
       if (draft.id) await api.updateSymbol(draft.id, body);
       else await api.createSymbol(body);
       onChanged();
@@ -441,7 +441,7 @@ export function SymbolEditorModal({
                 onPointerDown={previewPointerDown}
                 onDoubleClick={tool === "line" ? finishLine : undefined}
               >
-                {combinedSvg ? (
+                {safeCombinedSvg ? (
                   <svg
                     viewBox={draft.viewBox}
                     fill="none"
@@ -450,7 +450,7 @@ export function SymbolEditorModal({
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     preserveAspectRatio="none"
-                    dangerouslySetInnerHTML={{ __html: combinedSvg }}
+                    dangerouslySetInnerHTML={{ __html: safeCombinedSvg }}
                   />
                 ) : (
                   <span className="symbolPreviewEmpty">Draw with the tools above, or import/paste SVG</span>
@@ -509,7 +509,7 @@ export function SymbolEditorModal({
               <button type="button" onClick={onClose}>Cancel</button>
               <button
                 className="primary"
-                disabled={busy || !draft.name.trim() || !combinedSvg}
+                disabled={busy || !draft.name.trim() || !safeCombinedSvg}
                 type="button"
                 onClick={() => void save()}
               >

@@ -200,8 +200,29 @@ class PartRead(PartCreate, OrmModel):
     )
 
 
-_SVG_BLOCKLIST = ("<script", "<foreignobject", "<iframe", "javascript:")
+# Symbols are rendered via dangerouslySetInnerHTML. Block active content and
+# nesting vectors that the earlier script/onload checks missed (data: URIs in
+# <use>/<image>, SMIL <set attributeName="onload">, <style> imports, etc.).
+_SVG_BLOCKLIST = (
+    "<script",
+    "<foreignobject",
+    "<iframe",
+    "<style",
+    "<use",
+    "<image",
+    "<set",
+    "<animate",  # animate, animateTransform, animateMotion
+    "<a ",
+    "<a>",
+    "<a/",
+    "javascript:",
+    "data:",
+    "vbscript:",
+)
 _SVG_EVENT_ATTR = re.compile(r"\son\w+\s*=")
+_SVG_SMIL_EVENT_ATTR = re.compile(r"""attributename\s*=\s*['"]?\s*on""", re.IGNORECASE)
+# Only fragment hrefs (#id) are allowed; anything else is an external/data load.
+_SVG_EXTERNAL_HREF = re.compile(r"""(?:xlink:)?href\s*=\s*['"]?\s*(?!#)""", re.IGNORECASE)
 
 
 def clean_symbol_svg(value: str) -> str:
@@ -210,8 +231,13 @@ def clean_symbol_svg(value: str) -> str:
     if not cleaned:
         raise ValueError("must not be blank")
     lowered = cleaned.lower()
-    if any(token in lowered for token in _SVG_BLOCKLIST) or _SVG_EVENT_ATTR.search(lowered):
-        raise ValueError("SVG markup must not contain scripts or event handler attributes")
+    if (
+        any(token in lowered for token in _SVG_BLOCKLIST)
+        or _SVG_EVENT_ATTR.search(lowered)
+        or _SVG_SMIL_EVENT_ATTR.search(lowered)
+        or _SVG_EXTERNAL_HREF.search(lowered)
+    ):
+        raise ValueError("SVG markup must not contain scripts, embeds, or event handlers")
     return cleaned
 
 
