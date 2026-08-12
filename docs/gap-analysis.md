@@ -110,7 +110,7 @@ Each was reproduced against the running app with foreign-key enforcement on (mat
 - Diagram name field doubles as "create name" and "rename target" (`App.tsx:770-775`).
 - Dirty badge shows "Unsaved changes" when no diagram is open (nothing to save to).
 - No React error boundary — any render error white-screens the app.
-- Node deletion only via Backspace; no visible affordance. Rotation rotates the glyph only (handles/edges unaffected) — cosmetic.
+- ~~Node deletion only via Backspace; no visible affordance. Rotation rotates the glyph only (handles/edges unaffected) — cosmetic.~~ Fixed 2026-08-12: Delete/Backspace both work, right-click and the selection toolbar offer delete, and connection handles now live on the symbol's declared ports so they rotate with the glyph.
 
 ### F11 — MEDIUM (build integrity): dependency pinning
 - **Where:** `frontend/package.json` — `react`, `reactflow`, `vite`, `typescript`, `@vitejs/plugin-react` all `"latest"`; several belong in `devDependencies`. Currently resolves to React 19.2 + `reactflow` 11.11.4 — a **deprecated package** (superseded by `@xyflow/react`) whose peer range is React 17/18. TypeScript resolves to 6.0.3. Builds are non-reproducible and can break on any `npm install`. Pin exact/caret versions and plan the `@xyflow/react` v12 migration.
@@ -261,6 +261,17 @@ Line metadata editing (F8) → auto-tagging + tag uniqueness UX → symbol libra
 > `qualification_warnings`), revision diff (`GET /bom/{id}/diff`), project-wide BoM view
 > with diagram names, and trace-link listing/deletion (`DELETE /trace-links/{id}`).
 > Still open from this list: `@xyflow/react` v12 migration; rotation remains glyph-only.
+
+> Status 2026-08-12 (editor usability pass): symbols now declare connection ports in
+> viewBox coordinates (`SYMBOL_PORTS`), and handles are rendered on those ports inside
+> the glyph box — closing the valve-to-node gap and making handles rotate with the
+> symbol. Added: user-defined symbols (SVG import + KiCad-style port placement, new
+> `pid_symbols` table + `/symbols` CRUD), sections that carry contained components when
+> moved, text labels, comment pins, right-click context menu (hide grid / hide
+> comments / add elements / delete), a floating bottom tool panel with a symbol palette
+> popover, a hovering selection editor bar (line color / dash style / arrow toggle /
+> label, symbol color/rotate/duplicate, section colors, text sizing), animated
+> glow-on-hover line handles scoped per edge, and resizable sidebar/inspector panels.
 
 ### Phase 4 — Roles, administration, and API hardening — ✅ IMPLEMENTED
 

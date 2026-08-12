@@ -1,17 +1,55 @@
 /**
  * Stroke-based P&ID symbol set (ISA-inspired schematic glyphs).
- * All symbols share a 64x40 viewBox and draw with currentColor so the
+ * All built-in symbols share a 64x40 viewBox and draw with currentColor so the
  * canvas theme controls their appearance.
+ *
+ * Every symbol also declares its connection ports in viewBox coordinates.
+ * Ports sit exactly where the drawn pipe stubs end, so React Flow handles
+ * rendered from this data land on the symbol lines with no visual gap.
  */
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
+import type { PidSymbolDef, SymbolPort } from "../types";
 
 const STROKE = 2.2;
+
+export const SYMBOL_VIEWBOX = "0 0 64 40";
+
+export type ViewBox = { x: number; y: number; width: number; height: number };
+
+export function parseViewBox(raw: string | undefined): ViewBox {
+  const parts = (raw ?? SYMBOL_VIEWBOX).trim().split(/[\s,]+/).map(Number);
+  if (parts.length === 4 && parts.every(Number.isFinite) && parts[2] > 0 && parts[3] > 0) {
+    return { x: parts[0], y: parts[1], width: parts[2], height: parts[3] };
+  }
+  return { x: 0, y: 0, width: 64, height: 40 };
+}
+
+export const CUSTOM_SYMBOL_PREFIX = "custom:";
+
+export function customSymbolType(symbolId: string): string {
+  return `${CUSTOM_SYMBOL_PREFIX}${symbolId}`;
+}
+
+export function customSymbolId(symbolType: string): string | null {
+  return symbolType.startsWith(CUSTOM_SYMBOL_PREFIX)
+    ? symbolType.slice(CUSTOM_SYMBOL_PREFIX.length)
+    : null;
+}
+
+/** User-defined symbols, keyed by symbol id, provided by the app once loaded. */
+export const CustomSymbolsContext = createContext<Record<string, PidSymbolDef>>({});
+
+export function useCustomSymbol(symbolType: string): PidSymbolDef | null {
+  const customSymbols = useContext(CustomSymbolsContext);
+  const id = customSymbolId(symbolType);
+  return id ? customSymbols[id] ?? null : null;
+}
 
 function Svg({ children }: { children: ReactNode }) {
   return (
     <svg
       className="pidGlyphSvg"
-      viewBox="0 0 64 40"
+      viewBox={SYMBOL_VIEWBOX}
       fill="none"
       stroke="currentColor"
       strokeWidth={STROKE}
@@ -92,6 +130,7 @@ function SourceGlyph() {
     <Svg>
       <path d="M18 8 H46 A10 12 0 0 1 46 32 H18 A10 12 0 0 1 18 8 Z" />
       <path d="M56 20 H62" />
+      <path d="M32 8 V2" />
     </Svg>
   );
 }
@@ -138,6 +177,47 @@ const GLYPHS: Record<string, () => ReactNode> = {
   pump: PumpGlyph,
 };
 
+const INLINE_PORTS: SymbolPort[] = [
+  { id: "in", x: 2, y: 20, side: "left" },
+  { id: "out", x: 62, y: 20, side: "right" },
+];
+
+/** Connection ports per symbol, in 64x40 viewBox coordinates. */
+export const SYMBOL_PORTS: Record<string, SymbolPort[]> = {
+  valve: INLINE_PORTS,
+  check_valve: INLINE_PORTS,
+  regulator: [
+    { id: "in", x: 2, y: 25, side: "left" },
+    { id: "out", x: 62, y: 25, side: "right" },
+  ],
+  relief_valve: [
+    { id: "in", x: 4, y: 26, side: "left" },
+    { id: "vent", x: 46, y: 6, side: "top" },
+  ],
+  sensor: [{ id: "process", x: 32, y: 38, side: "bottom" }],
+  filter: INLINE_PORTS,
+  source: [
+    { id: "out", x: 62, y: 20, side: "right" },
+    { id: "top", x: 32, y: 2, side: "top" },
+  ],
+  tank: [
+    { id: "out", x: 62, y: 20, side: "right" },
+    { id: "top", x: 32, y: 2, side: "top" },
+  ],
+  sink: [{ id: "in", x: 2, y: 20, side: "left" }],
+  pump: INLINE_PORTS,
+  component: INLINE_PORTS,
+};
+
+export function getSymbolPorts(symbolType: string, custom: PidSymbolDef | null): SymbolPort[] {
+  if (custom) return custom.ports;
+  return SYMBOL_PORTS[symbolType] ?? SYMBOL_PORTS.component;
+}
+
+export function getSymbolViewBox(custom: PidSymbolDef | null): ViewBox {
+  return parseViewBox(custom?.view_box);
+}
+
 export const SYMBOL_LABELS: Record<string, string> = {
   valve: "Valve",
   check_valve: "Check valve",
@@ -162,7 +242,26 @@ export const PALETTE_SYMBOLS = [
   "sink",
 ];
 
+export function CustomGlyph({ symbol }: { symbol: PidSymbolDef }) {
+  return (
+    <svg
+      className="pidGlyphSvg"
+      viewBox={symbol.view_box}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={STROKE}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      preserveAspectRatio="xMidYMid meet"
+      // Sanitized on import (frontend) and on write (API).
+      dangerouslySetInnerHTML={{ __html: symbol.svg }}
+    />
+  );
+}
+
 export function PidGlyph({ type }: { type: string }) {
+  const custom = useCustomSymbol(type);
+  if (custom) return <CustomGlyph symbol={custom} />;
   const Glyph = GLYPHS[type] ?? ComponentGlyph;
   return <Glyph />;
 }

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Any
 
@@ -197,6 +198,84 @@ class PartRead(PartCreate, OrmModel):
         validation_alias="metadata_",
         serialization_alias="metadata",
     )
+
+
+_SVG_BLOCKLIST = ("<script", "<foreignobject", "<iframe", "javascript:")
+_SVG_EVENT_ATTR = re.compile(r"\son\w+\s*=")
+
+
+def clean_symbol_svg(value: str) -> str:
+    """Reject active content; the frontend sanitizes too, but the API is the trust boundary."""
+    cleaned = value.strip()
+    if not cleaned:
+        raise ValueError("must not be blank")
+    lowered = cleaned.lower()
+    if any(token in lowered for token in _SVG_BLOCKLIST) or _SVG_EVENT_ATTR.search(lowered):
+        raise ValueError("SVG markup must not contain scripts or event handler attributes")
+    return cleaned
+
+
+class SymbolPort(BaseModel):
+    id: str
+    x: float
+    y: float
+    side: str = "left"
+
+    @field_validator("id")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("side")
+    @classmethod
+    def _valid_side(cls, value: str) -> str:
+        if value not in {"left", "right", "top", "bottom"}:
+            raise ValueError("must be one of: left, right, top, bottom")
+        return value
+
+
+class PidSymbolCreate(BaseModel):
+    name: str
+    view_box: str = "0 0 64 40"
+    svg: str
+    ports: list[SymbolPort] = Field(default_factory=list)
+
+    @field_validator("name", "view_box")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("svg")
+    @classmethod
+    def _safe_svg(cls, value: str) -> str:
+        return clean_symbol_svg(value)
+
+
+class PidSymbolUpdate(BaseModel):
+    name: str | None = None
+    view_box: str | None = None
+    svg: str | None = None
+    ports: list[SymbolPort] | None = None
+
+    @field_validator("name", "view_box")
+    @classmethod
+    def _required_text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+    @field_validator("svg")
+    @classmethod
+    def _safe_svg(cls, value: str | None) -> str | None:
+        return None if value is None else clean_symbol_svg(value)
+
+
+class PidSymbolRead(OrmModel):
+    id: str
+    name: str
+    view_box: str
+    svg: str
+    ports: list[SymbolPort]
+    created_at: datetime
+    updated_at: datetime
 
 
 class DiagramCreate(BaseModel):

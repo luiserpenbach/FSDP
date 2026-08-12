@@ -17,6 +17,7 @@ from app.models import (
     DiagramNode,
     FluidSystem,
     Part,
+    PidSymbolDef,
     Project,
     Requirement,
     TraceLink,
@@ -42,6 +43,9 @@ from app.schemas import (
     PartCreate,
     PartRead,
     PartUpdate,
+    PidSymbolCreate,
+    PidSymbolRead,
+    PidSymbolUpdate,
     ProjectBomRead,
     ProjectCreate,
     ProjectRead,
@@ -429,6 +433,84 @@ def update_diagram_graph(
     db.commit()
     db.refresh(diagram)
     return diagram
+
+
+@router.post("/symbols", response_model=PidSymbolRead, status_code=201)
+def create_symbol(
+    payload: PidSymbolCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> PidSymbolDef:
+    existing = db.scalar(
+        select(PidSymbolDef).where(
+            normalized_column(PidSymbolDef.name) == normalized_name(payload.name)
+        )
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="Symbol name already exists")
+
+    data = payload.model_dump()
+    data["ports"] = [port.model_dump() for port in payload.ports]
+    symbol = PidSymbolDef(**data)
+    db.add(symbol)
+    db.flush()
+    record_change(
+        db, "symbol", symbol.id, "created", f"Created P&ID symbol {symbol.name}", actor=user.email
+    )
+    db.commit()
+    db.refresh(symbol)
+    return symbol
+
+
+@router.get("/symbols", response_model=list[PidSymbolRead])
+def list_symbols(db: Session = Depends(get_db)) -> list[PidSymbolDef]:
+    return list(db.scalars(select(PidSymbolDef).order_by(PidSymbolDef.name)))
+
+
+@router.put("/symbols/{symbol_id}", response_model=PidSymbolRead)
+def update_symbol(
+    symbol_id: str,
+    payload: PidSymbolUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> PidSymbolDef:
+    symbol = require_model(db, PidSymbolDef, symbol_id)
+    if payload.name:
+        existing = db.scalar(
+            select(PidSymbolDef).where(
+                normalized_column(PidSymbolDef.name) == normalized_name(payload.name),
+                PidSymbolDef.id != symbol_id,
+            )
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="Symbol name already exists")
+
+    updates = payload.model_dump(exclude_unset=True)
+    if "ports" in updates and updates["ports"] is not None:
+        updates["ports"] = [port.model_dump() for port in payload.ports or []]
+    for field, value in updates.items():
+        setattr(symbol, field, value)
+    record_change(
+        db, "symbol", symbol.id, "updated", f"Updated P&ID symbol {symbol.name}", actor=user.email
+    )
+    db.commit()
+    db.refresh(symbol)
+    return symbol
+
+
+@router.delete("/symbols/{symbol_id}", status_code=204)
+def delete_symbol(
+    symbol_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Response:
+    symbol = require_model(db, PidSymbolDef, symbol_id)
+    record_change(
+        db, "symbol", symbol.id, "deleted", f"Deleted P&ID symbol {symbol.name}", actor=user.email
+    )
+    db.delete(symbol)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/parts", response_model=PartRead, status_code=201)

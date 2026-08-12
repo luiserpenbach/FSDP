@@ -133,3 +133,22 @@ export type Impact = {
   affected_bom_snapshots: BomSnapshot[];
   affected_components: ComponentInstance[];
 };
+
+export type SymbolPortSide = "left" | "right" | "top" | "bottom";
+
+export type SymbolPort = {
+  id: string;
+  x: number;
+  y: number;
+  side: SymbolPortSide;
+};
+
+export type PidSymbolDef = {
+  id: string;
+  name: string;
+  view_box: string;
+  svg: string;
+  ports: SymbolPort[];
+  created_at?: string;
+  updated_at?: string;
+};
