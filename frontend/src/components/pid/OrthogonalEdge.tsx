@@ -1,11 +1,14 @@
 /**
- * Orthogonal (pipe-run) edge with draggable bend handles.
+ * Orthogonal (pipe-run) edge with a draggable handle on every segment.
  *
  * Routing: the line leaves each port through a short perpendicular stub in
  * the direction the port faces (which follows symbol rotation), then runs an
- * H-V-H backbone controlled by three draggable, grid-snapped parameters
- * (startX, bendY, endX). Unset parameters get orientation-aware defaults and
- * keep following the nodes; dragged ones stick until reset (double-click).
+ * orthogonal polyline through `data.waypoints`. While no waypoints are set,
+ * corners are derived automatically (and keep following the nodes); the
+ * first drag materializes them. Dragging any segment moves it perpendicular
+ * to itself — segments next to a fixed stub grow a new corner, draw.io
+ * style. Double-clicking a handle resets the whole line to automatic
+ * routing. Junction nodes (pidJunction) connect with no stub, auto-oriented.
  *
  * Styling lives on edge.data (color, stroke style/width, arrow) so the hover
  * editor bar can restyle lines in place.
@@ -15,7 +18,14 @@ import { BaseEdge, EdgeLabelRenderer, MarkerType, Position, useReactFlow, type E
 
 export type EdgeStrokeStyle = "solid" | "dashed" | "dotted";
 
+export type Point = { x: number; y: number };
+
 export type OrthogonalEdgeData = {
+  /** Orthogonal corner points, in flow coordinates. Present (even empty)
+   *  once the user has routed the line by hand; absent = automatic. */
+  waypoints?: Point[];
+  /** Legacy three-parameter routing (pre-waypoints); still honored as the
+   *  default route for saved diagrams. */
   bendX?: number;
   bendY?: number;
   startX?: number;
@@ -33,6 +43,10 @@ export type OrthogonalEdgeData = {
 
 export const EDGE_DEFAULT_COLOR = "#41536b";
 export const EDGE_COLORS = ["#41536b", "#2257c4", "#0f766e", "#b3261e", "#8a5b00", "#6d28d9"];
+export const EDGE_WIDTHS = [1.2, 1.8, 2.8];
+export const EDGE_DEFAULT_WIDTH = 1.8;
+const BEND_RADIUS = 3;
+const MIN_HANDLE_SEGMENT = 7;
 
 export function edgeMarker(data: OrthogonalEdgeData | undefined) {
   if (data?.showArrow === false) return undefined;
@@ -50,17 +64,9 @@ const DASH_PATTERNS: Record<EdgeStrokeStyle, string | undefined> = {
   dotted: "2 5"
 };
 
-const BEND_SNAP = 10;
-
-function snap(value: number): number {
-  return Math.round(value / BEND_SNAP) * BEND_SNAP;
+function snapTo(value: number, grid: number): number {
+  return Math.round(value / grid) * grid;
 }
-
-export const EDGE_WIDTHS = [1.2, 1.8, 2.8];
-export const EDGE_DEFAULT_WIDTH = 1.8;
-const BEND_RADIUS = 3;
-
-type Point = { x: number; y: number };
 
 /** Orthogonal polyline with corners rounded to BEND_RADIUS (clamped to short segments). */
 export function roundedOrthogonalPath(points: Point[]): string {
@@ -101,17 +107,25 @@ function isHorizontal(position: Position): boolean {
   return position === Position.Left || position === Position.Right;
 }
 
-function stubPoint(x: number, y: number, position: Position): Point {
+function stubPoint(x: number, y: number, position: Position, length: number): Point {
   switch (position) {
     case Position.Left:
-      return { x: x - ROUTE_STUB, y };
+      return { x: x - length, y };
     case Position.Right:
-      return { x: x + ROUTE_STUB, y };
+      return { x: x + length, y };
     case Position.Top:
-      return { x, y: y - ROUTE_STUB };
+      return { x, y: y - length };
     default:
-      return { x, y: y + ROUTE_STUB };
+      return { x, y: y + length };
   }
+}
+
+/** Which way a stub-less endpoint (junction) should face: toward the far end. */
+export function dominantDirection(fromX: number, fromY: number, toX: number, toY: number): Position {
+  const deltaX = toX - fromX;
+  const deltaY = toY - fromY;
+  if (Math.abs(deltaX) >= Math.abs(deltaY)) return deltaX >= 0 ? Position.Right : Position.Left;
+  return deltaY >= 0 ? Position.Bottom : Position.Top;
 }
 
 /**
@@ -119,20 +133,20 @@ function stubPoint(x: number, y: number, position: Position): Point {
  * way toward the far end, but never behind the port's stub — a left-facing
  * port routes out to the left even when its partner sits to the right.
  */
-function defaultBackboneX(portX: number, position: Position, towardX: number): number {
+function defaultBackboneX(portX: number, position: Position, towardX: number, stub: number): number {
   const natural = portX + (towardX - portX) / 3;
-  if (isHorizontal(position)) {
+  if (isHorizontal(position) && stub > 0) {
     const sign = position === Position.Right ? 1 : -1;
-    if ((natural - portX) * sign < ROUTE_STUB) return portX + sign * ROUTE_STUB;
+    if ((natural - portX) * sign < stub) return portX + sign * stub;
   }
   return natural;
 }
 
 export type OrthogonalRoute = {
+  /** Full structural point list: [source, exit, ...corners, entry, target].
+   *  Consecutive points may coincide (zero-length stubs); rendering dedupes. */
   points: Point[];
-  startX: number;
-  endX: number;
-  bendY: number;
+  corners: Point[];
   exit: Point;
   entry: Point;
 };
@@ -144,6 +158,8 @@ export function buildOrthogonalRoute({
   targetX,
   targetY,
   targetPosition,
+  sourceStub = ROUTE_STUB,
+  targetStub = ROUTE_STUB,
   data
 }: {
   sourceX: number;
@@ -152,50 +168,142 @@ export function buildOrthogonalRoute({
   targetX: number;
   targetY: number;
   targetPosition: Position;
+  sourceStub?: number;
+  targetStub?: number;
   data?: OrthogonalEdgeData;
 }): OrthogonalRoute {
-  const exit = stubPoint(sourceX, sourceY, sourcePosition);
-  const entry = stubPoint(targetX, targetY, targetPosition);
-  const startX =
-    typeof data?.startX === "number" ? data.startX : defaultBackboneX(sourceX, sourcePosition, targetX);
-  const endX =
-    typeof data?.endX === "number" ? data.endX : defaultBackboneX(targetX, targetPosition, sourceX);
-  // Vertical ports pull the horizontal run to their stub level so the line
-  // clears the symbol before turning; otherwise run midway between the ports.
-  const bendY =
-    typeof data?.bendY === "number"
-      ? data.bendY
-      : !isHorizontal(sourcePosition)
-        ? exit.y
-        : !isHorizontal(targetPosition)
-          ? entry.y
-          : sourceY + (targetY - sourceY) / 2;
-  return {
-    points: [
-      { x: sourceX, y: sourceY },
-      exit,
+  const exit = stubPoint(sourceX, sourceY, sourcePosition, sourceStub);
+  const entry = stubPoint(targetX, targetY, targetPosition, targetStub);
+
+  let corners: Point[];
+  if (Array.isArray(data?.waypoints)) {
+    corners = data.waypoints;
+  } else {
+    const startX =
+      typeof data?.startX === "number"
+        ? data.startX
+        : defaultBackboneX(sourceX, sourcePosition, targetX, sourceStub);
+    const endX =
+      typeof data?.endX === "number"
+        ? data.endX
+        : defaultBackboneX(targetX, targetPosition, sourceX, targetStub);
+    // Vertical ports pull the horizontal run to their stub level so the line
+    // clears the symbol before turning; otherwise run midway between ports.
+    const bendY =
+      typeof data?.bendY === "number"
+        ? data.bendY
+        : !isHorizontal(sourcePosition)
+          ? exit.y
+          : !isHorizontal(targetPosition)
+            ? entry.y
+            : sourceY + (targetY - sourceY) / 2;
+    corners = [
       { x: startX, y: exit.y },
       { x: startX, y: bendY },
       { x: endX, y: bendY },
-      { x: endX, y: entry.y },
-      entry,
-      { x: targetX, y: targetY }
-    ],
-    startX,
-    endX,
-    bendY,
+      { x: endX, y: entry.y }
+    ];
+  }
+
+  // Re-establish orthogonality where node movement broke it: insert an
+  // L-connector along the port's axis at the ends, horizontal-first between
+  // waypoints (only ever needed for hand-edited data).
+  const chained: Point[] = [];
+  let previous = exit;
+  corners.forEach((corner, index) => {
+    if (previous.x !== corner.x && previous.y !== corner.y) {
+      if (index === 0 && !isHorizontal(sourcePosition)) chained.push({ x: previous.x, y: corner.y });
+      else chained.push({ x: corner.x, y: previous.y });
+    }
+    chained.push(corner);
+    previous = corner;
+  });
+  if (previous.x !== entry.x && previous.y !== entry.y) {
+    if (isHorizontal(targetPosition)) chained.push({ x: previous.x, y: entry.y });
+    else chained.push({ x: entry.x, y: previous.y });
+  }
+
+  return {
+    points: [{ x: sourceX, y: sourceY }, exit, ...chained, entry, { x: targetX, y: targetY }],
+    corners: chained,
     exit,
     entry
   };
 }
 
+/** Drop corners that no longer bend the line (duplicates and collinear middles). */
+export function cleanupWaypoints(corners: Point[], exit: Point, entry: Point): Point[] {
+  const chain = [exit, ...corners, entry];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let index = 1; index < chain.length - 1; index += 1) {
+      const [a, b, c] = [chain[index - 1], chain[index], chain[index + 1]];
+      const duplicate = a.x === b.x && a.y === b.y;
+      const collinear = (a.x === b.x && b.x === c.x) || (a.y === b.y && b.y === c.y);
+      if (duplicate || collinear) {
+        chain.splice(index, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+  return chain.slice(1, -1);
+}
+
+/** Shift a line's hand-placed geometry (used when a whole section moves). */
+export function translateEdgeGeometry(
+  data: OrthogonalEdgeData | undefined,
+  deltaX: number,
+  deltaY: number
+): OrthogonalEdgeData | undefined {
+  if (!data) return data;
+  const next: OrthogonalEdgeData = { ...data };
+  let changed = false;
+  if (Array.isArray(data.waypoints)) {
+    next.waypoints = data.waypoints.map((point) => ({ x: point.x + deltaX, y: point.y + deltaY }));
+    changed = true;
+  }
+  if (typeof data.startX === "number") {
+    next.startX = data.startX + deltaX;
+    changed = true;
+  }
+  if (typeof data.endX === "number") {
+    next.endX = data.endX + deltaX;
+    changed = true;
+  }
+  if (typeof data.bendX === "number") {
+    next.bendX = data.bendX + deltaX;
+    changed = true;
+  }
+  if (typeof data.bendY === "number") {
+    next.bendY = data.bendY + deltaY;
+    changed = true;
+  }
+  return changed ? next : data;
+}
+
+/** True when the line carries hand-placed geometry that should move with its nodes. */
+export function hasStoredGeometry(data: OrthogonalEdgeData | undefined): boolean {
+  return (
+    Array.isArray(data?.waypoints) ||
+    typeof data?.startX === "number" ||
+    typeof data?.endX === "number" ||
+    typeof data?.bendY === "number" ||
+    typeof data?.bendX === "number"
+  );
+}
+
 type EdgeCallbacks = {
   onDirty: () => void;
   onHistory: () => void;
+  gridSize: number;
 };
 
 export function OrthogonalEdge({
   id,
+  source,
+  target,
   sourceX,
   sourceY,
   sourcePosition,
@@ -207,46 +315,95 @@ export function OrthogonalEdge({
   label,
   data,
   onDirty,
-  onHistory
+  onHistory,
+  gridSize
 }: EdgeProps<OrthogonalEdgeData> & EdgeCallbacks) {
-  const { screenToFlowPosition, setEdges, setNodes } = useReactFlow();
+  const { screenToFlowPosition, setEdges, setNodes, getNode } = useReactFlow();
   const [hovered, setHovered] = useState(false);
-  const { points, startX, endX, bendY, exit, entry } = buildOrthogonalRoute({
+
+  const sourceIsJunction = getNode(source)?.type === "pidJunction";
+  const targetIsJunction = getNode(target)?.type === "pidJunction";
+  const route = buildOrthogonalRoute({
     sourceX,
     sourceY,
-    sourcePosition,
+    sourcePosition: sourceIsJunction ? dominantDirection(sourceX, sourceY, targetX, targetY) : sourcePosition,
     targetX,
     targetY,
-    targetPosition,
+    targetPosition: targetIsJunction ? dominantDirection(targetX, targetY, sourceX, sourceY) : targetPosition,
+    sourceStub: sourceIsJunction ? 0 : ROUTE_STUB,
+    targetStub: targetIsJunction ? 0 : ROUTE_STUB,
     data
   });
+  const { points, corners, exit, entry } = route;
   const path = roundedOrthogonalPath(points);
 
   const color = data?.color ?? EDGE_DEFAULT_COLOR;
   const baseWidth = data?.strokeWidth ?? EDGE_DEFAULT_WIDTH;
   const active = Boolean(selected) || hovered;
 
-  function beginDrag(
-    event: ReactPointerEvent<SVGRectElement>,
-    update: (position: { x: number; y: number }) => Partial<OrthogonalEdgeData>
-  ) {
-    event.preventDefault();
-    event.stopPropagation();
-    onHistory();
-    // Grabbing a bend handle acts on this line: select it (and only it) so
-    // the hovering editor bar appears even for a click without a drag.
+  // One handle per movable segment: everything between the two stubs.
+  const lastIndex = points.length - 1;
+  const handleSegments: Array<{ index: number; x: number; y: number; horizontal: boolean }> = [];
+  for (let index = 1; index <= lastIndex - 2; index += 1) {
+    const a = points[index];
+    const b = points[index + 1];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length < MIN_HANDLE_SEGMENT) continue;
+    handleSegments.push({
+      index,
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+      horizontal: a.y === b.y
+    });
+  }
+
+  function selectThisEdge() {
     setNodes((currentNodes) =>
       currentNodes.some((node) => node.selected)
         ? currentNodes.map((node) => (node.selected ? { ...node, selected: false } : node))
         : currentNodes
     );
     setEdges((currentEdges) =>
-      currentEdges.map((edge) => (Boolean(edge.selected) === (edge.id === id) ? edge : { ...edge, selected: edge.id === id }))
+      currentEdges.map((edge) =>
+        Boolean(edge.selected) === (edge.id === id) ? edge : { ...edge, selected: edge.id === id }
+      )
     );
+  }
+
+  function beginSegmentDrag(event: ReactPointerEvent<SVGRectElement>, segmentIndex: number) {
+    event.preventDefault();
+    event.stopPropagation();
+    onHistory();
+    selectThisEdge();
+
+    // Everything derives from the geometry captured at drag start, so
+    // corner insertion stays deterministic while the pointer moves.
+    const basePoints = points.map((point) => ({ ...point }));
+    const baseCorners = corners.map((point) => ({ ...point }));
+    const a = basePoints[segmentIndex];
+    const b = basePoints[segmentIndex + 1];
+    const horizontal = a.y === b.y;
+    const aIsFixed = segmentIndex <= 1;
+    const bIsFixed = segmentIndex + 1 >= basePoints.length - 2;
 
     function drag(moveEvent: PointerEvent) {
-      const position = screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY });
-      const snapped = { x: snap(position.x), y: snap(position.y) };
+      const pointer = screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY });
+      const value = horizontal ? snapTo(pointer.y, gridSize) : snapTo(pointer.x, gridSize);
+      const moved = baseCorners.map((point) => ({ ...point }));
+      // Corner j sits at structural index j + 2.
+      if (!aIsFixed) {
+        const cornerA = moved[segmentIndex - 2];
+        if (horizontal) cornerA.y = value;
+        else cornerA.x = value;
+      }
+      if (!bIsFixed) {
+        const cornerB = moved[segmentIndex - 1];
+        if (horizontal) cornerB.y = value;
+        else cornerB.x = value;
+      }
+      // A segment touching a fixed stub grows a new corner at that end.
+      if (aIsFixed) moved.unshift(horizontal ? { x: exit.x, y: value } : { x: value, y: exit.y });
+      if (bIsFixed) moved.push(horizontal ? { x: entry.x, y: value } : { x: value, y: entry.y });
       setEdges((currentEdges) =>
         currentEdges.map((edge) =>
           edge.id === id
@@ -254,7 +411,11 @@ export function OrthogonalEdge({
                 ...edge,
                 data: {
                   ...edge.data,
-                  ...update(snapped)
+                  waypoints: moved,
+                  startX: undefined,
+                  endX: undefined,
+                  bendX: undefined,
+                  bendY: undefined
                 }
               }
             : edge
@@ -265,6 +426,13 @@ export function OrthogonalEdge({
     function stopDrag() {
       window.removeEventListener("pointermove", drag);
       window.removeEventListener("pointerup", stopDrag);
+      setEdges((currentEdges) =>
+        currentEdges.map((edge) =>
+          edge.id === id && Array.isArray(edge.data?.waypoints)
+            ? { ...edge, data: { ...edge.data, waypoints: cleanupWaypoints(edge.data.waypoints, exit, entry) } }
+            : edge
+        )
+      );
       onDirty();
     }
 
@@ -272,12 +440,39 @@ export function OrthogonalEdge({
     window.addEventListener("pointerup", stopDrag);
   }
 
-  function resetParams(patch: Partial<OrthogonalEdgeData>) {
+  function resetRouting() {
     onHistory();
     setEdges((currentEdges) =>
-      currentEdges.map((edge) => (edge.id === id ? { ...edge, data: { ...edge.data, ...patch } } : edge))
+      currentEdges.map((edge) =>
+        edge.id === id
+          ? {
+              ...edge,
+              data: {
+                ...edge.data,
+                waypoints: undefined,
+                startX: undefined,
+                endX: undefined,
+                bendX: undefined,
+                bendY: undefined
+              }
+            }
+          : edge
+      )
     );
     onDirty();
+  }
+
+  // Label sits above the longest segment so it stays on the line.
+  let labelAnchor = { x: (exit.x + entry.x) / 2, y: (exit.y + entry.y) / 2 };
+  let longest = 0;
+  for (let index = 0; index < lastIndex; index += 1) {
+    const a = points[index];
+    const b = points[index + 1];
+    const length = Math.hypot(b.x - a.x, b.y - a.y);
+    if (length > longest) {
+      longest = length;
+      labelAnchor = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    }
   }
 
   return (
@@ -310,36 +505,23 @@ export function OrthogonalEdge({
         onMouseEnter={() => setHovered(true)}
         onMouseLeave={() => setHovered(false)}
       >
-        <BendHandle
-          x={startX}
-          y={(exit.y + bendY) / 2}
-          orientation="vertical"
-          title="Drag to move first vertical line segment · double-click to reset"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ startX: position.x, bendX: undefined }))}
-          onDoubleClick={() => resetParams({ startX: undefined, bendX: undefined })}
-        />
-        <BendHandle
-          x={(startX + endX) / 2}
-          y={bendY}
-          orientation="horizontal"
-          title="Drag to move horizontal line segment · double-click to reset"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ bendY: position.y }))}
-          onDoubleClick={() => resetParams({ bendY: undefined })}
-        />
-        <BendHandle
-          x={endX}
-          y={(bendY + entry.y) / 2}
-          orientation="vertical"
-          title="Drag to move last vertical line segment · double-click to reset"
-          onPointerDown={(event) => beginDrag(event, (position) => ({ endX: position.x, bendX: undefined }))}
-          onDoubleClick={() => resetParams({ endX: undefined, bendX: undefined })}
-        />
+        {handleSegments.map((segment) => (
+          <BendHandle
+            key={segment.index}
+            x={segment.x}
+            y={segment.y}
+            orientation={segment.horizontal ? "horizontal" : "vertical"}
+            title="Drag to move this line segment · double-click to reset routing"
+            onPointerDown={(event) => beginSegmentDrag(event, segment.index)}
+            onDoubleClick={resetRouting}
+          />
+        ))}
       </g>
       <EdgeLabelRenderer>
         {label ? (
           <div
             className="edgeLabelChip"
-            style={{ transform: `translate(-50%, -100%) translate(${(startX + endX) / 2}px, ${bendY - 6}px)` }}
+            style={{ transform: `translate(-50%, -100%) translate(${labelAnchor.x}px, ${labelAnchor.y - 6}px)` }}
           >
             {String(label)}
           </div>

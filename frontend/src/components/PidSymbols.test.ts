@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { Position } from "reactflow";
 import { rotatedPortFraction } from "./pid/nodes";
-import { ROUTE_STUB, buildOrthogonalRoute, roundedOrthogonalPath } from "./pid/OrthogonalEdge";
-import { importSvgMarkup } from "./pid/SymbolEditorModal";
+import {
+  ROUTE_STUB,
+  buildOrthogonalRoute,
+  cleanupWaypoints,
+  dominantDirection,
+  roundedOrthogonalPath,
+  translateEdgeGeometry
+} from "./pid/OrthogonalEdge";
+import { importSvgMarkup, linePath, normalizedRect } from "./pid/SymbolEditorModal";
 import {
   PALETTE_SYMBOLS,
   SYMBOL_PORTS,
@@ -14,6 +21,9 @@ import {
 describe("symbol ports", () => {
   it("declares at least one port for every palette symbol", () => {
     for (const symbol of PALETTE_SYMBOLS) {
+      // Junctions are bare connection dots (pidJunction nodes) with their own
+      // single handle; they never consult SYMBOL_PORTS.
+      if (symbol === "junction") continue;
       expect(SYMBOL_PORTS[symbol]?.length, symbol).toBeGreaterThan(0);
     }
   });
@@ -85,9 +95,9 @@ describe("buildOrthogonalRoute", () => {
       targetY: 0,
       targetPosition: Position.Left
     });
-    expect(route.startX).toBe(100);
-    expect(route.endX).toBe(200);
-    expect(route.bendY).toBe(0);
+    // Backbone verticals at the thirds: x = 100 and x = 200.
+    expect(route.corners[0]).toEqual({ x: 100, y: 0 });
+    expect(route.corners[2]).toEqual({ x: 200, y: 0 });
     // Same-height ports collapse to a straight line.
     expect(route.points.every((point) => point.y === 0)).toBe(true);
   });
@@ -102,7 +112,7 @@ describe("buildOrthogonalRoute", () => {
       targetPosition: Position.Left
     });
     expect(route.points[1]).toEqual({ x: 0, y: 100 - ROUTE_STUB });
-    expect(route.bendY).toBe(100 - ROUTE_STUB);
+    expect(route.corners[0]).toEqual({ x: 100, y: 100 - ROUTE_STUB });
   });
 
   it("routes out through a left port even when the target is to the right", () => {
@@ -114,9 +124,9 @@ describe("buildOrthogonalRoute", () => {
       targetY: 100,
       targetPosition: Position.Left
     });
-    expect(route.startX).toBe(-ROUTE_STUB);
+    expect(route.corners[0]).toEqual({ x: -ROUTE_STUB, y: 0 });
     // Target's left port keeps its natural approach from the left.
-    expect(route.endX).toBe(200);
+    expect(route.corners[2].x).toBe(200);
   });
 
   it("enforces a minimum straight run when nodes are close", () => {
@@ -128,8 +138,8 @@ describe("buildOrthogonalRoute", () => {
       targetY: 80,
       targetPosition: Position.Left
     });
-    expect(route.startX).toBe(ROUTE_STUB);
-    expect(route.endX).toBe(20 - ROUTE_STUB);
+    expect(route.corners[0].x).toBe(ROUTE_STUB);
+    expect(route.corners[2].x).toBe(20 - ROUTE_STUB);
   });
 
   it("respects stored bend parameters over defaults", () => {
@@ -142,9 +152,8 @@ describe("buildOrthogonalRoute", () => {
       targetPosition: Position.Left,
       data: { startX: 42, bendY: 77 }
     });
-    expect(route.startX).toBe(42);
-    expect(route.bendY).toBe(77);
-    expect(route.endX).toBe(200);
+    expect(route.corners[1]).toEqual({ x: 42, y: 77 });
+    expect(route.corners[2]).toEqual({ x: 200, y: 77 });
   });
 
   it("enters the target perpendicular to a bottom port", () => {
@@ -194,6 +203,40 @@ describe("roundedOrthogonalPath", () => {
   });
 });
 
+describe("dominantDirection", () => {
+  it("faces the axis with the larger delta", () => {
+    expect(dominantDirection(0, 0, 100, 10)).toBe(Position.Right);
+    expect(dominantDirection(0, 0, -100, 10)).toBe(Position.Left);
+    expect(dominantDirection(0, 0, 10, 100)).toBe(Position.Bottom);
+    expect(dominantDirection(0, 0, 10, -100)).toBe(Position.Top);
+  });
+});
+
+describe("cleanupWaypoints", () => {
+  it("drops duplicate and collinear corners", () => {
+    const corners = cleanupWaypoints(
+      [{ x: 50, y: 0 }, { x: 50, y: 0 }, { x: 50, y: 80 }],
+      { x: 0, y: 0 },
+      { x: 50, y: 100 }
+    );
+    expect(corners).toEqual([{ x: 50, y: 0 }]);
+  });
+});
+
+describe("translateEdgeGeometry", () => {
+  it("shifts hand-placed waypoints and legacy bend parameters", () => {
+    const moved = translateEdgeGeometry({ waypoints: [{ x: 10, y: 20 }], startX: 5, bendY: 7 }, 3, 4);
+    expect(moved?.waypoints).toEqual([{ x: 13, y: 24 }]);
+    expect(moved?.startX).toBe(8);
+    expect(moved?.bendY).toBe(11);
+  });
+
+  it("returns the same object when there is no stored geometry", () => {
+    const plain = { showArrow: true };
+    expect(translateEdgeGeometry(plain, 3, 4)).toBe(plain);
+  });
+});
+
 describe("custom symbol types", () => {
   it("round-trips a symbol id through the custom type prefix", () => {
     expect(customSymbolId(customSymbolType("abc-123"))).toBe("abc-123");
@@ -224,5 +267,32 @@ describe("importSvgMarkup", () => {
 
   it("rejects markup with no drawable content", () => {
     expect(() => importSvgMarkup('<svg viewBox="0 0 64 40"><script>x</script></svg>')).toThrow();
+  });
+});
+
+describe("linePath", () => {
+  it("builds an absolute move/line path from clicked vertices", () => {
+    expect(linePath([{ x: 2, y: 4 }, { x: 10, y: 4 }, { x: 10, y: 20 }])).toBe("M 2 4 L 10 4 L 10 20");
+  });
+
+  it("drops the duplicate vertex left behind by a finishing double-click", () => {
+    expect(linePath([{ x: 0, y: 0 }, { x: 8, y: 0 }, { x: 8, y: 0 }])).toBe("M 0 0 L 8 0");
+  });
+
+  it("returns null when fewer than two distinct points remain", () => {
+    expect(linePath([])).toBeNull();
+    expect(linePath([{ x: 4, y: 4 }])).toBeNull();
+    expect(linePath([{ x: 4, y: 4 }, { x: 4, y: 4 }])).toBeNull();
+  });
+});
+
+describe("normalizedRect", () => {
+  it("normalizes a negative drag into a positive rect", () => {
+    expect(normalizedRect({ x: 20, y: 30 }, { x: 4, y: 10 })).toEqual({ x: 4, y: 10, width: 16, height: 20 });
+  });
+
+  it("rejects rects under two units on either side", () => {
+    expect(normalizedRect({ x: 0, y: 0 }, { x: 1, y: 40 })).toBeNull();
+    expect(normalizedRect({ x: 0, y: 0 }, { x: 0, y: 0 })).toBeNull();
   });
 });

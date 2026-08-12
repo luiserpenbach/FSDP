@@ -6,7 +6,7 @@
  * pipe stubs are drawn — including after rotation, because the handles live
  * inside the rotated element and React Flow measures their true DOM position.
  */
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useContext, useEffect, useRef, useState, type CSSProperties } from "react";
 import {
   Handle,
   NodeResizer,
@@ -21,6 +21,7 @@ import {
   getSymbolViewBox,
   useCustomSymbol
 } from "../PidSymbols";
+import { EditorSettingsContext } from "./settings";
 import type { SymbolPortSide } from "../../types";
 
 export type PidNodeData = {
@@ -28,6 +29,8 @@ export type PidNodeData = {
   symbolType: string;
   rotation: number;
   hasComponent?: boolean;
+  /** Component tag (e.g. V-1) once a catalog part is placed. */
+  tag?: string;
   color?: string;
 };
 
@@ -102,10 +105,12 @@ export const SYMBOL_COLORS = ["#22344c", "#2257c4", "#0f766e", "#b3261e", "#8a5b
 export function PidSymbolNode({ id, data, selected, onDirty, onHistory }: NodeProps<PidNodeData> & NodeCallbacks) {
   const { setNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
+  const { labelMode } = useContext(EditorSettingsContext);
   const custom = useCustomSymbol(data.symbolType);
   const ports = getSymbolPorts(data.symbolType, custom);
   const viewBox = getSymbolViewBox(custom);
   const rotation = Number(data.rotation ?? 0);
+  const caption = labelMode === "tag" ? data.tag ?? data.label : data.label ?? data.tag;
 
   // Handles move whenever the glyph rotates or the port set changes; tell
   // React Flow to re-measure so edges follow.
@@ -134,8 +139,8 @@ export function PidSymbolNode({ id, data, selected, onDirty, onHistory }: NodePr
     <div className={selected ? "pidSymbolNode selected" : "pidSymbolNode"}>
       <NodeResizer
         isVisible={selected}
-        minWidth={80}
-        minHeight={56}
+        minWidth={36}
+        minHeight={32}
         onResizeEnd={() => {
           updateNodeInternals(id);
           onDirty();
@@ -170,7 +175,25 @@ export function PidSymbolNode({ id, data, selected, onDirty, onHistory }: NodePr
       <button className="rotateHandle" onClick={rotateSymbol} title="Rotate symbol 90 degrees" type="button">
         &#8635;
       </button>
-      <div className="pidSymbolLabel">{data.label}</div>
+      <div className="pidSymbolLabel">{caption}</div>
+    </div>
+  );
+}
+
+/**
+ * Junction: a plain connection dot that joins pipe runs. Lines attach to its
+ * single centered port with no routing stub, from any direction.
+ */
+export function JunctionNode({ selected }: NodeProps<Record<string, never>>) {
+  return (
+    <div className={selected ? "pidJunctionNode selected" : "pidJunctionNode"}>
+      <Handle
+        id="j"
+        type="source"
+        position={Position.Left}
+        className="pidJunctionHandle"
+        style={{ left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}
+      />
     </div>
   );
 }
