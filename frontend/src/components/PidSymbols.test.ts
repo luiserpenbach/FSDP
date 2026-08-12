@@ -3,8 +3,10 @@ import { Position } from "reactflow";
 import { rotatedPortFraction } from "./pid/nodes";
 import {
   ROUTE_STUB,
+  alignNearCollinearPorts,
   buildOrthogonalRoute,
   cleanupWaypoints,
+  collapseHairlineJogs,
   dominantDirection,
   parseRoutePolyline,
   roundedOrthogonalPath,
@@ -379,5 +381,104 @@ describe("route splitting", () => {
   it("splitRoutePath clamps to segment ends beyond the route", () => {
     const split = splitRoutePath(d, { x: 90, y: 60 });
     expect(split?.point).toEqual({ x: 60, y: 40 });
+  });
+});
+
+describe("near-collinear port straightening", () => {
+  it("pulls facing ports a few pixels apart onto one axis", () => {
+    const aligned = alignNearCollinearPorts({
+      sourceX: 0,
+      sourceY: 100,
+      sourcePosition: Position.Right,
+      targetX: 300,
+      targetY: 103,
+      targetPosition: Position.Left
+    });
+    expect(aligned.sourceY).toBe(102);
+    expect(aligned.targetY).toBe(102);
+  });
+
+  it("leaves genuinely offset ports alone", () => {
+    const aligned = alignNearCollinearPorts({
+      sourceX: 0,
+      sourceY: 100,
+      sourcePosition: Position.Right,
+      targetX: 300,
+      targetY: 140,
+      targetPosition: Position.Left
+    });
+    expect(aligned.sourceY).toBe(100);
+    expect(aligned.targetY).toBe(140);
+  });
+
+  it("does not align ports that face different axes", () => {
+    const aligned = alignNearCollinearPorts({
+      sourceX: 0,
+      sourceY: 100,
+      sourcePosition: Position.Right,
+      targetX: 300,
+      targetY: 102,
+      targetPosition: Position.Bottom
+    });
+    expect(aligned.sourceY).toBe(100);
+    expect(aligned.targetY).toBe(102);
+  });
+
+  it("renders a dead-straight run for slightly offset facing ports", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 100,
+      sourcePosition: Position.Right,
+      targetX: 300,
+      targetY: 103,
+      targetPosition: Position.Left
+    });
+    const ys = new Set(route.points.map((point) => point.y));
+    expect(ys.size).toBe(1);
+  });
+});
+
+describe("collapseHairlineJogs", () => {
+  const tolerance = 7;
+
+  // source, exit, four free corners, entry, target — a 2px step early in the
+  // run, then a genuine drop to the target further along.
+  const routed = [
+    { x: 0, y: 100 },
+    { x: 14, y: 100 },
+    { x: 60, y: 100 },
+    { x: 60, y: 102 },
+    { x: 200, y: 102 },
+    { x: 200, y: 200 },
+    { x: 286, y: 200 },
+    { x: 300, y: 200 }
+  ];
+
+  it("flattens a hairline jog between two parallel runs", () => {
+    const collapsed = collapseHairlineJogs(routed, tolerance);
+    // The 2px step is gone: the whole approach run sits at the port's y.
+    expect(collapsed.slice(0, 5).every((point) => point.y === 100)).toBe(true);
+    // The real bend further along is untouched.
+    expect(collapsed[5]).toEqual({ x: 200, y: 200 });
+  });
+
+  it("keeps jogs larger than the tolerance", () => {
+    const points = [
+      { x: 0, y: 100 },
+      { x: 14, y: 100 },
+      { x: 60, y: 100 },
+      { x: 60, y: 140 },
+      { x: 140, y: 140 },
+      { x: 160, y: 140 }
+    ];
+    expect(collapseHairlineJogs(points, tolerance)).toEqual(points);
+  });
+
+  it("never moves the port anchors or their stub points", () => {
+    const collapsed = collapseHairlineJogs(routed, tolerance);
+    expect(collapsed[0]).toEqual(routed[0]);
+    expect(collapsed[1]).toEqual(routed[1]);
+    expect(collapsed[collapsed.length - 1]).toEqual(routed[routed.length - 1]);
+    expect(collapsed[collapsed.length - 2]).toEqual(routed[routed.length - 2]);
   });
 });

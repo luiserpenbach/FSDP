@@ -6,6 +6,7 @@ import ReactFlow, {
   ConnectionMode,
   Controls,
   MiniMap,
+  SelectionMode,
   addEdge,
   updateEdge,
   useEdgesState,
@@ -1839,6 +1840,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                       onNodeDragStop={handleNodeDragStop}
                       elevateNodesOnSelect={false}
                       deleteKeyCode={["Backspace", "Delete"]}
+                      // Left-drag rubber-bands a selection; panning moves to
+                      // the middle and right mouse buttons.
+                      selectionOnDrag
+                      selectionMode={SelectionMode.Partial}
+                      panOnDrag={[1, 2]}
                       snapToGrid
                       snapGrid={[gridSize, gridSize]}
                       fitView

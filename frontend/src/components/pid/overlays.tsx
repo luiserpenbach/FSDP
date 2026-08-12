@@ -5,7 +5,7 @@
  *  - SelectionToolbar: hovering editor bar above the selected node/line
  *    (must be rendered as a <ReactFlow> child — it uses the viewport transform)
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useReactFlow, useStore, useViewport, type Edge, type Node } from "reactflow";
 import { PidGlyph, SYMBOL_LABELS, customSymbolType } from "../PidSymbols";
 import type { PidSymbolDef } from "../../types";
@@ -338,6 +338,9 @@ export function PlacementGhost({ tool, gridSize }: { tool: PlacementTool; gridSi
 
 /* ---------- Hovering selection editor bar ---------- */
 
+/** Screen-pixel clearance between a selected line and its editor bar. */
+const TOOLBAR_LINE_GAP = 30;
+
 function Swatches({
   colors,
   current,
@@ -397,6 +400,29 @@ export function SelectionToolbar({
   const { x: viewportX, y: viewportY, zoom } = useViewport();
   const canvasWidth = useStore((state) => state.width);
   const canvasHeight = useStore((state) => state.height);
+  // Measure the rendered line so the bar can sit clear of it: horizontally
+  // centred on the run, vertically above its highest point.
+  const [edgeBounds, setEdgeBounds] = useState<{ centerX: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    const path = edge
+      ? document.querySelector<SVGPathElement>(
+          `.react-flow__edge[data-testid="rf__edge-${edge.id}"] .react-flow__edge-path`
+        )
+      : null;
+    if (!path) {
+      setEdgeBounds((current) => (current === null ? current : null));
+      return;
+    }
+    const box = path.getBBox();
+    const next = { centerX: box.x + box.width / 2, top: box.y };
+    setEdgeBounds((current) =>
+      current && Math.abs(current.centerX - next.centerX) < 0.5 && Math.abs(current.top - next.top) < 0.5
+        ? current
+        : next
+    );
+    // Node objects get fresh identities as they move, so this re-measures
+    // while a line's endpoints are dragged.
+  }, [edge, edgeEndpoints]);
 
   let anchorX: number | null = null;
   let anchorY: number | null = null;
@@ -405,36 +431,28 @@ export function SelectionToolbar({
     const absY = (parent?.position.y ?? 0) + node.position.y;
     anchorX = absX + (node.width ?? 0) / 2;
     anchorY = absY;
+  } else if (edge && edgeBounds) {
+    anchorX = edgeBounds.centerX;
+    anchorY = edgeBounds.top;
   } else if (edge && edgeEndpoints) {
-    // Anchor over the line itself: at the middle waypoint when the line was
-    // hand-routed, otherwise near the midpoint between the endpoint symbols.
-    const waypoints = edge.data?.waypoints;
-    if (Array.isArray(waypoints) && waypoints.length) {
-      const middle = waypoints[Math.floor((waypoints.length - 1) / 2)];
-      anchorX = middle.x;
-      anchorY = middle.y;
-    } else {
-      const [source, target] = edgeEndpoints;
-      const sourceCenterX = source.position.x + (source.width ?? 0) / 2;
-      const targetCenterX = target.position.x + (target.width ?? 0) / 2;
-      const sourceCenterY = source.position.y + (source.height ?? 0) / 2;
-      const targetCenterY = target.position.y + (target.height ?? 0) / 2;
-      const startX = edge.data?.startX ?? sourceCenterX + (targetCenterX - sourceCenterX) / 3;
-      const endX = edge.data?.endX ?? sourceCenterX + ((targetCenterX - sourceCenterX) * 2) / 3;
-      anchorX = (startX + endX) / 2;
-      anchorY = edge.data?.bendY ?? (sourceCenterY + targetCenterY) / 2;
-    }
+    // Fallback before the path has been measured: straddle the endpoints.
+    const [source, target] = edgeEndpoints;
+    const sourceCenterX = source.position.x + (source.width ?? 0) / 2;
+    const targetCenterX = target.position.x + (target.width ?? 0) / 2;
+    anchorX = (sourceCenterX + targetCenterX) / 2;
+    anchorY = Math.min(source.position.y, target.position.y);
   }
   if (anchorX == null || anchorY == null) return null;
 
   // Keep the bar inside the canvas (the wrapper clips overflow): clamp
   // horizontally, and flip below the anchor when it would poke out the top.
+  const gap = node ? 14 : TOOLBAR_LINE_GAP;
   const rawLeft = anchorX * zoom + viewportX;
-  const rawTop = anchorY * zoom + viewportY - 14;
+  const rawTop = anchorY * zoom + viewportY - gap;
   const left = Math.min(Math.max(rawLeft, 130), Math.max(canvasWidth - 130, 130));
   const flip = rawTop < 52;
   const top = flip
-    ? Math.min(anchorY * zoom + viewportY + 18, Math.max(canvasHeight - 60, 18))
+    ? Math.min(anchorY * zoom + viewportY + gap + 4, Math.max(canvasHeight - 60, 18))
     : rawTop;
 
   let content: ReactNode = null;

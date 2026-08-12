@@ -1057,12 +1057,13 @@ label.checkRow span {
 
 /* Bend handles: SVG rects positioned by attributes — position can never
    animate. Only opacity fades; hover feedback is a glow, not movement. */
+/* Bar-shaped grips, sized in screen pixels by the component (stroke width is
+   set inline for the same reason) and only mounted while a line is selected. */
 .edgeHandles .edgeBendHandle {
   fill: var(--surface);
   opacity: 0;
   pointer-events: all;
   stroke: var(--accent);
-  stroke-width: 1.5;
   transition: opacity 0.15s ease, filter 0.15s ease;
 }
 
@@ -1071,9 +1072,9 @@ label.checkRow span {
 }
 
 .edgeBendHandle:hover {
+  fill: var(--accent-soft);
   filter: drop-shadow(0 0 3px rgba(34, 87, 196, 0.55));
   opacity: 1;
-  stroke-width: 2;
 }
 
 .edgeBendHandle.vertical {
@@ -1082,6 +1083,12 @@ label.checkRow span {
 
 .edgeBendHandle.horizontal {
   cursor: ns-resize;
+}
+
+/* Rubber-band multi-select (left-drag on the canvas). */
+.react-flow__selection {
+  background: rgba(34, 87, 196, 0.08);
+  border: 1px solid var(--accent);
 }
 
 .edgeLabelChip {

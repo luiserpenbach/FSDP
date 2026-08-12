@@ -12,6 +12,7 @@ import {
   NodeResizer,
   Position,
   useReactFlow,
+  useStore,
   useUpdateNodeInternals,
   type NodeProps
 } from "reactflow";
@@ -106,6 +107,9 @@ export function PidSymbolNode({ id, data, selected, onDirty, onHistory }: NodePr
   const { setNodes } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const { labelMode } = useContext(EditorSettingsContext);
+  // Nodes scale with the canvas; counter-scale the port dots so they keep a
+  // constant on-screen size (and hit area) at any zoom level.
+  const zoom = useStore((state) => state.transform[2]);
   const custom = useCustomSymbol(data.symbolType);
   const ports = getSymbolPorts(data.symbolType, custom);
   const viewBox = getSymbolViewBox(custom);
@@ -164,7 +168,7 @@ export function PidSymbolNode({ id, data, selected, onDirty, onHistory }: NodePr
                 style={{
                   left: `${fx * 100}%`,
                   top: `${fy * 100}%`,
-                  transform: "translate(-50%, -50%)"
+                  transform: `translate(-50%, -50%) scale(${1 / zoom})`
                 }}
               />
             );
@@ -196,9 +200,11 @@ export const JUNCTION_HANDLES: Array<{ id: "l" | "r" | "t" | "b"; position: Posi
 ];
 
 export function JunctionNode({ selected }: NodeProps<Record<string, never>>) {
+  const zoom = useStore((state) => state.transform[2]);
   return (
     <div className={selected ? "pidJunctionNode selected" : "pidJunctionNode"}>
-      <span className="pidJunctionDot" />
+      {/* Counter-scaled so the dot stays the same size on screen at any zoom. */}
+      <span className="pidJunctionDot" style={{ transform: `scale(${1 / zoom})` }} />
       {JUNCTION_HANDLES.map((handle) => (
         <Handle
           key={handle.id}
@@ -206,7 +212,7 @@ export function JunctionNode({ selected }: NodeProps<Record<string, never>>) {
           type="source"
           position={handle.position}
           className="pidJunctionHandle"
-          style={{ left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}
+          style={{ left: "50%", top: "50%", transform: `translate(-50%, -50%) scale(${1 / zoom})` }}
         />
       ))}
     </div>
