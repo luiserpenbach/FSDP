@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { Position } from "reactflow";
+import { rotatedPortFraction } from "./pid/nodes";
+import { ROUTE_STUB, buildOrthogonalRoute, roundedOrthogonalPath } from "./pid/OrthogonalEdge";
 import { importSvgMarkup } from "./pid/SymbolEditorModal";
 import {
   PALETTE_SYMBOLS,
@@ -32,6 +35,162 @@ describe("symbol ports", () => {
       const ids = ports.map((port) => port.id);
       expect(new Set(ids).size, symbol).toBe(ids.length);
     }
+  });
+});
+
+describe("rotatedPortFraction", () => {
+  const viewBox = { x: 0, y: 0, width: 64, height: 40 };
+  const right = { x: 62, y: 20 }; // valve outlet, mid-height right edge
+
+  it("keeps unrotated ports where they are", () => {
+    const { fx, fy } = rotatedPortFraction(right.x, right.y, viewBox, 0);
+    expect(fx).toBeCloseTo(62 / 64);
+    expect(fy).toBeCloseTo(0.5);
+  });
+
+  it("moves a right port to the bottom on 90° clockwise rotation", () => {
+    const { fx, fy } = rotatedPortFraction(right.x, right.y, viewBox, 90);
+    expect(fx).toBeCloseTo(0.5);
+    // Overhangs the box: the wide drawing sticks out below when rotated.
+    expect(fy).toBeCloseTo(1.25);
+  });
+
+  it("mirrors ports on 180° rotation", () => {
+    const { fx, fy } = rotatedPortFraction(right.x, right.y, viewBox, 180);
+    expect(fx).toBeCloseTo(2 / 64);
+    expect(fy).toBeCloseTo(0.5);
+  });
+
+  it("moves a right port to the top on 270° rotation", () => {
+    const { fx, fy } = rotatedPortFraction(right.x, right.y, viewBox, 270);
+    expect(fx).toBeCloseTo(0.5);
+    expect(fy).toBeCloseTo(-0.25);
+  });
+
+  it("matches the CSS rotation of a top port at 90°", () => {
+    // Tank top port (32, 2) should land on the right, mid-height, after 90° CW.
+    const { fx, fy } = rotatedPortFraction(32, 2, viewBox, 90);
+    expect(fx).toBeCloseTo(0.78125);
+    expect(fy).toBeCloseTo(0.5);
+  });
+});
+
+describe("buildOrthogonalRoute", () => {
+  it("keeps the classic thirds route for a plain right-to-left run", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Right,
+      targetX: 300,
+      targetY: 0,
+      targetPosition: Position.Left
+    });
+    expect(route.startX).toBe(100);
+    expect(route.endX).toBe(200);
+    expect(route.bendY).toBe(0);
+    // Same-height ports collapse to a straight line.
+    expect(route.points.every((point) => point.y === 0)).toBe(true);
+  });
+
+  it("leaves a top port vertically and runs the bend at stub level", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 100,
+      sourcePosition: Position.Top,
+      targetX: 300,
+      targetY: 200,
+      targetPosition: Position.Left
+    });
+    expect(route.points[1]).toEqual({ x: 0, y: 100 - ROUTE_STUB });
+    expect(route.bendY).toBe(100 - ROUTE_STUB);
+  });
+
+  it("routes out through a left port even when the target is to the right", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Left,
+      targetX: 300,
+      targetY: 100,
+      targetPosition: Position.Left
+    });
+    expect(route.startX).toBe(-ROUTE_STUB);
+    // Target's left port keeps its natural approach from the left.
+    expect(route.endX).toBe(200);
+  });
+
+  it("enforces a minimum straight run when nodes are close", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Right,
+      targetX: 20,
+      targetY: 80,
+      targetPosition: Position.Left
+    });
+    expect(route.startX).toBe(ROUTE_STUB);
+    expect(route.endX).toBe(20 - ROUTE_STUB);
+  });
+
+  it("respects stored bend parameters over defaults", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Right,
+      targetX: 300,
+      targetY: 100,
+      targetPosition: Position.Left,
+      data: { startX: 42, bendY: 77 }
+    });
+    expect(route.startX).toBe(42);
+    expect(route.bendY).toBe(77);
+    expect(route.endX).toBe(200);
+  });
+
+  it("enters the target perpendicular to a bottom port", () => {
+    const route = buildOrthogonalRoute({
+      sourceX: 0,
+      sourceY: 0,
+      sourcePosition: Position.Right,
+      targetX: 200,
+      targetY: 150,
+      targetPosition: Position.Bottom
+    });
+    const [entry, target] = route.points.slice(-2);
+    expect(entry).toEqual({ x: 200, y: 150 + ROUTE_STUB });
+    expect(target).toEqual({ x: 200, y: 150 });
+  });
+});
+
+describe("roundedOrthogonalPath", () => {
+  it("rounds corners with quadratic bends", () => {
+    const path = roundedOrthogonalPath([
+      { x: 0, y: 0 },
+      { x: 20, y: 0 },
+      { x: 20, y: 30 }
+    ]);
+    expect(path).toBe("M 0,0 L 17,0 Q 20,0 20,3 L 20,30");
+  });
+
+  it("skips zero-length segments without producing NaN", () => {
+    const path = roundedOrthogonalPath([
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 }
+    ]);
+    expect(path).not.toContain("NaN");
+    expect(path.startsWith("M 0,0")).toBe(true);
+  });
+
+  it("clamps the radius on very short segments", () => {
+    const path = roundedOrthogonalPath([
+      { x: 0, y: 0 },
+      { x: 2, y: 0 },
+      { x: 2, y: 40 }
+    ]);
+    // Radius limited to half the 2-unit inbound segment.
+    expect(path).toBe("M 0,0 L 1,0 Q 2,0 2,1 L 2,40");
   });
 });
 

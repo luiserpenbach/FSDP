@@ -67,6 +67,35 @@ function rotateSide(side: SymbolPortSide, rotation: number): SymbolPortSide {
   return SIDE_ORDER[(SIDE_ORDER.indexOf(side) + steps) % 4];
 }
 
+/**
+ * Where a port lands (as a fraction of the unrotated glyph box) after the
+ * drawing is rotated by `rotation` around the box center. Handles are placed
+ * from this math instead of living inside the rotated element, so React Flow
+ * measures correct positions immediately and edges follow rotation exactly.
+ * Values may fall outside [0, 1] when a rotated wide drawing overhangs the box.
+ */
+export function rotatedPortFraction(
+  x: number,
+  y: number,
+  viewBox: { x: number; y: number; width: number; height: number },
+  rotation: number
+): { fx: number; fy: number } {
+  const fx = (x - viewBox.x) / viewBox.width;
+  const fy = (y - viewBox.y) / viewBox.height;
+  const aspect = viewBox.height / viewBox.width;
+  const steps = Math.round(((rotation % 360) + 360) % 360 / 90) % 4;
+  switch (steps) {
+    case 1:
+      return { fx: 0.5 - (fy - 0.5) * aspect, fy: 0.5 + (fx - 0.5) / aspect };
+    case 2:
+      return { fx: 1 - fx, fy: 1 - fy };
+    case 3:
+      return { fx: 0.5 + (fy - 0.5) * aspect, fy: 0.5 - (fx - 0.5) / aspect };
+    default:
+      return { fx, fy };
+  }
+}
+
 export const SECTION_COLORS = ["#7da2d8", "#74b8a2", "#dcae5e", "#c98a9c", "#9b8ed8", "#8fa3b8"];
 export const SYMBOL_COLORS = ["#22344c", "#2257c4", "#0f766e", "#b3261e", "#8a5b00", "#6d28d9"];
 
@@ -98,7 +127,6 @@ export function PidSymbolNode({ id, data, selected, onDirty, onHistory }: NodePr
 
   const glyphStyle: CSSProperties = {
     aspectRatio: `${viewBox.width} / ${viewBox.height}`,
-    transform: rotation ? `rotate(${rotation}deg)` : undefined,
     color: data.color
   };
 
@@ -115,21 +143,27 @@ export function PidSymbolNode({ id, data, selected, onDirty, onHistory }: NodePr
       />
       <div className="pidSymbolBody">
         <div className="pidGlyphBox" style={glyphStyle}>
-          <PidGlyph type={data.symbolType} />
-          {ports.map((port) => (
-            <Handle
-              key={port.id}
-              id={port.id}
-              type="source"
-              position={SIDE_TO_POSITION[rotateSide(port.side, rotation)]}
-              className="pidPortHandle"
-              style={{
-                left: `${((port.x - viewBox.x) / viewBox.width) * 100}%`,
-                top: `${((port.y - viewBox.y) / viewBox.height) * 100}%`,
-                transform: "translate(-50%, -50%)"
-              }}
-            />
-          ))}
+          {/* Only the drawing rotates; handles stay statically positioned. */}
+          <div className="pidGlyphRotor" style={{ transform: rotation ? `rotate(${rotation}deg)` : undefined }}>
+            <PidGlyph type={data.symbolType} />
+          </div>
+          {ports.map((port) => {
+            const { fx, fy } = rotatedPortFraction(port.x, port.y, viewBox, rotation);
+            return (
+              <Handle
+                key={port.id}
+                id={port.id}
+                type="source"
+                position={SIDE_TO_POSITION[rotateSide(port.side, rotation)]}
+                className="pidPortHandle"
+                style={{
+                  left: `${fx * 100}%`,
+                  top: `${fy * 100}%`,
+                  transform: "translate(-50%, -50%)"
+                }}
+              />
+            );
+          })}
         </div>
       </div>
       {data.hasComponent && <span className="componentDot" title="Catalog part placed" />}

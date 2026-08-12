@@ -41,7 +41,7 @@ import { api, bomCsvUrl, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { LoginPage } from "./pages/LoginPage";
-import { PageLayout, PlaceholderPage } from "./pages/PageLayout";
+import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
 /** Loose union of the data carried by the four canvas node types. */
@@ -128,7 +128,12 @@ function graphNodeType(node: Node<CanvasNodeData>): string {
 
 function buildGraphPayload(nodes: Node<CanvasNodeData>[], edges: Edge<OrthogonalEdgeData>[]) {
   return {
-    graph: { nodes, edges },
+    // Selection is view state, not document state — JSON.stringify drops the
+    // undefined so saved graphs never resurrect a selected (elevated) element.
+    graph: {
+      nodes: nodes.map((node) => ({ ...node, selected: undefined })),
+      edges: edges.map((edge) => ({ ...edge, selected: undefined }))
+    },
     nodes: nodes.map((node) => ({
       external_id: node.id,
       node_type: graphNodeType(node),
@@ -160,22 +165,26 @@ function sortSectionsFirst(nodes: Node<CanvasNodeData>[]): Node<CanvasNodeData>[
 
 function normalizeGraphNode(node: Node): Node<CanvasNodeData> {
   const data = (node.data ?? {}) as CanvasNodeData;
+  // A node saved mid-selection must not come back selected: React Flow
+  // elevates selected nodes, and a resurrected selected section would sit
+  // above every symbol and swallow their clicks.
+  const base = { ...node, selected: false };
   if (node.type === "pidSection") {
     return {
-      ...node,
+      ...base,
       zIndex: -1,
       style: { width: 320, height: 220, ...node.style },
       data: { label: String(data.label ?? "Section"), color: data.color }
     };
   }
   if (node.type === "pidText") {
-    return { ...node, data: { text: String(data.text ?? ""), fontSize: data.fontSize, color: data.color } };
+    return { ...base, data: { text: String(data.text ?? ""), fontSize: data.fontSize, color: data.color } };
   }
   if (node.type === "pidComment") {
-    return { ...node, data: { text: String(data.text ?? ""), author: data.author, created_at: data.created_at } };
+    return { ...base, data: { text: String(data.text ?? ""), author: data.author, created_at: data.created_at } };
   }
   return {
-    ...node,
+    ...base,
     type: "pidSymbol",
     style: {
       width: 112,
@@ -195,6 +204,7 @@ function normalizeOrthogonalEdge(edge: Edge): Edge<OrthogonalEdgeData> {
   const legacyBendX = typeof edge.data?.bendX === "number" ? edge.data.bendX : undefined;
   return {
     ...edge,
+    selected: false,
     type: "orthogonal",
     markerEnd: edgeMarker(edge.data),
     data: {
@@ -1449,10 +1459,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                         setSelectedNodeId("");
                       }}
                       onSelectionChange={({ nodes: selectionNodes, edges: selectionEdges }) => {
-                        if (!selectionNodes.length && !selectionEdges.length) {
-                          setSelectedNodeId("");
-                          setSelectedEdgeId("");
-                        }
+                        setSelectedNodeId(selectionNodes.length === 1 ? selectionNodes[0].id : "");
+                        setSelectedEdgeId(
+                          !selectionNodes.length && selectionEdges.length === 1 ? selectionEdges[0].id : ""
+                        );
                       }}
                       onPaneClick={handlePaneClick}
                       onPaneContextMenu={(event) => openContextMenu(event, "pane")}
@@ -1466,6 +1476,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                       }}
                       onNodeDragStart={recordHistory}
                       onNodeDragStop={handleNodeDragStop}
+                      elevateNodesOnSelect={false}
                       deleteKeyCode={["Backspace", "Delete"]}
                       snapToGrid
                       snapGrid={[10, 10]}
@@ -1705,7 +1716,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     ]}
                   />
                 </Panel>
-                <PlaceholderPage title="Review Workflows" body="Design review packages, comments, decisions, and approval routing will live here." />
+                <PlaceholderCard title="Review Workflows" body="Design review packages, comments, decisions, and approval routing will live here." />
               </section>
             </PageLayout>
           }
@@ -1761,7 +1772,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     <p className="hint">You are signed in as {user.email} ({user.role}). Ask an administrator to manage accounts.</p>
                   </Panel>
                 )}
-                <PlaceholderPage title="Project Configuration" body="Unit systems, templates, and controlled vocabularies will live here." />
+                <PlaceholderCard title="Project Configuration" body="Unit systems, templates, and controlled vocabularies will live here." />
               </section>
             </PageLayout>
           }
