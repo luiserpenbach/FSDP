@@ -14,7 +14,15 @@
  * editor bar can restyle lines in place.
  */
 import { useState, type PointerEvent as ReactPointerEvent } from "react";
-import { BaseEdge, EdgeLabelRenderer, MarkerType, Position, useReactFlow, type EdgeProps } from "reactflow";
+import {
+  BaseEdge,
+  EdgeLabelRenderer,
+  MarkerType,
+  Position,
+  useReactFlow,
+  useStore,
+  type EdgeProps
+} from "reactflow";
 
 export type EdgeStrokeStyle = "solid" | "dashed" | "dotted";
 
@@ -103,6 +111,50 @@ export function roundedOrthogonalPath(points: Point[]): string {
 /** Minimum straight run leaving a port before the first bend. */
 export const ROUTE_STUB = 14;
 
+/**
+ * Perpendicular offset below which two facing ports are treated as collinear,
+ * so the run draws as one straight line instead of a hairline S-bend. This is
+ * the classic flow-tool annoyance: symbols of slightly different heights put
+ * their ports a couple of pixels apart and every run picks up a visible kink.
+ * The residual offset at a port is at most half of this — well inside the
+ * port dot, so the line still reads as connected.
+ */
+export const STRAIGHTEN_TOLERANCE = 7;
+
+/**
+ * Pull near-collinear facing ports onto one shared axis. Returns the endpoint
+ * coordinates the route should actually be drawn between.
+ */
+export function alignNearCollinearPorts({
+  sourceX,
+  sourceY,
+  sourcePosition,
+  targetX,
+  targetY,
+  targetPosition,
+  tolerance = STRAIGHTEN_TOLERANCE
+}: {
+  sourceX: number;
+  sourceY: number;
+  sourcePosition: Position;
+  targetX: number;
+  targetY: number;
+  targetPosition: Position;
+  tolerance?: number;
+}): { sourceX: number; sourceY: number; targetX: number; targetY: number } {
+  const horizontalPair = isHorizontal(sourcePosition) && isHorizontal(targetPosition);
+  const verticalPair = !isHorizontal(sourcePosition) && !isHorizontal(targetPosition);
+  if (horizontalPair && sourceY !== targetY && Math.abs(sourceY - targetY) <= tolerance) {
+    const shared = Math.round((sourceY + targetY) / 2);
+    return { sourceX, sourceY: shared, targetX, targetY: shared };
+  }
+  if (verticalPair && sourceX !== targetX && Math.abs(sourceX - targetX) <= tolerance) {
+    const shared = Math.round((sourceX + targetX) / 2);
+    return { sourceX: shared, sourceY, targetX: shared, targetY };
+  }
+  return { sourceX, sourceY, targetX, targetY };
+}
+
 function isHorizontal(position: Position): boolean {
   return position === Position.Left || position === Position.Right;
 }
@@ -172,11 +224,11 @@ export type OrthogonalRoute = {
 };
 
 export function buildOrthogonalRoute({
-  sourceX,
-  sourceY,
+  sourceX: rawSourceX,
+  sourceY: rawSourceY,
   sourcePosition,
-  targetX,
-  targetY,
+  targetX: rawTargetX,
+  targetY: rawTargetY,
   targetPosition,
   sourceStub = ROUTE_STUB,
   targetStub = ROUTE_STUB,
@@ -192,6 +244,14 @@ export function buildOrthogonalRoute({
   targetStub?: number;
   data?: OrthogonalEdgeData;
 }): OrthogonalRoute {
+  const { sourceX, sourceY, targetX, targetY } = alignNearCollinearPorts({
+    sourceX: rawSourceX,
+    sourceY: rawSourceY,
+    sourcePosition,
+    targetX: rawTargetX,
+    targetY: rawTargetY,
+    targetPosition
+  });
   const exit = stubPoint(sourceX, sourceY, sourcePosition, sourceStub);
   const entry = stubPoint(targetX, targetY, targetPosition, targetStub);
 
@@ -269,6 +329,49 @@ export function cleanupWaypoints(corners: Point[], exit: Point, entry: Point): P
     }
   }
   return chain.slice(1, -1);
+}
+
+/**
+ * Flatten hairline S-bends inside a routed polyline: a jog shorter than
+ * `tolerance` sandwiched between two parallel runs collapses onto a single
+ * axis. Only free corners move — the port anchors (index 0 and last) and the
+ * stub points that must stay perpendicular to them (index 1 and last-1) are
+ * never touched, so the line keeps meeting its ports square.
+ */
+export function collapseHairlineJogs(points: Point[], tolerance: number): Point[] {
+  const result = points.map((point) => ({ ...point }));
+  const canMove = (index: number) => index >= 2 && index <= result.length - 3;
+
+  for (let pass = 0; pass < 4; pass += 1) {
+    let changed = false;
+    for (let index = 1; index + 2 < result.length; index += 1) {
+      const [a, b, c, d] = [result[index - 1], result[index], result[index + 1], result[index + 2]];
+      const vertical = b.x === c.x && b.y !== c.y;
+      const horizontal = b.y === c.y && b.x !== c.x;
+      if (!vertical && !horizontal) continue;
+      if (Math.hypot(c.x - b.x, c.y - b.y) > tolerance) continue;
+      // The runs on either side of the jog must be parallel to each other.
+      if (vertical ? !(a.y === b.y && c.y === d.y) : !(a.x === b.x && c.x === d.x)) continue;
+
+      const read = (point: Point) => (vertical ? point.y : point.x);
+      const write = (point: Point, value: number) => {
+        if (vertical) point.y = value;
+        else point.x = value;
+      };
+      const indices = [index - 1, index, index + 1, index + 2];
+      // Prefer keeping the incoming run's axis, then the outgoing one, then
+      // split the difference — whichever only needs free corners to move.
+      for (const shared of [read(a), read(d), Math.round((read(b) + read(c)) / 2)]) {
+        const moving = indices.filter((position) => read(result[position]) !== shared);
+        if (!moving.every(canMove)) continue;
+        moving.forEach((position) => write(result[position], shared));
+        changed = moving.length > 0 || changed;
+        break;
+      }
+    }
+    if (!changed) break;
+  }
+  return result;
 }
 
 /** Shift a line's hand-placed geometry (used when a whole section moves). */
@@ -412,6 +515,9 @@ export function OrthogonalEdge({
 }: EdgeProps<OrthogonalEdgeData> & EdgeCallbacks) {
   const { screenToFlowPosition, setEdges, setNodes, getNode } = useReactFlow();
   const [hovered, setHovered] = useState(false);
+  // Handles are drawn in flow coordinates, so undo the canvas zoom to keep
+  // them a constant size on screen.
+  const zoom = useStore((state) => state.transform[2]);
 
   // Junction endpoints anchor at the junction's center and re-evaluate their
   // exit direction on every render, so dragging things around lets the line
@@ -437,26 +543,29 @@ export function OrthogonalEdge({
     targetStub: targetIsJunction ? JUNCTION_STUB : ROUTE_STUB,
     data
   });
-  const { points, corners, exit, entry } = route;
+  const { corners, exit, entry } = route;
+  const points = collapseHairlineJogs(route.points, STRAIGHTEN_TOLERANCE);
   const path = roundedOrthogonalPath(points);
 
   const color = data?.color ?? EDGE_DEFAULT_COLOR;
   const baseWidth = data?.strokeWidth ?? EDGE_DEFAULT_WIDTH;
-  const active = Boolean(selected) || hovered;
+  const highlighted = Boolean(selected) || hovered;
 
-  // One handle per movable segment: everything between the two stubs.
+  // One handle per movable segment: everything between the two stubs. Shown
+  // only while the line is selected — hovering stays quiet.
   const lastIndex = points.length - 1;
-  const handleSegments: Array<{ index: number; x: number; y: number; horizontal: boolean }> = [];
+  const handleSegments: Array<{ index: number; x: number; y: number; horizontal: boolean; screenLength: number }> = [];
   for (let index = 1; index <= lastIndex - 2; index += 1) {
     const a = points[index];
     const b = points[index + 1];
-    const length = Math.hypot(b.x - a.x, b.y - a.y);
-    if (length < MIN_HANDLE_SEGMENT) continue;
+    const screenLength = Math.hypot(b.x - a.x, b.y - a.y) * zoom;
+    if (screenLength < MIN_HANDLE_SEGMENT) continue;
     handleSegments.push({
       index,
       x: (a.x + b.x) / 2,
       y: (a.y + b.y) / 2,
-      horizontal: a.y === b.y
+      horizontal: a.y === b.y,
+      screenLength
     });
   }
 
@@ -586,10 +695,10 @@ export function OrthogonalEdge({
         path={path}
         style={{
           stroke: selected ? "#2257c4" : color,
-          strokeWidth: active ? baseWidth + 0.6 : baseWidth,
+          strokeWidth: highlighted ? baseWidth + 0.6 : baseWidth,
           strokeDasharray: DASH_PATTERNS[data?.strokeStyle ?? "solid"],
           transition: "stroke 0.12s ease, stroke-width 0.12s ease, filter 0.18s ease",
-          filter: active ? "drop-shadow(0 0 3.5px rgba(34, 87, 196, 0.5))" : undefined
+          filter: selected ? "drop-shadow(0 0 3.5px rgba(34, 87, 196, 0.5))" : undefined
         }}
       />
       {/* Wide invisible path so hover triggers without pixel-hunting the line. */}
@@ -603,23 +712,23 @@ export function OrthogonalEdge({
       />
       {/* Bend handles live in the edge's own SVG group, positioned by
           attributes — nothing transform-based that could animate or drift. */}
-      <g
-        className={active ? "edgeHandles visible" : "edgeHandles"}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-      >
-        {handleSegments.map((segment) => (
-          <BendHandle
-            key={segment.index}
-            x={segment.x}
-            y={segment.y}
-            orientation={segment.horizontal ? "horizontal" : "vertical"}
-            title="Drag to move this line segment · double-click to reset routing"
-            onPointerDown={(event) => beginSegmentDrag(event, segment.index)}
-            onDoubleClick={resetRouting}
-          />
-        ))}
-      </g>
+      {selected && (
+        <g className="edgeHandles visible">
+          {handleSegments.map((segment) => (
+            <BendHandle
+              key={segment.index}
+              x={segment.x}
+              y={segment.y}
+              zoom={zoom}
+              screenLength={segment.screenLength}
+              orientation={segment.horizontal ? "horizontal" : "vertical"}
+              title="Drag to move this line segment · double-click to reset routing"
+              onPointerDown={(event) => beginSegmentDrag(event, segment.index)}
+              onDoubleClick={resetRouting}
+            />
+          ))}
+        </g>
+      )}
       <EdgeLabelRenderer>
         {label ? (
           <div
@@ -634,11 +743,15 @@ export function OrthogonalEdge({
   );
 }
 
-const BEND_HANDLE_SIZE = 9;
+/** Bar-shaped grip: long along the segment it moves, thin across it. */
+const BEND_HANDLE_LENGTH = 18;
+const BEND_HANDLE_THICKNESS = 6;
 
 function BendHandle({
   x,
   y,
+  zoom,
+  screenLength,
   orientation,
   title,
   onPointerDown,
@@ -646,19 +759,29 @@ function BendHandle({
 }: {
   x: number;
   y: number;
+  zoom: number;
+  screenLength: number;
   orientation: "vertical" | "horizontal";
   title: string;
   onPointerDown: (event: ReactPointerEvent<SVGRectElement>) => void;
   onDoubleClick: () => void;
 }) {
+  // Sizes are screen pixels; dividing by the zoom keeps them constant as the
+  // canvas scales. Short segments shrink the grip so it never overhangs.
+  const length = Math.min(BEND_HANDLE_LENGTH, screenLength) / zoom;
+  const thickness = BEND_HANDLE_THICKNESS / zoom;
+  const width = orientation === "horizontal" ? length : thickness;
+  const height = orientation === "horizontal" ? thickness : length;
   return (
     <rect
       className={`edgeBendHandle ${orientation}`}
-      x={x - BEND_HANDLE_SIZE / 2}
-      y={y - BEND_HANDLE_SIZE / 2}
-      width={BEND_HANDLE_SIZE}
-      height={BEND_HANDLE_SIZE}
-      rx={2.5}
+      x={x - width / 2}
+      y={y - height / 2}
+      width={width}
+      height={height}
+      rx={thickness / 2}
+      // Inline so it beats the stylesheet's fixed stroke width.
+      style={{ strokeWidth: 1.5 / zoom }}
       onPointerDown={onPointerDown}
       onDoubleClick={(event) => {
         event.stopPropagation();
