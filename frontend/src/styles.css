@@ -1257,30 +1257,49 @@ label.checkRow span {
   border: none;
 }
 
+/* A 10px dot centered in a 20px node: the middle starts connections (four
+   directional handles stacked at the exact center), the surrounding ring is
+   plain node surface so the junction can be dragged like any other node. */
 .pidJunctionNode {
+  height: 100%;
+  position: relative;
+  width: 100%;
+}
+
+.pidJunctionDot {
   background: #41536b;
   border: 2px solid var(--surface);
   border-radius: 999px;
   box-shadow: 0 0 0 1px #41536b;
-  height: 100%;
+  inset: 25%;
+  pointer-events: none;
+  position: absolute;
   transition: box-shadow 0.12s ease, background 0.12s ease;
-  width: 100%;
 }
 
-.pidJunctionNode:hover,
-.pidJunctionNode.selected {
+.pidJunctionNode:hover .pidJunctionDot,
+.pidJunctionNode.selected .pidJunctionDot {
   background: var(--accent);
   box-shadow: 0 0 0 1.5px var(--accent), 0 0 0 5px rgba(34, 87, 196, 0.16);
 }
 
-/* The whole dot is the connection point; keep the handle invisible but hit-able. */
+/* 1px handles so React Flow's side-based anchor math lands on the exact
+   center; the ::after pad supplies the clickable area (pseudo-element areas
+   hit-test to their element). */
 .pidJunctionHandle.react-flow__handle {
   background: transparent;
   border: none;
-  height: 100%;
-  min-height: 10px;
-  min-width: 10px;
-  width: 100%;
+  cursor: crosshair;
+  height: 1px;
+  min-height: 1px;
+  min-width: 1px;
+  width: 1px;
+}
+
+.pidJunctionHandle.react-flow__handle::after {
+  content: "";
+  inset: -5px;
+  position: absolute;
 }
 
 /* ---------- Placement ghost ---------- */
@@ -1320,8 +1339,8 @@ label.checkRow span {
   background: var(--accent);
   border-radius: 999px;
   display: block;
-  height: 100%;
-  width: 100%;
+  height: 50%;
+  width: 50%;
 }
 
 .placementGhost .ghostText {
@@ -1908,8 +1927,17 @@ button.symbolPortDot i {
 .symbolToolbar {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   margin-top: 6px;
+  row-gap: 4px;
+}
+
+.symbolToolDivider {
+  background: var(--line-soft);
+  height: 16px;
+  margin: 0 5px;
+  width: 1px;
 }
 
 button.symbolToolButton {
@@ -1943,11 +1971,133 @@ button.symbolToolUndo {
   margin-left: auto;
 }
 
+button.symbolStrokeButton {
+  min-width: 26px;
+  padding: 0 4px;
+}
+
+button.symbolStrokeButton svg {
+  height: 15px;
+  width: 15px;
+}
+
+.symbolSwatchRow {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+  padding: 0 2px;
+}
+
+button.symbolSwatch {
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px var(--line);
+  height: 15px;
+  margin: 0;
+  padding: 0;
+  transition: scale 0.12s ease, box-shadow 0.12s ease;
+  width: 15px;
+}
+
+button.symbolSwatch:hover:not(:disabled) {
+  scale: 1.25;
+}
+
+button.symbolSwatch.active {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+button.symbolSwatchDefault {
+  background: #22344c;
+}
+
+.symbolHintRow {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.symbolHintRow .hint {
+  margin: 0;
+}
+
+.symbolCursorChip {
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 9px;
+  white-space: nowrap;
+}
+
+svg.symbolAxes {
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  stroke: rgba(34, 87, 196, 0.25);
+  stroke-width: 0.75;
+}
+
+svg.symbolDrawing {
+  position: relative;
+}
+
 svg.symbolDrawOverlay {
   color: var(--accent);
   inset: 0;
   pointer-events: none;
   position: absolute;
+}
+
+.symbolShapeList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.symbolShapeChip {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--text-2);
+  display: inline-flex;
+  font-size: 11.5px;
+  gap: 2px;
+  padding: 2px 4px;
+}
+
+.symbolShapeChip.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+button.symbolShapeName {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 11.5px;
+  margin: 0;
+  padding: 0 2px 0 6px;
+}
+
+.symbolShapeChip > button:last-child {
+  background: transparent;
+  border: none;
+  color: var(--text-3);
+  margin: 0;
+  padding: 0 5px;
+}
+
+.symbolShapeChip > button:last-child:hover:not(:disabled) {
+  background: transparent;
+  color: var(--red);
 }
 
 /* ---------- Auth ---------- */

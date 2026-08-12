@@ -181,19 +181,34 @@ export function PidSymbolNode({ id, data, selected, onDirty, onHistory }: NodePr
 }
 
 /**
- * Junction: a plain connection dot that joins pipe runs. Lines attach to its
- * single centered port with no routing stub, from any direction.
+ * Junction: a connection dot that joins pipe runs. It exposes four
+ * directional handles (l/r/t/b) all anchored at the exact center, so lines
+ * start at the junction's center but leave in one of the four discrete
+ * directions; the app picks the handle matching the line's geometry. The
+ * handles cover only the middle of the node — the surrounding ring is plain
+ * node surface, so the junction itself stays draggable.
  */
+export const JUNCTION_HANDLES: Array<{ id: "l" | "r" | "t" | "b"; position: Position }> = [
+  { id: "l", position: Position.Left },
+  { id: "r", position: Position.Right },
+  { id: "t", position: Position.Top },
+  { id: "b", position: Position.Bottom }
+];
+
 export function JunctionNode({ selected }: NodeProps<Record<string, never>>) {
   return (
     <div className={selected ? "pidJunctionNode selected" : "pidJunctionNode"}>
-      <Handle
-        id="j"
-        type="source"
-        position={Position.Left}
-        className="pidJunctionHandle"
-        style={{ left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}
-      />
+      <span className="pidJunctionDot" />
+      {JUNCTION_HANDLES.map((handle) => (
+        <Handle
+          key={handle.id}
+          id={handle.id}
+          type="source"
+          position={handle.position}
+          className="pidJunctionHandle"
+          style={{ left: "50%", top: "50%", transform: "translate(-50%, -50%)" }}
+        />
+      ))}
     </div>
   );
 }

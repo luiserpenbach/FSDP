@@ -33,6 +33,7 @@ import {
   OrthogonalEdge,
   edgeMarker,
   hasStoredGeometry,
+  junctionHandleToward,
   translateEdgeGeometry,
   type OrthogonalEdgeData
 } from "./components/pid/OrthogonalEdge";
@@ -142,6 +143,65 @@ function graphNodeType(node: Node<CanvasNodeData>): string {
   return NODE_TYPE_TO_GRAPH_TYPE[node.type ?? ""] ?? String(node.data?.symbolType ?? "component");
 }
 
+const JUNCTION_HANDLE_IDS = ["l", "r", "t", "b"];
+
+function nodeCenter(node: Node<CanvasNodeData>, nodes: Node<CanvasNodeData>[]): { x: number; y: number } {
+  const parent = node.parentNode ? nodes.find((entry) => entry.id === node.parentNode) : undefined;
+  const offsetX = parent?.position.x ?? 0;
+  const offsetY = parent?.position.y ?? 0;
+  const width = Number(node.width ?? node.style?.width ?? 0);
+  const height = Number(node.height ?? node.style?.height ?? 0);
+  return { x: offsetX + node.position.x + width / 2, y: offsetY + node.position.y + height / 2 };
+}
+
+type ConnectionLike = {
+  source: string | null;
+  sourceHandle?: string | null;
+  target: string | null;
+  targetHandle?: string | null;
+};
+
+/**
+ * Junction handles are four overlapping center anchors; pointer events pick
+ * an arbitrary one, so every connection touching a junction is rewritten to
+ * the handle whose direction matches the line's geometry.
+ */
+function withJunctionHandles<T extends ConnectionLike>(connection: T, nodes: Node<CanvasNodeData>[]): T {
+  const source = connection.source ? nodes.find((node) => node.id === connection.source) : undefined;
+  const target = connection.target ? nodes.find((node) => node.id === connection.target) : undefined;
+  if (source?.type !== "pidJunction" && target?.type !== "pidJunction") return connection;
+  const next = { ...connection };
+  const sourceCenter = source ? nodeCenter(source, nodes) : null;
+  const targetCenter = target ? nodeCenter(target, nodes) : null;
+  if (source?.type === "pidJunction" && sourceCenter && targetCenter) {
+    next.sourceHandle = junctionHandleToward(sourceCenter.x, sourceCenter.y, targetCenter.x, targetCenter.y);
+  }
+  if (target?.type === "pidJunction" && targetCenter && sourceCenter) {
+    next.targetHandle = junctionHandleToward(targetCenter.x, targetCenter.y, sourceCenter.x, sourceCenter.y);
+  }
+  return next;
+}
+
+/** Migrate saved edges whose junction endpoints predate the directional handles. */
+function fixJunctionEdgeHandles(
+  nodes: Node<CanvasNodeData>[],
+  edges: Edge<OrthogonalEdgeData>[]
+): Edge<OrthogonalEdgeData>[] {
+  return edges.map((edge) => {
+    const source = nodes.find((node) => node.id === edge.source);
+    const target = nodes.find((node) => node.id === edge.target);
+    const needsSource = source?.type === "pidJunction" && !JUNCTION_HANDLE_IDS.includes(edge.sourceHandle ?? "");
+    const needsTarget = target?.type === "pidJunction" && !JUNCTION_HANDLE_IDS.includes(edge.targetHandle ?? "");
+    if (!needsSource && !needsTarget) return edge;
+    const fixed = withJunctionHandles(edge, nodes);
+    return {
+      ...edge,
+      sourceHandle: needsSource ? fixed.sourceHandle : edge.sourceHandle,
+      targetHandle: needsTarget ? fixed.targetHandle : edge.targetHandle
+    };
+  });
+}
+
 function buildGraphPayload(nodes: Node<CanvasNodeData>[], edges: Edge<OrthogonalEdgeData>[]) {
   return {
     // Selection is view state, not document state — JSON.stringify drops the
@@ -200,7 +260,13 @@ function normalizeGraphNode(node: Node): Node<CanvasNodeData> {
     return { ...base, data: { text: String(data.text ?? ""), author: data.author, created_at: data.created_at } };
   }
   if (node.type === "pidJunction") {
-    return { ...base, style: { width: JUNCTION_SIZE, height: JUNCTION_SIZE, ...node.style }, data: {} };
+    const style = { width: JUNCTION_SIZE, height: JUNCTION_SIZE, ...node.style };
+    // Junctions from before the draggable-ring rework were 14px boxes.
+    if (style.width === 14 && style.height === 14) {
+      style.width = JUNCTION_SIZE;
+      style.height = JUNCTION_SIZE;
+    }
+    return { ...base, style, data: {} };
   }
   // Symbols placed before the size reduction keep the old 112x84 default;
   // scale those down, but leave user-resized nodes alone.
@@ -437,8 +503,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     void runAction("Loaded saved diagram.", async () => {
       const diagram = await api.getDiagram(selectedDiagramId);
       setDiagramName(diagram.name);
-      setNodes(sortSectionsFirst((diagram.graph.nodes ?? []).map(normalizeGraphNode)));
-      setEdges((diagram.graph.edges ?? []).map(normalizeOrthogonalEdge));
+      const graphNodes = sortSectionsFirst((diagram.graph.nodes ?? []).map(normalizeGraphNode));
+      setNodes(graphNodes);
+      setEdges(fixJunctionEdgeHandles(graphNodes, (diagram.graph.edges ?? []).map(normalizeOrthogonalEdge)));
       setComponents(await api.listComponents(diagram.id));
       const snapshots = await api.listDiagramBoms(diagram.id);
       setBomSnapshots(snapshots);
@@ -1067,7 +1134,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     recordHistory();
     setGraphDirty(true);
     setEdges((current) =>
-      addEdge({ ...connection, type: "orthogonal", markerEnd: edgeMarker(undefined) }, current)
+      addEdge(
+        {
+          ...withJunctionHandles(connection, nodesRef.current),
+          type: "orthogonal",
+          markerEnd: edgeMarker(undefined)
+        },
+        current
+      )
     );
   }
 
@@ -1138,6 +1212,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       bendY: undefined
     };
     const upstreamData = { ...carried, showArrow: false };
+    // Attach each of the three lines to the junction handle facing its far end.
+    const nodesNow = nodesRef.current;
+    const centerOfNode = (nodeId: string) => {
+      const node = nodesNow.find((entry) => entry.id === nodeId);
+      return node ? nodeCenter(node, nodesNow) : center;
+    };
+    const towards = (nodeId: string) => {
+      const other = centerOfNode(nodeId);
+      return junctionHandleToward(center.x, center.y, other.x, other.y);
+    };
     setEdges((current) => [
       ...current.filter((edge) => edge.id !== targetEdge.id),
       {
@@ -1145,7 +1229,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         source: targetEdge.source,
         sourceHandle: targetEdge.sourceHandle,
         target: junctionId,
-        targetHandle: "j",
+        targetHandle: towards(targetEdge.source),
         type: "orthogonal",
         data: upstreamData,
         markerEnd: edgeMarker(upstreamData)
@@ -1153,7 +1237,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       {
         id: makeNodeId("line"),
         source: junctionId,
-        sourceHandle: "j",
+        sourceHandle: towards(targetEdge.target),
         target: targetEdge.target,
         targetHandle: targetEdge.targetHandle,
         type: "orthogonal",
@@ -1166,7 +1250,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         source: startNodeId,
         sourceHandle: start.handleId ?? undefined,
         target: junctionId,
-        targetHandle: "j",
+        targetHandle: towards(startNodeId),
         type: "orthogonal",
         data: {},
         markerEnd: edgeMarker(undefined)
@@ -1185,7 +1269,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   function handleEdgeUpdate(oldEdge: Edge<OrthogonalEdgeData>, connection: Connection) {
     edgeUpdateSucceededRef.current = true;
     recordHistory();
-    setEdges((current) => updateEdge(oldEdge, connection, current, { shouldReplaceId: false }));
+    setEdges((current) =>
+      updateEdge(oldEdge, withJunctionHandles(connection, nodesRef.current), current, { shouldReplaceId: false })
+    );
     setGraphDirty(true);
   }
 
