@@ -81,6 +81,9 @@ const DRAW_WIDTH_ICONS = [1.2, 2.2, 3.4];
 
 const SHAPE_LABELS: Record<DrawnShape["kind"], string> = { path: "Line", rect: "Rect", circle: "Circle" };
 
+/** Preview magnification steps (1 = 100%). */
+const ZOOM_STEPS = [0.5, 0.75, 1, 1.5, 2, 3];
+
 const TOOL_MODES: Array<{ id: ToolMode; label: string; title: string }> = [
   { id: "port", label: "Ports", title: "Click to add connection ports" },
   { id: "line", label: "Line", title: "Click vertices; double-click or Enter to finish" },
@@ -155,6 +158,19 @@ export function centerOffsetLabel(point: DrawPoint, viewBox: ViewBox): string {
   return `x ${part(dx)} · y ${part(dy)}`;
 }
 
+/** Window the viewBox around its center: at zoom z the visible box shrinks
+ *  to width/z × height/z (grows when z < 1), keeping the same center. */
+export function zoomedViewBox(viewBox: ViewBox, zoom: number): ViewBox {
+  const width = viewBox.width / zoom;
+  const height = viewBox.height / zoom;
+  return {
+    x: viewBox.x + (viewBox.width - width) / 2,
+    y: viewBox.y + (viewBox.height - height) / 2,
+    width,
+    height
+  };
+}
+
 function nearestSide(x: number, y: number, viewBox: { x: number; y: number; width: number; height: number }): SymbolPortSide {
   const distances: Array<[SymbolPortSide, number]> = [
     ["left", x - viewBox.x],
@@ -196,9 +212,12 @@ export function SymbolEditorModal({
   const [strokeColor, setStrokeColor] = useState<string | undefined>(undefined);
   const [strokeWidthPick, setStrokeWidthPick] = useState<number | undefined>(undefined);
   const [cursor, setCursor] = useState<DrawPoint | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pendingNew, setPendingNew] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (open) {
@@ -210,6 +229,8 @@ export function SymbolEditorModal({
       setSelectedShape(null);
       setHoverShape(null);
       setCursor(null);
+      setZoom(1);
+      setPendingNew(false);
       setError("");
     }
   }, [open]);
@@ -250,6 +271,10 @@ export function SymbolEditorModal({
   if (!open) return null;
 
   const viewBox = parseViewBox(draft.viewBox);
+  // Everything rendered and clicked in the preview goes through the zoom
+  // window: a center-anchored sub-viewBox shared by all stacked svgs.
+  const zoomWindow = zoomedViewBox(viewBox, zoom);
+  const zoomViewBox = `${zoomWindow.x} ${zoomWindow.y} ${zoomWindow.width} ${zoomWindow.height}`;
   const combinedSvg = [draft.svg, ...draft.drawn.map(serializeShape)].filter(Boolean).join("\n");
   const shapeRect = shapeDraft && tool === "rect" ? normalizedRect(shapeDraft.start, shapeDraft.end) : null;
   const shapeR = shapeDraft && tool === "circle" ? circleRadius(shapeDraft.start, shapeDraft.end) : 0;
@@ -275,7 +300,22 @@ export function SymbolEditorModal({
     setShapeDraft(null);
     setSelectedShape(null);
     setHoverShape(null);
+    setZoom(1);
+    setPendingNew(false);
     setError("");
+  }
+
+  function startNewSymbol() {
+    setDraft(EMPTY_DRAFT);
+    setMarkupDraft("");
+    setLinePoints([]);
+    setShapeDraft(null);
+    setSelectedShape(null);
+    setHoverShape(null);
+    setZoom(1);
+    setPendingNew(true);
+    setError("");
+    nameInputRef.current?.focus();
   }
 
   function uploadSvg(event: ChangeEvent<HTMLInputElement>) {
@@ -291,9 +331,16 @@ export function SymbolEditorModal({
   function previewCoords(clientX: number, clientY: number, grid = 1): { x: number; y: number } | null {
     const rect = previewRef.current?.getBoundingClientRect();
     if (!rect || rect.width === 0) return null;
-    const x = viewBox.x + ((clientX - rect.left) / rect.width) * viewBox.width;
-    const y = viewBox.y + ((clientY - rect.top) / rect.height) * viewBox.height;
+    const x = zoomWindow.x + ((clientX - rect.left) / rect.width) * zoomWindow.width;
+    const y = zoomWindow.y + ((clientY - rect.top) / rect.height) * zoomWindow.height;
     return { x: snapToGrid(x, grid), y: snapToGrid(y, grid) };
+  }
+
+  function stepZoom(direction: 1 | -1) {
+    setZoom((current) => {
+      const index = ZOOM_STEPS.indexOf(current);
+      return ZOOM_STEPS[Math.min(Math.max(index + direction, 0), ZOOM_STEPS.length - 1)] ?? 1;
+    });
   }
 
   function appendShape(shape: DrawnShape) {
@@ -398,14 +445,14 @@ export function SymbolEditorModal({
     setCursor(previewCoords(event.clientX, event.clientY));
   }
 
-  /** Render a drawn shape; hover/selection recolors it and thickens the stroke. */
+  /** Render a drawn shape in its own color/width; hover/selection adds an
+   *  accent glow so restyling stays visible while highlighted. */
   function renderDrawnShape(shape: DrawnShape, index: number) {
     const highlighted = hoverShape === index || selectedShape === index;
-    const stroke = highlighted ? "var(--accent)" : shape.color;
-    const strokeWidth = highlighted ? (shape.strokeWidth ?? DRAW_DEFAULT_WIDTH) + 0.8 : shape.strokeWidth;
+    const style = highlighted ? { filter: "drop-shadow(0 0 2px rgba(34, 87, 196, 0.8))" } : undefined;
     switch (shape.kind) {
       case "path":
-        return <path key={index} d={shape.d} stroke={stroke} strokeWidth={strokeWidth} />;
+        return <path key={index} d={shape.d} stroke={shape.color} strokeWidth={shape.strokeWidth} style={style} />;
       case "rect":
         return (
           <rect
@@ -414,12 +461,15 @@ export function SymbolEditorModal({
             y={shape.y}
             width={shape.width}
             height={shape.height}
-            stroke={stroke}
-            strokeWidth={strokeWidth}
+            stroke={shape.color}
+            strokeWidth={shape.strokeWidth}
+            style={style}
           />
         );
       default:
-        return <circle key={index} cx={shape.cx} cy={shape.cy} r={shape.r} stroke={stroke} strokeWidth={strokeWidth} />;
+        return (
+          <circle key={index} cx={shape.cx} cy={shape.cy} r={shape.r} stroke={shape.color} strokeWidth={shape.strokeWidth} style={style} />
+        );
     }
   }
 
@@ -473,6 +523,7 @@ export function SymbolEditorModal({
       const body = { name: draft.name.trim(), view_box: draft.viewBox, svg: combinedSvg, ports: draft.ports };
       if (draft.id) await api.updateSymbol(draft.id, body);
       else await api.createSymbol(body);
+      setPendingNew(false);
       onChanged();
       onClose();
     } catch (caught) {
@@ -508,22 +559,17 @@ export function SymbolEditorModal({
         </div>
         <div className="symbolEditorBody">
           <aside className="symbolEditorList">
-            <button
-              className="primary"
-              type="button"
-              onClick={() => {
-                setDraft(EMPTY_DRAFT);
-                setMarkupDraft("");
-                setLinePoints([]);
-                setShapeDraft(null);
-                setSelectedShape(null);
-                setHoverShape(null);
-                setError("");
-              }}
-            >
+            <button className="primary" type="button" onClick={startNewSymbol}>
               + New symbol
             </button>
-            {symbols.length === 0 && <p className="hint">No custom symbols yet.</p>}
+            {pendingNew && (
+              <div className="symbolListRow selected">
+                <span className={draft.name.trim() ? "symbolListPendingName" : "symbolListPendingName untitled"}>
+                  {draft.name.trim() || "Untitled symbol"}
+                </span>
+              </div>
+            )}
+            {symbols.length === 0 && !pendingNew && <p className="hint">No custom symbols yet.</p>}
             {symbols.map((symbol) => (
               <div className={draft.id === symbol.id ? "symbolListRow selected" : "symbolListRow"} key={symbol.id}>
                 <button className="symbolListName" type="button" onClick={() => loadSymbol(symbol)}>{symbol.name}</button>
@@ -535,7 +581,12 @@ export function SymbolEditorModal({
             <div className="symbolEditorFields">
               <label>
                 Name
-                <input value={draft.name} placeholder="e.g. Cryo check valve" onChange={(event) => setDraft({ ...draft, name: event.target.value })} />
+                <input
+                  ref={nameInputRef}
+                  value={draft.name}
+                  placeholder="e.g. Cryo check valve"
+                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                />
               </label>
               <label className="fileButton">
                 Import SVG file
@@ -616,7 +667,30 @@ export function SymbolEditorModal({
               </p>
               {cursor && <span className="symbolCursorChip">{centerOffsetLabel(cursor, viewBox)}</span>}
             </div>
-            <div className="symbolPreviewWrap">
+            <div className="symbolPreviewWrap" style={{ backgroundSize: `${16 * zoom}px ${16 * zoom}px` }}>
+              <div className="symbolZoomControls">
+                <button
+                  className="symbolZoomButton"
+                  disabled={zoom === ZOOM_STEPS[0]}
+                  title="Zoom out"
+                  type="button"
+                  onClick={() => stepZoom(-1)}
+                >
+                  &#8722;
+                </button>
+                <button className="symbolZoomLabel" title="Reset zoom to 100%" type="button" onClick={() => setZoom(1)}>
+                  {Math.round(zoom * 100)}%
+                </button>
+                <button
+                  className="symbolZoomButton"
+                  disabled={zoom === ZOOM_STEPS[ZOOM_STEPS.length - 1]}
+                  title="Zoom in"
+                  type="button"
+                  onClick={() => stepZoom(1)}
+                >
+                  +
+                </button>
+              </div>
               <div
                 className="symbolPreview"
                 ref={previewRef}
@@ -626,7 +700,7 @@ export function SymbolEditorModal({
                 onPointerLeave={() => setCursor(null)}
                 onDoubleClick={tool === "line" ? finishLine : undefined}
               >
-                <svg className="symbolAxes" viewBox={draft.viewBox} preserveAspectRatio="none" aria-hidden="true">
+                <svg className="symbolAxes" viewBox={zoomViewBox} preserveAspectRatio="none" aria-hidden="true">
                   <line
                     x1={viewBox.x + viewBox.width / 2}
                     y1={viewBox.y}
@@ -645,7 +719,7 @@ export function SymbolEditorModal({
                 {combinedSvg ? (
                   <svg
                     className="symbolDrawing"
-                    viewBox={draft.viewBox}
+                    viewBox={zoomViewBox}
                     fill="none"
                     stroke="currentColor"
                     strokeWidth={2.2}
@@ -662,7 +736,7 @@ export function SymbolEditorModal({
                 {(linePoints.length > 0 || shapeRect !== null || shapeR >= 1) && (
                   <svg
                     className="symbolDrawOverlay"
-                    viewBox={draft.viewBox}
+                    viewBox={zoomViewBox}
                     fill="none"
                     stroke="currentColor"
                     strokeWidth={1.5}
@@ -686,8 +760,8 @@ export function SymbolEditorModal({
                     key={port.id}
                     className="symbolPortDot"
                     style={{
-                      left: `${((port.x - viewBox.x) / viewBox.width) * 100}%`,
-                      top: `${((port.y - viewBox.y) / viewBox.height) * 100}%`
+                      left: `${((port.x - zoomWindow.x) / zoomWindow.width) * 100}%`,
+                      top: `${((port.y - zoomWindow.y) / zoomWindow.height) * 100}%`
                     }}
                     title={`${port.id} (${port.x}, ${port.y}) — drag to move`}
                     type="button"
