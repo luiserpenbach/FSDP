@@ -50,6 +50,7 @@ import {
   type ContextMenuState,
   type PlacementTool
 } from "./components/pid/overlays";
+import { removeNodesKeepingSectionContents } from "./components/pid/graphEdits";
 import { EditorSettingsContext, type LabelMode } from "./components/pid/settings";
 import { SymbolEditorModal } from "./components/pid/SymbolEditorModal";
 import { PanelResizer, useStoredWidth } from "./components/resizable";
@@ -854,25 +855,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const deleteNodeById = useCallback(
     (id: string) => {
       recordHistory();
-      setNodes((current) => {
-        const target = current.find((node) => node.id === id);
-        if (!target) return current;
-        return current
-          .filter((node) => node.id !== id)
-          .map((node) =>
-            node.parentNode === id
-              ? {
-                  ...node,
-                  parentNode: undefined,
-                  position: {
-                    x: node.position.x + target.position.x,
-                    y: node.position.y + target.position.y
-                  }
-                }
-              : node
-          );
-      });
-      setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
+      const next = removeNodesKeepingSectionContents(nodesRef.current, edgesRef.current, [id]);
+      setNodes(next.nodes);
+      setEdges(next.edges);
       setSelectedNodeId((current) => (current === id ? "" : current));
       setGraphDirty(true);
     },
@@ -888,6 +873,27 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     },
     [recordHistory, setEdges]
   );
+
+  // Own Delete/Backspace handling so sections keep their contents. React Flow's
+  // default deleteKeyCode cascades through parentNode and wipes every child.
+  const deleteSelection = useCallback(() => {
+    const selectedNodeIds = nodesRef.current.filter((node) => node.selected).map((node) => node.id);
+    const selectedEdgeIds = edgesRef.current.filter((edge) => edge.selected).map((edge) => edge.id);
+    if (!selectedNodeIds.length && !selectedEdgeIds.length) return false;
+    recordHistory();
+    const next = removeNodesKeepingSectionContents(
+      nodesRef.current,
+      edgesRef.current,
+      selectedNodeIds,
+      selectedEdgeIds
+    );
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    setSelectedNodeId("");
+    setSelectedEdgeId("");
+    setGraphDirty(true);
+    return true;
+  }, [recordHistory, setEdges, setNodes]);
 
   const rotateNodeById = useCallback(
     (id: string) => {
@@ -1089,7 +1095,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         return;
       }
       const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      if (
+        target &&
+        (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (deleteSelection()) event.preventDefault();
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redo();
@@ -1102,7 +1117,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     }
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [redo, undo]);
+  }, [deleteSelection, redo, undo]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -1839,7 +1854,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                       onNodeDrag={handleNodeDrag}
                       onNodeDragStop={handleNodeDragStop}
                       elevateNodesOnSelect={false}
-                      deleteKeyCode={["Backspace", "Delete"]}
+                      // Handled in window keydown via deleteSelection so
+                      // deleting a section does not cascade to its children.
+                      deleteKeyCode={null}
                       // Left-drag rubber-bands a selection; panning moves to
                       // the middle and right mouse buttons.
                       selectionOnDrag
