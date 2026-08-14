@@ -50,7 +50,11 @@ import {
   type ContextMenuState,
   type PlacementTool
 } from "./components/pid/overlays";
-import { removeNodesKeepingSectionContents } from "./components/pid/graphEdits";
+import {
+  attachToSectionAtAbsolutePosition,
+  removeNodesKeepingSectionContents,
+  sectionContainingPoint
+} from "./components/pid/graphEdits";
 import { EditorSettingsContext, type LabelMode } from "./components/pid/settings";
 import { SymbolEditorModal } from "./components/pid/SymbolEditorModal";
 import { PanelResizer, useStoredWidth } from "./components/resizable";
@@ -1053,35 +1057,21 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     (_event: unknown, draggedNode: Node<CanvasNodeData>, draggedNodes?: Node<CanvasNodeData>[]) => {
       const dragged = draggedNodes?.length ? draggedNodes : [draggedNode];
       setNodes((current) => {
-        const sections = current.filter((node) => node.type === "pidSection");
         let changed = false;
         const next = current.map((node) => {
           if (node.type === "pidSection") return node;
           const draggedVersion = dragged.find((entry) => entry.id === node.id);
           if (!draggedVersion) return node;
           const absolute = draggedVersion.positionAbsolute ?? draggedVersion.position;
-          const centerX = absolute.x + (draggedVersion.width ?? 0) / 2;
-          const centerY = absolute.y + (draggedVersion.height ?? 0) / 2;
-          const hit = sections.find((section) => {
-            const width = section.width ?? Number(section.style?.width ?? 0);
-            const height = section.height ?? Number(section.style?.height ?? 0);
-            return (
-              centerX >= section.position.x &&
-              centerX <= section.position.x + width &&
-              centerY >= section.position.y &&
-              centerY <= section.position.y + height
-            );
+          const width = draggedVersion.width ?? Number(draggedVersion.style?.width ?? 0);
+          const height = draggedVersion.height ?? Number(draggedVersion.style?.height ?? 0);
+          const hit = sectionContainingPoint(current, {
+            x: absolute.x + width / 2,
+            y: absolute.y + height / 2
           });
           if ((node.parentNode ?? undefined) === hit?.id) return node;
           changed = true;
-          if (hit) {
-            return {
-              ...node,
-              parentNode: hit.id,
-              position: { x: absolute.x - hit.position.x, y: absolute.y - hit.position.y }
-            };
-          }
-          return { ...node, parentNode: undefined, position: absolute };
+          return attachToSectionAtAbsolutePosition(node, current, absolute, { width, height });
         });
         return changed ? sortSectionsFirst(next) : current;
       });
@@ -1227,16 +1217,25 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     recordHistory();
     const junctionId = makeNodeId("junction");
     const center = split.point;
+    // Join points come from absolute SVG path coords; parent the junction when
+    // it lands inside a section so moving that section keeps the tee attached.
+    const absoluteTopLeft = { x: center.x - JUNCTION_SIZE / 2, y: center.y - JUNCTION_SIZE / 2 };
+    const junctionSize = { width: JUNCTION_SIZE, height: JUNCTION_SIZE };
     setNodes((current) =>
       sortSectionsFirst([
         ...current,
-        {
-          id: junctionId,
-          type: "pidJunction",
-          position: { x: center.x - JUNCTION_SIZE / 2, y: center.y - JUNCTION_SIZE / 2 },
-          style: { width: JUNCTION_SIZE, height: JUNCTION_SIZE },
-          data: {}
-        }
+        attachToSectionAtAbsolutePosition(
+          {
+            id: junctionId,
+            type: "pidJunction",
+            position: absoluteTopLeft,
+            style: junctionSize,
+            data: {}
+          },
+          current,
+          absoluteTopLeft,
+          junctionSize
+        )
       ])
     );
     const carried: OrthogonalEdgeData = {

@@ -1,5 +1,52 @@
 import type { Edge, Node } from "reactflow";
 
+/** First section whose bounds contain the (absolute) flow point, if any. */
+export function sectionContainingPoint<N extends Node>(
+  nodes: N[],
+  point: { x: number; y: number }
+): N | undefined {
+  return nodes.find((node) => {
+    if (node.type !== "pidSection") return false;
+    const width = node.width ?? Number(node.style?.width ?? 0);
+    const height = node.height ?? Number(node.style?.height ?? 0);
+    return (
+      point.x >= node.position.x &&
+      point.x <= node.position.x + width &&
+      point.y >= node.position.y &&
+      point.y <= node.position.y + height
+    );
+  });
+}
+
+/**
+ * Parent a node to the section under its center, converting an absolute
+ * top-left into section-relative coordinates. Used when placing join
+ * junctions (and by drag-stop reparenting) so section moves keep contents.
+ */
+export function attachToSectionAtAbsolutePosition<N extends Node>(
+  node: N,
+  nodes: N[],
+  absoluteTopLeft: { x: number; y: number },
+  size: { width: number; height: number }
+): N {
+  const center = {
+    x: absoluteTopLeft.x + size.width / 2,
+    y: absoluteTopLeft.y + size.height / 2
+  };
+  const section = sectionContainingPoint(nodes, center);
+  if (!section) {
+    return { ...node, parentNode: undefined, position: absoluteTopLeft };
+  }
+  return {
+    ...node,
+    parentNode: section.id,
+    position: {
+      x: absoluteTopLeft.x - section.position.x,
+      y: absoluteTopLeft.y - section.position.y
+    }
+  };
+}
+
 /**
  * Remove nodes by id without React Flow's parent cascade.
  * Sections release their children (absolute positions restored) so Delete
