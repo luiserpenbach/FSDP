@@ -85,6 +85,26 @@ const NEW_DIAGRAM = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z"
 };
+const DIAGRAM = {
+  id: "d1",
+  system_id: "s1",
+  name: "Diagram A",
+  diagram_type: "pid",
+  revision: 1,
+  graph: {
+    nodes: [
+      {
+        id: "valve-a",
+        type: "pidSymbol",
+        position: { x: 0, y: 0 },
+        data: { label: "Valve A", symbolType: "valve", rotation: 0 }
+      }
+    ],
+    edges: []
+  },
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
 const DIAGRAM_A = {
   id: "d1",
   system_id: "s1",
@@ -175,6 +195,22 @@ function jsonResponse(body: unknown, status = 200) {
     json: () => Promise.resolve(body),
     text: () => Promise.resolve(JSON.stringify(body))
   });
+}
+
+function findPaletteCell(text: string) {
+  return screen.getAllByRole("button").find(
+    (button) => button.classList.contains("paletteCell") && button.textContent?.includes(text)
+  );
+}
+
+async function placeSymbolFromPalette(label: string) {
+  fireEvent.click(screen.getByRole("button", { name: "Symbols" }));
+  const paletteButton = findPaletteCell(label);
+  expect(paletteButton).toBeTruthy();
+  fireEvent.click(paletteButton!);
+  const pane = document.querySelector(".react-flow__pane");
+  expect(pane).toBeTruthy();
+  fireEvent.click(pane!, { clientX: 240, clientY: 240 });
 }
 
 describe("App", () => {
@@ -355,7 +391,6 @@ describe("App", () => {
     });
     expect(screen.queryByText("Valve A")).not.toBeInTheDocument();
 
-    // Late component list from diagram A must not overwrite B's open workspace.
     resolveComponentsA([COMPONENT_A]);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(screen.getByLabelText("Open diagram")).toHaveValue("d2");
@@ -363,8 +398,6 @@ describe("App", () => {
     expect(screen.getByText("Valve B")).toBeInTheDocument();
     expect(screen.queryByText("Valve A")).not.toBeInTheDocument();
 
-    // Navigate to Requirements where placed component tags are listed and
-    // confirm the stale A payload did not replace B's component state.
     fireEvent.click(
       screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/requirements"]')!
     );
@@ -412,7 +445,6 @@ describe("App", () => {
       expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
     });
 
-    // Project A auto-selects System A; hold A's diagram list in flight, then switch projects.
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/systems/s1/diagrams"))).toBe(true);
     });
@@ -434,18 +466,102 @@ describe("App", () => {
     });
     expect(screen.getByLabelText("Open diagram")).toHaveTextContent("Diagram B");
 
-    // Stale System A list arrives last — must not rewrite selection to Diagram A.
     resolveDiagramsA([DIAGRAM_A]);
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/diagrams/d2"))).toBe(true);
     });
 
-    // Give the stale response a turn to apply if the bug is present.
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(screen.getByLabelText("Open diagram")).toHaveValue("d2");
     expect(screen.getByLabelText("Open diagram")).not.toHaveValue("d1");
     expect(screen.queryByText("Valve A")).not.toBeInTheDocument();
+  });
+
+  it("keeps the diagram dirty when the canvas is edited during an in-flight save", async () => {
+    let resolveGraphSave!: (body: unknown) => void;
+    const graphSavePromise = new Promise<unknown>((resolve) => {
+      resolveGraphSave = resolve;
+    });
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      const path = new URL(url, "http://localhost").pathname;
+
+      if (path === "/auth/me") return jsonResponse(TEST_USER);
+      if (path === "/projects" && method === "GET") return jsonResponse([PROJECT]);
+      if (path === "/projects/p1/systems") return jsonResponse([SYSTEM]);
+      if (path === "/projects/p1/requirements") return jsonResponse([]);
+      if (path === "/projects/p1/bom") return jsonResponse([]);
+      if (path === "/parts" && method === "GET") return jsonResponse([]);
+      if (path === "/changes") return jsonResponse([]);
+      if (path === "/systems/s1/diagrams" && method === "GET") return jsonResponse([DIAGRAM]);
+      if (path === "/diagrams/d1" && method === "GET") return jsonResponse(DIAGRAM);
+      if (path === "/diagrams/d1/components") return jsonResponse([]);
+      if (path === "/diagrams/d1/bom") return jsonResponse([]);
+      if (path === "/diagrams/d1/graph" && method === "PUT") {
+        return graphSavePromise.then((body) => jsonResponse(body));
+      }
+      return jsonResponse({ detail: `unmocked ${method} ${path}` }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+    await waitFor(() => {
+      const projectSelects = screen.getAllByLabelText("Project");
+      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
+    });
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Open diagram")).toHaveValue("d1");
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Valve A")).toBeInTheDocument();
+    });
+
+    await placeSymbolFromPalette("Valve");
+    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save graph" }));
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input, init]) => {
+        const url = String(input);
+        return url.includes("/diagrams/d1/graph") && (init?.method ?? "GET").toUpperCase() === "PUT";
+      })).toBe(true);
+    });
+
+    await placeSymbolFromPalette("Check valve");
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+
+    resolveGraphSave({
+      ...DIAGRAM,
+      revision: 2,
+      graph: {
+        nodes: [
+          ...DIAGRAM.graph.nodes,
+          {
+            id: "valve-mid-save",
+            type: "pidSymbol",
+            position: { x: 120, y: 180 },
+            data: { label: "Valve", symbolType: "valve", rotation: 0 }
+          }
+        ],
+        edges: []
+      }
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Saved graph.")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.queryByText("Saved", { selector: ".cleanBadge" })).not.toBeInTheDocument();
   });
 });

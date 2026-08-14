@@ -436,6 +436,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const selectedDiagramIdRef = useRef(selectedDiagramId);
   selectedDiagramIdRef.current = selectedDiagramId;
   const busyCountRef = useRef(0);
+  // Bumped on every local edit so an in-flight save cannot clear dirty after
+  // newer canvas changes that were not included in the saved payload.
+  const graphDirtyGeneration = useRef(0);
+  const markGraphDirty = useCallback(() => {
+    graphDirtyGeneration.current += 1;
+    setGraphDirty(true);
+  }, []);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -699,9 +706,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     history.future.push({ nodes: nodesRef.current, edges: edgesRef.current });
     setNodes(previous.nodes);
     setEdges(previous.edges);
-    setGraphDirty(true);
+    markGraphDirty();
     setHistoryVersion((version) => version + 1);
-  }, [setEdges, setNodes]);
+  }, [markGraphDirty, setEdges, setNodes]);
 
   const redo = useCallback(() => {
     const history = historyRef.current;
@@ -710,39 +717,37 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     history.past.push({ nodes: nodesRef.current, edges: edgesRef.current });
     setNodes(next.nodes);
     setEdges(next.edges);
-    setGraphDirty(true);
+    markGraphDirty();
     setHistoryVersion((version) => version + 1);
-  }, [setEdges, setNodes]);
-
-  const markDirty = useCallback(() => setGraphDirty(true), []);
+  }, [markGraphDirty, setEdges, setNodes]);
 
   const nodeTypes = useMemo(
     () => ({
       pidSymbol: (props: NodeProps<CanvasNodeData>) => (
         <PidSymbolNode
           {...(props as unknown as Parameters<typeof PidSymbolNode>[0])}
-          onDirty={markDirty}
+          onDirty={markGraphDirty}
           onHistory={recordHistory}
         />
       ),
       pidSection: (props: NodeProps<CanvasNodeData>) => (
         <SectionNode
           {...(props as unknown as Parameters<typeof SectionNode>[0])}
-          onDirty={markDirty}
+          onDirty={markGraphDirty}
           onHistory={recordHistory}
         />
       ),
       pidText: (props: NodeProps<CanvasNodeData>) => (
         <TextNode
           {...(props as unknown as Parameters<typeof TextNode>[0])}
-          onDirty={markDirty}
+          onDirty={markGraphDirty}
           onHistory={recordHistory}
         />
       ),
       pidComment: (props: NodeProps<CanvasNodeData>) => (
         <CommentNode
           {...(props as unknown as Parameters<typeof CommentNode>[0])}
-          onDirty={markDirty}
+          onDirty={markGraphDirty}
           onHistory={recordHistory}
         />
       ),
@@ -750,15 +755,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         <JunctionNode {...(props as unknown as Parameters<typeof JunctionNode>[0])} />
       )
     }),
-    [markDirty, recordHistory]
+    [markGraphDirty, recordHistory]
   );
   const edgeTypes = useMemo(
     () => ({
       orthogonal: (props: EdgeProps<OrthogonalEdgeData>) => (
-        <OrthogonalEdge {...props} onDirty={markDirty} onHistory={recordHistory} gridSize={gridSize} />
+        <OrthogonalEdge {...props} onDirty={markGraphDirty} onHistory={recordHistory} gridSize={gridSize} />
       )
     }),
-    [markDirty, recordHistory, gridSize]
+    [markGraphDirty, recordHistory, gridSize]
   );
 
   const customSymbolsById = useMemo(
@@ -864,9 +869,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSelectedNodeId(node.id);
       setSelectedEdgeId("");
       if (tool.kind === "comment") setShowComments(true);
-      setGraphDirty(true);
+      markGraphDirty();
     },
-    [customSymbolsById, gridSize, recordHistory, setNodes, user.name]
+    [customSymbolsById, gridSize, markGraphDirty, recordHistory, setNodes, user.name]
   );
 
   function changeGridSize(next: number) {
@@ -886,7 +891,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setNodes(next.nodes);
       setEdges(next.edges);
       setSelectedNodeId((current) => (current === id ? "" : current));
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setEdges, setNodes]
   );
@@ -896,7 +901,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       recordHistory();
       setEdges((current) => current.filter((edge) => edge.id !== id));
       setSelectedEdgeId((current) => (current === id ? "" : current));
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setEdges]
   );
@@ -918,7 +923,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setEdges(next.edges);
     setSelectedNodeId("");
     setSelectedEdgeId("");
-    setGraphDirty(true);
+    markGraphDirty();
     return true;
   }, [recordHistory, setEdges, setNodes]);
 
@@ -932,7 +937,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
             : node
         )
       );
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setNodes]
   );
@@ -953,7 +958,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         sortSectionsFirst([...current.map((entry) => ({ ...entry, selected: false })), copy])
       );
       setSelectedNodeId(copy.id);
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setNodes]
   );
@@ -964,7 +969,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setNodes((current) =>
         current.map((node) => (node.id === id ? { ...node, data: { ...node.data, ...patch } } : node))
       );
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setNodes]
   );
@@ -992,7 +997,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           };
         })
       );
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setEdges]
   );
@@ -1153,11 +1158,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         recordHistory();
       }
       if (changes.some((change) => change.type === "position" || change.type === "add" || change.type === "remove")) {
-        setGraphDirty(true);
+        markGraphDirty();
       }
       onNodesChangeBase(changes);
     },
-    [onNodesChangeBase, recordHistory]
+    [markGraphDirty, onNodesChangeBase, recordHistory]
   );
 
   const onEdgesChange = useCallback(
@@ -1166,17 +1171,17 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         recordHistory();
       }
       if (changes.some((change) => change.type === "add" || change.type === "remove")) {
-        setGraphDirty(true);
+        markGraphDirty();
       }
       onEdgesChangeBase(changes);
     },
-    [onEdgesChangeBase, recordHistory]
+    [markGraphDirty, onEdgesChangeBase, recordHistory]
   );
 
   function onConnect(connection: Connection) {
     connectCompletedRef.current = true;
     recordHistory();
-    setGraphDirty(true);
+    markGraphDirty();
     setEdges((current) =>
       addEdge(
         {
@@ -1287,7 +1292,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         markerEnd: edgeMarker(undefined)
       }
     ]);
-    setGraphDirty(true);
+    markGraphDirty();
     setMessage("Lines joined with a junction.");
   }
 
@@ -1303,7 +1308,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setEdges((current) =>
       updateEdge(oldEdge, withJunctionHandles(connection, nodesRef.current), current, { shouldReplaceId: false })
     );
-    setGraphDirty(true);
+    markGraphDirty();
   }
 
   function handleEdgeUpdateEnd(_event: unknown, edge: Edge<OrthogonalEdgeData>) {
@@ -1311,7 +1316,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       recordHistory();
       setEdges((current) => current.filter((entry) => entry.id !== edge.id));
       setSelectedEdgeId((current) => (current === edge.id ? "" : current));
-      setGraphDirty(true);
+      markGraphDirty();
       setMessage("Line detached.");
     }
     edgeUpdateSucceededRef.current = true;
@@ -1465,10 +1470,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     const diagramId = selectedDiagram.id;
     const systemId = selectedDiagram.system_id;
     const payload = graphPayload;
+    const generationAtSave = graphDirtyGeneration.current;
     void runAction("Saved graph.", async () => {
       await api.updateDiagramGraph(diagramId, payload);
       if (selectedDiagramIdRef.current !== diagramId) return;
-      setGraphDirty(false);
+      // Mid-save canvas edits bump the generation; keep dirty so discard
+      // guards and the badge still protect those unsaved changes.
+      if (graphDirtyGeneration.current === generationAtSave) {
+        setGraphDirty(false);
+      }
       setDiagrams(await api.listDiagrams(systemId));
     }, "diagram");
   }
@@ -1499,7 +1509,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setNodes((current) =>
       current.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, label } } : node))
     );
-    setGraphDirty(true);
+    markGraphDirty();
     setMessage("Renamed node — save the graph to persist.");
   }
 
@@ -1521,7 +1531,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
             : edge
         )
       );
-      setGraphDirty(true);
+      markGraphDirty();
     }, "edge");
   }
 
@@ -1551,6 +1561,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       link.click();
     });
   }
+
 
   function placeComponent() {
     if (!selectedDiagram || !selectedPart || !selectedNode || selectedNode.type !== "pidSymbol") return;
@@ -1736,7 +1747,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           : node
       )
     );
-    setGraphDirty(true);
+    markGraphDirty();
   }
   const toolbarParent = selectedNode?.parentNode
     ? nodes.find((node) => node.id === selectedNode.parentNode) ?? null
