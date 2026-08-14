@@ -21,6 +21,7 @@ import {
   serializeShape,
   zoomedViewBox
 } from "./pid/SymbolEditorModal";
+import { sanitizeSvgInner } from "./pid/svgSanitize";
 import {
   PALETTE_SYMBOLS,
   SYMBOL_PORTS,
@@ -274,6 +275,33 @@ describe("importSvgMarkup", () => {
     );
     expect(result.inner).not.toContain("script");
     expect(result.inner).not.toContain("onclick");
+  });
+
+  it("strips nested-SVG and SMIL vectors that bypassed script/onload checks", () => {
+    const result = importSvgMarkup(
+      [
+        '<svg viewBox="0 0 64 40">',
+        '<path d="M2 20 H62" />',
+        '<use href="data:image/svg+xml;base64,PHN2Zz4=" />',
+        '<set attributeName="onload" to="alert(1)"/>',
+        '<style>@import "https://evil.example/x.css"</style>',
+        "</svg>"
+      ].join("")
+    );
+    expect(result.inner).toContain("path");
+    expect(result.inner.toLowerCase()).not.toContain("<use");
+    expect(result.inner.toLowerCase()).not.toContain("<set");
+    expect(result.inner.toLowerCase()).not.toContain("<style");
+    expect(result.inner.toLowerCase()).not.toContain("data:");
+  });
+
+  it("sanitizeSvgInner clears active content for render-time defense", () => {
+    const cleaned = sanitizeSvgInner(
+      '<path d="M0 0 H10" /><image href="data:image/svg+xml,%3Csvg%20onload%3Dalert(1)%3E" />'
+    );
+    expect(cleaned).toContain("path");
+    expect(cleaned.toLowerCase()).not.toContain("<image");
+    expect(cleaned.toLowerCase()).not.toContain("data:");
   });
 
   it("rejects markup with no drawable content", () => {

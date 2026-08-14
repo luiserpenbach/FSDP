@@ -13,6 +13,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as Rea
 import { api } from "../../api";
 import { parseViewBox, type ViewBox } from "../PidSymbols";
 import { EDGE_COLORS } from "./OrthogonalEdge";
+import { sanitizeSvgInner, scrubSvgElement } from "./svgSanitize";
 import type { PidSymbolDef, SymbolPort, SymbolPortSide } from "../../types";
 
 const DEFAULT_VIEWBOX = "0 0 64 40";
@@ -21,6 +22,8 @@ const EXAMPLE_SVG = [
   '<path d="M52 10 L32 20 L52 30 Z" />',
   '<path d="M2 20 H12 M52 20 H62" />'
 ].join("\n");
+
+export { sanitizeSvgInner, scrubSvgElement } from "./svgSanitize";
 
 /** Strip active content and return { viewBox, inner } from raw SVG text. */
 export function importSvgMarkup(raw: string): { viewBox: string; inner: string } {
@@ -35,16 +38,7 @@ export function importSvgMarkup(raw: string): { viewBox: string; inner: string }
   const svg = doc.querySelector("svg");
   if (!svg) throw new Error("No <svg> element found.");
 
-  svg.querySelectorAll("script, foreignObject, iframe, style").forEach((element) => element.remove());
-  doc.querySelectorAll("*").forEach((element) => {
-    for (const attribute of [...element.attributes]) {
-      const name = attribute.name.toLowerCase();
-      const value = attribute.value.toLowerCase();
-      if (name.startsWith("on") || ((name === "href" || name === "xlink:href") && !value.startsWith("#"))) {
-        element.removeAttribute(attribute.name);
-      }
-    }
-  });
+  scrubSvgElement(svg);
 
   let viewBox = svg.getAttribute("viewBox");
   if (!viewBox) {
@@ -275,7 +269,7 @@ export function SymbolEditorModal({
   // window: a center-anchored sub-viewBox shared by all stacked svgs.
   const zoomWindow = zoomedViewBox(viewBox, zoom);
   const zoomViewBox = `${zoomWindow.x} ${zoomWindow.y} ${zoomWindow.width} ${zoomWindow.height}`;
-  const combinedSvg = [draft.svg, ...draft.drawn.map(serializeShape)].filter(Boolean).join("\n");
+  const safeImportedSvg = sanitizeSvgInner(draft.svg);
   const shapeRect = shapeDraft && tool === "rect" ? normalizedRect(shapeDraft.start, shapeDraft.end) : null;
   const shapeR = shapeDraft && tool === "circle" ? circleRadius(shapeDraft.start, shapeDraft.end) : 0;
   // The stroke controls target the selected shape, or the drawing defaults.
@@ -474,7 +468,7 @@ export function SymbolEditorModal({
   }
 
   function addPort(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!combinedSvg) return;
+    if (!safeCombinedSvg) return;
     const coords = previewCoords(event.clientX, event.clientY);
     if (!coords) return;
     setDraft((current) => {
@@ -516,11 +510,16 @@ export function SymbolEditorModal({
   }
 
   async function save() {
-    if (!draft.name.trim() || !combinedSvg) return;
+    if (!draft.name.trim() || !safeCombinedSvg) return;
     setBusy(true);
     setError("");
     try {
-      const body = { name: draft.name.trim(), view_box: draft.viewBox, svg: combinedSvg, ports: draft.ports };
+      const body = {
+        name: draft.name.trim(),
+        view_box: draft.viewBox,
+        svg: safeCombinedSvg,
+        ports: draft.ports
+      };
       if (draft.id) await api.updateSymbol(draft.id, body);
       else await api.createSymbol(body);
       setPendingNew(false);
@@ -716,7 +715,7 @@ export function SymbolEditorModal({
                     strokeDasharray="2 2"
                   />
                 </svg>
-                {combinedSvg ? (
+                {safeImportedSvg || draft.drawn.length ? (
                   <svg
                     className="symbolDrawing"
                     viewBox={zoomViewBox}
@@ -727,7 +726,7 @@ export function SymbolEditorModal({
                     strokeLinejoin="round"
                     preserveAspectRatio="none"
                   >
-                    {draft.svg && <g dangerouslySetInnerHTML={{ __html: draft.svg }} />}
+                    {safeImportedSvg && <g dangerouslySetInnerHTML={{ __html: safeImportedSvg }} />}
                     {draft.drawn.map(renderDrawnShape)}
                   </svg>
                 ) : (
@@ -809,7 +808,7 @@ export function SymbolEditorModal({
               <button type="button" onClick={onClose}>Cancel</button>
               <button
                 className="primary"
-                disabled={busy || !draft.name.trim() || !combinedSvg}
+                disabled={busy || !draft.name.trim() || !safeCombinedSvg}
                 type="button"
                 onClick={() => void save()}
               >
