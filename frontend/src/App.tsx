@@ -425,6 +425,12 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const connectStartRef = useRef<OnConnectStartParams | null>(null);
   const connectCompletedRef = useRef(false);
   const edgeUpdateSucceededRef = useRef(false);
+  // Invalidate in-flight diagram loads when the selection changes so a slower
+  // response cannot overwrite the newly selected diagram's canvas/components.
+  const diagramLoadGeneration = useRef(0);
+  const selectedDiagramIdRef = useRef(selectedDiagramId);
+  selectedDiagramIdRef.current = selectedDiagramId;
+  const busyCountRef = useRef(0);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -494,6 +500,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   useEffect(() => {
     historyRef.current = { past: [], future: [] };
     setHistoryVersion((version) => version + 1);
+    const generation = ++diagramLoadGeneration.current;
     if (!selectedDiagramId) {
       setComponents([]);
       setBomSnapshots([]);
@@ -503,14 +510,19 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setGraphDirty(false);
       return;
     }
+    const diagramId = selectedDiagramId;
     void runAction("Loaded saved diagram.", async () => {
-      const diagram = await api.getDiagram(selectedDiagramId);
+      const diagram = await api.getDiagram(diagramId);
+      if (generation !== diagramLoadGeneration.current) return;
       setDiagramName(diagram.name);
       const graphNodes = sortSectionsFirst((diagram.graph.nodes ?? []).map(normalizeGraphNode));
       setNodes(graphNodes);
       setEdges(fixJunctionEdgeHandles(graphNodes, (diagram.graph.edges ?? []).map(normalizeOrthogonalEdge)));
-      setComponents(await api.listComponents(diagram.id));
+      const nextComponents = await api.listComponents(diagram.id);
+      if (generation !== diagramLoadGeneration.current) return;
+      setComponents(nextComponents);
       const snapshots = await api.listDiagramBoms(diagram.id);
+      if (generation !== diagramLoadGeneration.current) return;
       setBomSnapshots(snapshots);
       setSelectedBomId(snapshots[0]?.id ?? "");
       setGraphDirty(false);
@@ -641,6 +653,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   }, [selectedComponent]);
 
   async function runAction(successMessage: string, action: () => Promise<void>, formKey?: string) {
+    busyCountRef.current += 1;
     setBusy(true);
     setError("");
     if (formKey) setFormErrors((current) => ({ ...current, [formKey]: "" }));
@@ -653,7 +666,8 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       if (formKey) setFormErrors((current) => ({ ...current, [formKey]: detail }));
       setMessage("Action failed.");
     } finally {
-      setBusy(false);
+      busyCountRef.current = Math.max(0, busyCountRef.current - 1);
+      if (busyCountRef.current === 0) setBusy(false);
     }
   }
 
@@ -1435,10 +1449,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function saveGraph() {
     if (!selectedDiagram) return;
+    const diagramId = selectedDiagram.id;
+    const systemId = selectedDiagram.system_id;
+    const payload = graphPayload;
     void runAction("Saved graph.", async () => {
-      await api.updateDiagramGraph(selectedDiagram.id, graphPayload);
+      await api.updateDiagramGraph(diagramId, payload);
+      if (selectedDiagramIdRef.current !== diagramId) return;
       setGraphDirty(false);
-      setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
+      setDiagrams(await api.listDiagrams(systemId));
     }, "diagram");
   }
 
@@ -1523,21 +1541,38 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function placeComponent() {
     if (!selectedDiagram || !selectedPart || !selectedNode || selectedNode.type !== "pidSymbol") return;
+    const diagramId = selectedDiagram.id;
+    const systemId = selectedDiagram.system_id;
+    const part = selectedPart;
+    const node = selectedNode;
+    const tag = componentTag;
+    const snapshotNodes = nodes;
+    const snapshotEdges = edges;
     void runAction("Placed component.", async () => {
       if (graphDirty) {
         throw new Error("Save the diagram first — parts can only be placed on saved nodes.");
       }
-      const component = await api.createComponent(selectedDiagram.id, { tag: componentTag, part_id: selectedPart.id, quantity: 1, properties: { node_external_id: selectedNode.id } });
+      const component = await api.createComponent(diagramId, {
+        tag,
+        part_id: part.id,
+        quantity: 1,
+        properties: { node_external_id: node.id }
+      });
       // Keep the descriptive label; the tag is carried separately so the
       // caption setting can switch between them.
-      const nextNodes = nodes.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, tag: component.tag } } : node));
+      const nextNodes = snapshotNodes.map((entry) =>
+        entry.id === node.id ? { ...entry, data: { ...entry.data, tag: component.tag } } : entry
+      );
+      // Always finish API writes for the diagram that received the part, even if
+      // the user switched selection mid-request; only skip local UI updates.
+      await api.updateDiagramGraph(diagramId, buildGraphPayload(nextNodes, snapshotEdges));
+      const nextComponents = await api.listComponents(diagramId);
+      if (selectedDiagramIdRef.current !== diagramId) return;
       setNodes(nextNodes);
-      await api.updateDiagramGraph(selectedDiagram.id, buildGraphPayload(nextNodes, edges));
-      const nextComponents = await api.listComponents(selectedDiagram.id);
       setComponents(nextComponents);
       setSelectedComponentId(component.id);
-      setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
-      setComponentTag(suggestTag(String(selectedNode.data?.symbolType ?? "component"), nextComponents));
+      setDiagrams(await api.listDiagrams(systemId));
+      setComponentTag(suggestTag(String(node.data?.symbolType ?? "component"), nextComponents));
     }, "component");
   }
 
@@ -1579,9 +1614,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function deleteComponent() {
     if (!selectedDiagram || !selectedComponent || !window.confirm(`Delete component "${selectedComponent.tag}"?`)) return;
+    const diagramId = selectedDiagram.id;
+    const componentId = selectedComponent.id;
     void runAction("Deleted component.", async () => {
-      await api.deleteComponent(selectedComponent.id);
-      const next = await api.listComponents(selectedDiagram.id);
+      await api.deleteComponent(componentId);
+      if (selectedDiagramIdRef.current !== diagramId) return;
+      const next = await api.listComponents(diagramId);
+      if (selectedDiagramIdRef.current !== diagramId) return;
       setComponents(next);
       setSelectedComponentId(next[0]?.id || "");
     });
