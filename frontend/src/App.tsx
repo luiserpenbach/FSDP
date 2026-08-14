@@ -50,6 +50,7 @@ import {
   type ContextMenuState,
   type PlacementTool
 } from "./components/pid/overlays";
+import { removeNodesKeepingSectionContents } from "./components/pid/graphEdits";
 import { EditorSettingsContext, type LabelMode } from "./components/pid/settings";
 import { SymbolEditorModal } from "./components/pid/SymbolEditorModal";
 import { PanelResizer, useStoredWidth } from "./components/resizable";
@@ -424,6 +425,24 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const connectStartRef = useRef<OnConnectStartParams | null>(null);
   const connectCompletedRef = useRef(false);
   const edgeUpdateSucceededRef = useRef(false);
+  // Invalidate in-flight project/system list responses when selection changes so a
+  // slower prior request cannot rewrite systems/diagrams (and selected ids) for the
+  // wrong parent — which would then wipe the open canvas via the diagram load effect.
+  const projectLoadGeneration = useRef(0);
+  const systemLoadGeneration = useRef(0);
+  // Invalidate in-flight diagram loads when the selection changes so a slower
+  // response cannot overwrite the newly selected diagram's canvas/components.
+  const diagramLoadGeneration = useRef(0);
+  const selectedDiagramIdRef = useRef(selectedDiagramId);
+  selectedDiagramIdRef.current = selectedDiagramId;
+  const busyCountRef = useRef(0);
+  // Bumped on every local edit so an in-flight save cannot clear dirty after
+  // newer canvas changes that were not included in the saved payload.
+  const graphDirtyGeneration = useRef(0);
+  const markGraphDirty = useCallback(() => {
+    graphDirtyGeneration.current += 1;
+    setGraphDirty(true);
+  }, []);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -458,17 +477,21 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   useEffect(() => {
     if (!selectedProjectId) {
+      projectLoadGeneration.current += 1;
       setSystems([]);
       setRequirements([]);
       setProjectBoms([]);
       return;
     }
+    const projectId = selectedProjectId;
+    const generation = ++projectLoadGeneration.current;
     void runAction("Loaded project details.", async () => {
       const [nextSystems, nextRequirements, nextProjectBoms] = await Promise.all([
-        api.listSystems(selectedProjectId),
-        api.listRequirements(selectedProjectId),
-        api.listProjectBoms(selectedProjectId)
+        api.listSystems(projectId),
+        api.listRequirements(projectId),
+        api.listProjectBoms(projectId)
       ]);
+      if (generation !== projectLoadGeneration.current) return;
       setSystems(nextSystems);
       setRequirements(nextRequirements);
       setProjectBoms(nextProjectBoms);
@@ -479,12 +502,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   useEffect(() => {
     if (!selectedSystemId) {
+      systemLoadGeneration.current += 1;
       setDiagrams([]);
       setSelectedDiagramId("");
       return;
     }
+    const systemId = selectedSystemId;
+    const generation = ++systemLoadGeneration.current;
     void runAction("Loaded system diagrams.", async () => {
-      const next = await api.listDiagrams(selectedSystemId);
+      const next = await api.listDiagrams(systemId);
+      if (generation !== systemLoadGeneration.current) return;
       setDiagrams(next);
       setSelectedDiagramId((current) => (next.some((diagram) => diagram.id === current) ? current : next[0]?.id || ""));
     });
@@ -493,6 +520,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   useEffect(() => {
     historyRef.current = { past: [], future: [] };
     setHistoryVersion((version) => version + 1);
+    const generation = ++diagramLoadGeneration.current;
     if (!selectedDiagramId) {
       setComponents([]);
       setBomSnapshots([]);
@@ -502,14 +530,19 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setGraphDirty(false);
       return;
     }
+    const diagramId = selectedDiagramId;
     void runAction("Loaded saved diagram.", async () => {
-      const diagram = await api.getDiagram(selectedDiagramId);
+      const diagram = await api.getDiagram(diagramId);
+      if (generation !== diagramLoadGeneration.current) return;
       setDiagramName(diagram.name);
       const graphNodes = sortSectionsFirst((diagram.graph.nodes ?? []).map(normalizeGraphNode));
       setNodes(graphNodes);
       setEdges(fixJunctionEdgeHandles(graphNodes, (diagram.graph.edges ?? []).map(normalizeOrthogonalEdge)));
-      setComponents(await api.listComponents(diagram.id));
+      const nextComponents = await api.listComponents(diagram.id);
+      if (generation !== diagramLoadGeneration.current) return;
+      setComponents(nextComponents);
       const snapshots = await api.listDiagramBoms(diagram.id);
+      if (generation !== diagramLoadGeneration.current) return;
       setBomSnapshots(snapshots);
       setSelectedBomId(snapshots[0]?.id ?? "");
       setGraphDirty(false);
@@ -640,6 +673,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   }, [selectedComponent]);
 
   async function runAction(successMessage: string, action: () => Promise<void>, formKey?: string) {
+    busyCountRef.current += 1;
     setBusy(true);
     setError("");
     if (formKey) setFormErrors((current) => ({ ...current, [formKey]: "" }));
@@ -652,7 +686,8 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       if (formKey) setFormErrors((current) => ({ ...current, [formKey]: detail }));
       setMessage("Action failed.");
     } finally {
-      setBusy(false);
+      busyCountRef.current = Math.max(0, busyCountRef.current - 1);
+      if (busyCountRef.current === 0) setBusy(false);
     }
   }
 
@@ -671,9 +706,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     history.future.push({ nodes: nodesRef.current, edges: edgesRef.current });
     setNodes(previous.nodes);
     setEdges(previous.edges);
-    setGraphDirty(true);
+    markGraphDirty();
     setHistoryVersion((version) => version + 1);
-  }, [setEdges, setNodes]);
+  }, [markGraphDirty, setEdges, setNodes]);
 
   const redo = useCallback(() => {
     const history = historyRef.current;
@@ -682,39 +717,37 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     history.past.push({ nodes: nodesRef.current, edges: edgesRef.current });
     setNodes(next.nodes);
     setEdges(next.edges);
-    setGraphDirty(true);
+    markGraphDirty();
     setHistoryVersion((version) => version + 1);
-  }, [setEdges, setNodes]);
-
-  const markDirty = useCallback(() => setGraphDirty(true), []);
+  }, [markGraphDirty, setEdges, setNodes]);
 
   const nodeTypes = useMemo(
     () => ({
       pidSymbol: (props: NodeProps<CanvasNodeData>) => (
         <PidSymbolNode
           {...(props as unknown as Parameters<typeof PidSymbolNode>[0])}
-          onDirty={markDirty}
+          onDirty={markGraphDirty}
           onHistory={recordHistory}
         />
       ),
       pidSection: (props: NodeProps<CanvasNodeData>) => (
         <SectionNode
           {...(props as unknown as Parameters<typeof SectionNode>[0])}
-          onDirty={markDirty}
+          onDirty={markGraphDirty}
           onHistory={recordHistory}
         />
       ),
       pidText: (props: NodeProps<CanvasNodeData>) => (
         <TextNode
           {...(props as unknown as Parameters<typeof TextNode>[0])}
-          onDirty={markDirty}
+          onDirty={markGraphDirty}
           onHistory={recordHistory}
         />
       ),
       pidComment: (props: NodeProps<CanvasNodeData>) => (
         <CommentNode
           {...(props as unknown as Parameters<typeof CommentNode>[0])}
-          onDirty={markDirty}
+          onDirty={markGraphDirty}
           onHistory={recordHistory}
         />
       ),
@@ -722,15 +755,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         <JunctionNode {...(props as unknown as Parameters<typeof JunctionNode>[0])} />
       )
     }),
-    [markDirty, recordHistory]
+    [markGraphDirty, recordHistory]
   );
   const edgeTypes = useMemo(
     () => ({
       orthogonal: (props: EdgeProps<OrthogonalEdgeData>) => (
-        <OrthogonalEdge {...props} onDirty={markDirty} onHistory={recordHistory} gridSize={gridSize} />
+        <OrthogonalEdge {...props} onDirty={markGraphDirty} onHistory={recordHistory} gridSize={gridSize} />
       )
     }),
-    [markDirty, recordHistory, gridSize]
+    [markGraphDirty, recordHistory, gridSize]
   );
 
   const customSymbolsById = useMemo(
@@ -836,9 +869,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSelectedNodeId(node.id);
       setSelectedEdgeId("");
       if (tool.kind === "comment") setShowComments(true);
-      setGraphDirty(true);
+      markGraphDirty();
     },
-    [customSymbolsById, gridSize, recordHistory, setNodes, user.name]
+    [customSymbolsById, gridSize, markGraphDirty, recordHistory, setNodes, user.name]
   );
 
   function changeGridSize(next: number) {
@@ -854,29 +887,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const deleteNodeById = useCallback(
     (id: string) => {
       recordHistory();
-      setNodes((current) => {
-        const target = current.find((node) => node.id === id);
-        if (!target) return current;
-        return current
-          .filter((node) => node.id !== id)
-          .map((node) =>
-            node.parentNode === id
-              ? {
-                  ...node,
-                  parentNode: undefined,
-                  position: {
-                    x: node.position.x + target.position.x,
-                    y: node.position.y + target.position.y
-                  }
-                }
-              : node
-          );
-      });
-      setEdges((current) => current.filter((edge) => edge.source !== id && edge.target !== id));
+      const next = removeNodesKeepingSectionContents(nodesRef.current, edgesRef.current, [id]);
+      setNodes(next.nodes);
+      setEdges(next.edges);
       setSelectedNodeId((current) => (current === id ? "" : current));
-      setGraphDirty(true);
+      markGraphDirty();
     },
-    [recordHistory, setEdges, setNodes]
+    [markGraphDirty, recordHistory, setEdges, setNodes]
   );
 
   const deleteEdgeById = useCallback(
@@ -884,10 +901,31 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       recordHistory();
       setEdges((current) => current.filter((edge) => edge.id !== id));
       setSelectedEdgeId((current) => (current === id ? "" : current));
-      setGraphDirty(true);
+      markGraphDirty();
     },
-    [recordHistory, setEdges]
+    [markGraphDirty, recordHistory, setEdges]
   );
+
+  // Own Delete/Backspace handling so sections keep their contents. React Flow's
+  // default deleteKeyCode cascades through parentNode and wipes every child.
+  const deleteSelection = useCallback(() => {
+    const selectedNodeIds = nodesRef.current.filter((node) => node.selected).map((node) => node.id);
+    const selectedEdgeIds = edgesRef.current.filter((edge) => edge.selected).map((edge) => edge.id);
+    if (!selectedNodeIds.length && !selectedEdgeIds.length) return false;
+    recordHistory();
+    const next = removeNodesKeepingSectionContents(
+      nodesRef.current,
+      edgesRef.current,
+      selectedNodeIds,
+      selectedEdgeIds
+    );
+    setNodes(next.nodes);
+    setEdges(next.edges);
+    setSelectedNodeId("");
+    setSelectedEdgeId("");
+    markGraphDirty();
+    return true;
+  }, [recordHistory, setEdges, setNodes]);
 
   const rotateNodeById = useCallback(
     (id: string) => {
@@ -899,7 +937,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
             : node
         )
       );
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setNodes]
   );
@@ -920,7 +958,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         sortSectionsFirst([...current.map((entry) => ({ ...entry, selected: false })), copy])
       );
       setSelectedNodeId(copy.id);
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setNodes]
   );
@@ -931,7 +969,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setNodes((current) =>
         current.map((node) => (node.id === id ? { ...node, data: { ...node.data, ...patch } } : node))
       );
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setNodes]
   );
@@ -959,7 +997,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           };
         })
       );
-      setGraphDirty(true);
+      markGraphDirty();
     },
     [recordHistory, setEdges]
   );
@@ -1089,7 +1127,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         return;
       }
       const target = event.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      if (
+        target &&
+        (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable)
+      ) {
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (deleteSelection()) event.preventDefault();
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) redo();
@@ -1102,7 +1149,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     }
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [redo, undo]);
+  }, [deleteSelection, redo, undo]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -1111,11 +1158,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         recordHistory();
       }
       if (changes.some((change) => change.type === "position" || change.type === "add" || change.type === "remove")) {
-        setGraphDirty(true);
+        markGraphDirty();
       }
       onNodesChangeBase(changes);
     },
-    [onNodesChangeBase, recordHistory]
+    [markGraphDirty, onNodesChangeBase, recordHistory]
   );
 
   const onEdgesChange = useCallback(
@@ -1124,17 +1171,17 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         recordHistory();
       }
       if (changes.some((change) => change.type === "add" || change.type === "remove")) {
-        setGraphDirty(true);
+        markGraphDirty();
       }
       onEdgesChangeBase(changes);
     },
-    [onEdgesChangeBase, recordHistory]
+    [markGraphDirty, onEdgesChangeBase, recordHistory]
   );
 
   function onConnect(connection: Connection) {
     connectCompletedRef.current = true;
     recordHistory();
-    setGraphDirty(true);
+    markGraphDirty();
     setEdges((current) =>
       addEdge(
         {
@@ -1245,7 +1292,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         markerEnd: edgeMarker(undefined)
       }
     ]);
-    setGraphDirty(true);
+    markGraphDirty();
     setMessage("Lines joined with a junction.");
   }
 
@@ -1261,7 +1308,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setEdges((current) =>
       updateEdge(oldEdge, withJunctionHandles(connection, nodesRef.current), current, { shouldReplaceId: false })
     );
-    setGraphDirty(true);
+    markGraphDirty();
   }
 
   function handleEdgeUpdateEnd(_event: unknown, edge: Edge<OrthogonalEdgeData>) {
@@ -1269,7 +1316,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       recordHistory();
       setEdges((current) => current.filter((entry) => entry.id !== edge.id));
       setSelectedEdgeId((current) => (current === edge.id ? "" : current));
-      setGraphDirty(true);
+      markGraphDirty();
       setMessage("Line detached.");
     }
     edgeUpdateSucceededRef.current = true;
@@ -1303,10 +1350,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function submitProject(event: FormEvent) {
     event.preventDefault();
+    // Creating a project rewrites the selected project/system/diagram chain and
+    // unloads the open canvas. Ask before discarding unsaved P&ID edits.
+    if (!confirmDiscardUnsaved()) return;
     void runAction("Created project.", async () => {
       const project = await api.createProject(projectForm);
       setProjects(await api.listProjects());
       setSelectedProjectId(project.id);
+      setSelectedSystemId("");
+      setSelectedDiagramId("");
+      setImpact(null);
     }, "project");
   }
 
@@ -1331,10 +1384,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   function submitSystem(event: FormEvent) {
     event.preventDefault();
     if (!selectedProject) return;
+    // Creating a system switches the open system and clears the diagram canvas.
+    // Ask before discarding unsaved P&ID edits.
+    if (!confirmDiscardUnsaved()) return;
     void runAction("Created system.", async () => {
       const system = await api.createSystem(selectedProject.id, systemForm);
       setSystems(await api.listSystems(selectedProject.id));
       setSelectedSystemId(system.id);
+      setSelectedDiagramId("");
     }, "system");
   }
 
@@ -1407,9 +1464,12 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   function submitDiagram(event: FormEvent) {
     event.preventDefault();
     if (!selectedSystem) return;
+    // Creating a diagram switches the open canvas onto it. Refuse to silently
+    // discard unsaved edits from the current diagram, and never copy the open
+    // canvas into the new one — the API creates an empty graph by design.
+    if (!confirmDiscardUnsaved()) return;
     void runAction("Created diagram.", async () => {
       const created = await api.createDiagram(selectedSystem.id, { name: diagramName });
-      await api.updateDiagramGraph(created.id, graphPayload);
       setDiagrams(await api.listDiagrams(selectedSystem.id));
       setSelectedDiagramId(created.id);
     }, "diagram");
@@ -1417,10 +1477,19 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function saveGraph() {
     if (!selectedDiagram) return;
+    const diagramId = selectedDiagram.id;
+    const systemId = selectedDiagram.system_id;
+    const payload = graphPayload;
+    const generationAtSave = graphDirtyGeneration.current;
     void runAction("Saved graph.", async () => {
-      await api.updateDiagramGraph(selectedDiagram.id, graphPayload);
-      setGraphDirty(false);
-      setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
+      await api.updateDiagramGraph(diagramId, payload);
+      if (selectedDiagramIdRef.current !== diagramId) return;
+      // Mid-save canvas edits bump the generation; keep dirty so discard
+      // guards and the badge still protect those unsaved changes.
+      if (graphDirtyGeneration.current === generationAtSave) {
+        setGraphDirty(false);
+      }
+      setDiagrams(await api.listDiagrams(systemId));
     }, "diagram");
   }
 
@@ -1450,7 +1519,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setNodes((current) =>
       current.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, label } } : node))
     );
-    setGraphDirty(true);
+    markGraphDirty();
     setMessage("Renamed node — save the graph to persist.");
   }
 
@@ -1472,7 +1541,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
             : edge
         )
       );
-      setGraphDirty(true);
+      markGraphDirty();
     }, "edge");
   }
 
@@ -1503,23 +1572,41 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     });
   }
 
+
   function placeComponent() {
     if (!selectedDiagram || !selectedPart || !selectedNode || selectedNode.type !== "pidSymbol") return;
+    const diagramId = selectedDiagram.id;
+    const systemId = selectedDiagram.system_id;
+    const part = selectedPart;
+    const node = selectedNode;
+    const tag = componentTag;
+    const snapshotNodes = nodes;
+    const snapshotEdges = edges;
     void runAction("Placed component.", async () => {
       if (graphDirty) {
         throw new Error("Save the diagram first — parts can only be placed on saved nodes.");
       }
-      const component = await api.createComponent(selectedDiagram.id, { tag: componentTag, part_id: selectedPart.id, quantity: 1, properties: { node_external_id: selectedNode.id } });
+      const component = await api.createComponent(diagramId, {
+        tag,
+        part_id: part.id,
+        quantity: 1,
+        properties: { node_external_id: node.id }
+      });
       // Keep the descriptive label; the tag is carried separately so the
       // caption setting can switch between them.
-      const nextNodes = nodes.map((node) => (node.id === selectedNode.id ? { ...node, data: { ...node.data, tag: component.tag } } : node));
+      const nextNodes = snapshotNodes.map((entry) =>
+        entry.id === node.id ? { ...entry, data: { ...entry.data, tag: component.tag } } : entry
+      );
+      // Always finish API writes for the diagram that received the part, even if
+      // the user switched selection mid-request; only skip local UI updates.
+      await api.updateDiagramGraph(diagramId, buildGraphPayload(nextNodes, snapshotEdges));
+      const nextComponents = await api.listComponents(diagramId);
+      if (selectedDiagramIdRef.current !== diagramId) return;
       setNodes(nextNodes);
-      await api.updateDiagramGraph(selectedDiagram.id, buildGraphPayload(nextNodes, edges));
-      const nextComponents = await api.listComponents(selectedDiagram.id);
       setComponents(nextComponents);
       setSelectedComponentId(component.id);
-      setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
-      setComponentTag(suggestTag(String(selectedNode.data?.symbolType ?? "component"), nextComponents));
+      setDiagrams(await api.listDiagrams(systemId));
+      setComponentTag(suggestTag(String(node.data?.symbolType ?? "component"), nextComponents));
     }, "component");
   }
 
@@ -1561,9 +1648,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function deleteComponent() {
     if (!selectedDiagram || !selectedComponent || !window.confirm(`Delete component "${selectedComponent.tag}"?`)) return;
+    const diagramId = selectedDiagram.id;
+    const componentId = selectedComponent.id;
     void runAction("Deleted component.", async () => {
-      await api.deleteComponent(selectedComponent.id);
-      const next = await api.listComponents(selectedDiagram.id);
+      await api.deleteComponent(componentId);
+      if (selectedDiagramIdRef.current !== diagramId) return;
+      const next = await api.listComponents(diagramId);
+      if (selectedDiagramIdRef.current !== diagramId) return;
       setComponents(next);
       setSelectedComponentId(next[0]?.id || "");
     });
@@ -1666,7 +1757,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           : node
       )
     );
-    setGraphDirty(true);
+    markGraphDirty();
   }
   const toolbarParent = selectedNode?.parentNode
     ? nodes.find((node) => node.id === selectedNode.parentNode) ?? null
@@ -1839,7 +1930,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                       onNodeDrag={handleNodeDrag}
                       onNodeDragStop={handleNodeDragStop}
                       elevateNodesOnSelect={false}
-                      deleteKeyCode={["Backspace", "Delete"]}
+                      // Handled in window keydown via deleteSelection so
+                      // deleting a section does not cascade to its children.
+                      deleteKeyCode={null}
                       // Left-drag rubber-bands a selection; panning moves to
                       // the middle and right mouse buttons.
                       selectionOnDrag
