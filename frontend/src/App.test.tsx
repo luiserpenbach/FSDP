@@ -213,6 +213,66 @@ async function placeSymbolFromPalette(label: string) {
   fireEvent.click(pane!, { clientX: 240, clientY: 240 });
 }
 
+function mockWorkspaceFetch(overrides?: {
+  onCreateProject?: () => void;
+  onCreateSystem?: () => void;
+}) {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const method = (init?.method ?? "GET").toUpperCase();
+    const path = new URL(url, "http://localhost").pathname;
+
+    if (path === "/auth/me") return jsonResponse(TEST_USER);
+    if (path === "/projects" && method === "GET") return jsonResponse([PROJECT]);
+    if (path === "/projects" && method === "POST") {
+      overrides?.onCreateProject?.();
+      return jsonResponse({ ...PROJECT, id: "p2", name: "New Project" }, 201);
+    }
+    if (path === "/projects/p1/systems" && method === "GET") return jsonResponse([SYSTEM]);
+    if (path === "/projects/p1/systems" && method === "POST") {
+      overrides?.onCreateSystem?.();
+      return jsonResponse({ ...SYSTEM, id: "s2", name: "New System" }, 201);
+    }
+    if (path === "/projects/p1/requirements") return jsonResponse([]);
+    if (path === "/projects/p1/bom") return jsonResponse([]);
+    if (path === "/projects/p2/systems") return jsonResponse([]);
+    if (path === "/projects/p2/requirements") return jsonResponse([]);
+    if (path === "/projects/p2/bom") return jsonResponse([]);
+    if (path === "/parts" && method === "GET") return jsonResponse([]);
+    if (path === "/changes") return jsonResponse([]);
+    if (path === "/systems/s1/diagrams" && method === "GET") return jsonResponse([DIAGRAM]);
+    if (path === "/systems/s2/diagrams" && method === "GET") return jsonResponse([]);
+    if (path === "/diagrams/d1" && method === "GET") return jsonResponse(DIAGRAM);
+    if (path === "/diagrams/d1/components") return jsonResponse([]);
+    if (path === "/diagrams/d1/bom") return jsonResponse([]);
+    return jsonResponse({ detail: `unmocked ${method} ${path}` }, 500);
+  });
+}
+
+async function openDirtyDiagram() {
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+  await waitFor(() => {
+    const projectSelects = screen.getAllByLabelText("Project");
+    expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
+  });
+
+  fireEvent.click(
+    screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
+  );
+  expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+  await waitFor(() => {
+    expect(screen.getByLabelText("Open diagram")).toHaveValue("d1");
+  });
+  await waitFor(() => {
+    expect(screen.getByText("Valve A")).toBeInTheDocument();
+  });
+
+  await placeSymbolFromPalette("Check valve");
+  expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+}
+
 describe("App", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -563,5 +623,61 @@ describe("App", () => {
     });
     expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
     expect(screen.queryByText("Saved", { selector: ".cleanBadge" })).not.toBeInTheDocument();
+  });
+
+  it("asks before create project discards unsaved diagram edits", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    let createdProject = false;
+    vi.stubGlobal(
+      "fetch",
+      mockWorkspaceFetch({
+        onCreateProject: () => {
+          createdProject = true;
+        }
+      })
+    );
+
+    await openDirtyDiagram();
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/systems"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Systems" })).toBeInTheDocument();
+
+    const nameInputs = screen.getAllByLabelText("Name");
+    fireEvent.change(nameInputs[0]!, { target: { value: "New Project" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create project" }));
+
+    expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Discard them?");
+    expect(createdProject).toBe(false);
+    confirmSpy.mockRestore();
+  });
+
+  it("asks before create system discards unsaved diagram edits", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    let createdSystem = false;
+    vi.stubGlobal(
+      "fetch",
+      mockWorkspaceFetch({
+        onCreateSystem: () => {
+          createdSystem = true;
+        }
+      })
+    );
+
+    await openDirtyDiagram();
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/systems"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Systems" })).toBeInTheDocument();
+
+    const nameInputs = screen.getAllByLabelText("Name");
+    fireEvent.change(nameInputs[1]!, { target: { value: "New System" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create system" }));
+
+    expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Discard them?");
+    expect(createdSystem).toBe(false);
+    confirmSpy.mockRestore();
   });
 });
