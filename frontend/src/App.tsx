@@ -1407,9 +1407,12 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   function submitDiagram(event: FormEvent) {
     event.preventDefault();
     if (!selectedSystem) return;
+    // Creating a diagram switches the open canvas onto it. Refuse to silently
+    // discard unsaved edits from the current diagram, and never copy the open
+    // canvas into the new one — the API creates an empty graph by design.
+    if (!confirmDiscardUnsaved()) return;
     void runAction("Created diagram.", async () => {
       const created = await api.createDiagram(selectedSystem.id, { name: diagramName });
-      await api.updateDiagramGraph(created.id, graphPayload);
       setDiagrams(await api.listDiagrams(selectedSystem.id));
       setSelectedDiagramId(created.id);
     }, "diagram");
