@@ -893,7 +893,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSelectedNodeId((current) => (current === id ? "" : current));
       markGraphDirty();
     },
-    [recordHistory, setEdges, setNodes]
+    [markGraphDirty, recordHistory, setEdges, setNodes]
   );
 
   const deleteEdgeById = useCallback(
@@ -903,7 +903,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSelectedEdgeId((current) => (current === id ? "" : current));
       markGraphDirty();
     },
-    [recordHistory, setEdges]
+    [markGraphDirty, recordHistory, setEdges]
   );
 
   // Own Delete/Backspace handling so sections keep their contents. React Flow's
