@@ -425,6 +425,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const connectStartRef = useRef<OnConnectStartParams | null>(null);
   const connectCompletedRef = useRef(false);
   const edgeUpdateSucceededRef = useRef(false);
+  // Invalidate in-flight project/system list responses when selection changes so a
+  // slower prior request cannot rewrite systems/diagrams (and selected ids) for the
+  // wrong parent — which would then wipe the open canvas via the diagram load effect.
+  const projectLoadGeneration = useRef(0);
+  const systemLoadGeneration = useRef(0);
   // Invalidate in-flight diagram loads when the selection changes so a slower
   // response cannot overwrite the newly selected diagram's canvas/components.
   const diagramLoadGeneration = useRef(0);
@@ -465,17 +470,21 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   useEffect(() => {
     if (!selectedProjectId) {
+      projectLoadGeneration.current += 1;
       setSystems([]);
       setRequirements([]);
       setProjectBoms([]);
       return;
     }
+    const projectId = selectedProjectId;
+    const generation = ++projectLoadGeneration.current;
     void runAction("Loaded project details.", async () => {
       const [nextSystems, nextRequirements, nextProjectBoms] = await Promise.all([
-        api.listSystems(selectedProjectId),
-        api.listRequirements(selectedProjectId),
-        api.listProjectBoms(selectedProjectId)
+        api.listSystems(projectId),
+        api.listRequirements(projectId),
+        api.listProjectBoms(projectId)
       ]);
+      if (generation !== projectLoadGeneration.current) return;
       setSystems(nextSystems);
       setRequirements(nextRequirements);
       setProjectBoms(nextProjectBoms);
@@ -486,12 +495,16 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   useEffect(() => {
     if (!selectedSystemId) {
+      systemLoadGeneration.current += 1;
       setDiagrams([]);
       setSelectedDiagramId("");
       return;
     }
+    const systemId = selectedSystemId;
+    const generation = ++systemLoadGeneration.current;
     void runAction("Loaded system diagrams.", async () => {
-      const next = await api.listDiagrams(selectedSystemId);
+      const next = await api.listDiagrams(systemId);
+      if (generation !== systemLoadGeneration.current) return;
       setDiagrams(next);
       setSelectedDiagramId((current) => (next.some((diagram) => diagram.id === current) ? current : next[0]?.id || ""));
     });
