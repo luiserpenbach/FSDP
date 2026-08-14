@@ -197,20 +197,36 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function findPaletteCell(text: string) {
+function findPaletteCell(label: string) {
   return screen.getAllByRole("button").find(
-    (button) => button.classList.contains("paletteCell") && button.textContent?.includes(text)
+    (button) =>
+      button.classList.contains("paletteCell") &&
+      button.querySelector(".paletteCellName")?.textContent === label
   );
+}
+
+async function clickCanvasToPlace(x = 400, y = 300) {
+  const pane = await waitFor(() => document.querySelector(".react-flow__pane") as HTMLElement);
+  fireEvent.click(pane, { clientX: x, clientY: y });
 }
 
 async function placeSymbolFromPalette(label: string) {
   fireEvent.click(screen.getByRole("button", { name: "Symbols" }));
-  const paletteButton = findPaletteCell(label);
-  expect(paletteButton).toBeTruthy();
-  fireEvent.click(paletteButton!);
-  const pane = document.querySelector(".react-flow__pane");
-  expect(pane).toBeTruthy();
-  fireEvent.click(pane!, { clientX: 240, clientY: 240 });
+  const paletteButton = await waitFor(() => {
+    const match = findPaletteCell(label);
+    if (!match) throw new Error(`Palette cell not found: ${label}`);
+    return match;
+  });
+  fireEvent.click(paletteButton);
+  await clickCanvasToPlace();
+}
+
+async function makeDiagramDirty() {
+  const node = await waitFor(() => document.querySelector(".react-flow__node") as HTMLElement);
+  fireEvent.click(node);
+  const rotateButton = await screen.findByTitle("Rotate symbol 90 degrees");
+  fireEvent.click(rotateButton);
+  await screen.findByText("Unsaved changes");
 }
 
 function mockWorkspaceFetch(overrides?: {
@@ -269,8 +285,7 @@ async function openDirtyDiagram() {
     expect(screen.getByText("Valve A")).toBeInTheDocument();
   });
 
-  await placeSymbolFromPalette("Check valve");
-  expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+  await makeDiagramDirty();
 }
 
 describe("App", () => {
@@ -587,8 +602,7 @@ describe("App", () => {
       expect(screen.getByText("Valve A")).toBeInTheDocument();
     });
 
-    await placeSymbolFromPalette("Valve");
-    expect(await screen.findByText("Unsaved changes")).toBeInTheDocument();
+    await makeDiagramDirty();
 
     fireEvent.click(screen.getByRole("button", { name: "Save graph" }));
     await waitFor(() => {
@@ -598,7 +612,9 @@ describe("App", () => {
       })).toBe(true);
     });
 
-    await placeSymbolFromPalette("Check valve");
+    // Edit again while the save request is still outstanding. The save response
+    // must not clear dirty — those mid-save edits were not persisted.
+    fireEvent.click(screen.getByTitle("Rotate symbol 90 degrees"));
     expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
 
     resolveGraphSave({
