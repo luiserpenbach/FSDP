@@ -183,6 +183,79 @@ def test_duplicate_component_tags_rejected_per_diagram(client: TestClient) -> No
     assert other.status_code == 201
 
 
+# --- B12: at most one component may bind to a given diagram node ---
+
+
+def test_duplicate_component_node_binding_rejected(client: TestClient) -> None:
+    _, _, diagram = make_diagram(client)
+    client.put(f"/diagrams/{diagram['id']}/graph", json=graph_payload("valve-1"))
+    part = make_part(client, "B12-PART")
+
+    first = client.post(
+        f"/diagrams/{diagram['id']}/components",
+        json={"tag": "V-1", "part_id": part["id"], "properties": {"node_external_id": "valve-1"}},
+    )
+    duplicate = client.post(
+        f"/diagrams/{diagram['id']}/components",
+        json={"tag": "V-2", "part_id": part["id"], "properties": {"node_external_id": "valve-1"}},
+    )
+
+    assert first.status_code == 201
+    assert first.json()["node_id"] is not None
+    assert duplicate.status_code == 409
+    assert "already has a component" in duplicate.json()["detail"]
+
+    bom = client.post(f"/diagrams/{diagram['id']}/bom").json()
+    assert bom["rows"][0]["quantity"] == 1
+    assert bom["rows"][0]["component_tags"] == ["V-1"]
+
+
+def test_update_cannot_steal_another_components_node(client: TestClient) -> None:
+    _, _, diagram = make_diagram(client)
+    client.put(f"/diagrams/{diagram['id']}/graph", json=graph_payload("valve-1", "valve-2"))
+    part = make_part(client, "B12-STEAL")
+    first = client.post(
+        f"/diagrams/{diagram['id']}/components",
+        json={"tag": "V-1", "part_id": part["id"], "properties": {"node_external_id": "valve-1"}},
+    ).json()
+    second = client.post(
+        f"/diagrams/{diagram['id']}/components",
+        json={"tag": "V-2", "part_id": part["id"], "properties": {"node_external_id": "valve-2"}},
+    ).json()
+
+    stolen = client.put(f"/components/{second['id']}", json={"node_id": first["node_id"]})
+    same = client.put(f"/components/{first['id']}", json={"node_id": first["node_id"]})
+
+    assert stolen.status_code == 409
+    assert same.status_code == 200
+
+
+def test_graph_rebind_does_not_double_bind_shared_node_external_id(client: TestClient) -> None:
+    _, _, diagram = make_diagram(client)
+    client.put(f"/diagrams/{diagram['id']}/graph", json=graph_payload("valve-1"))
+    part = make_part(client, "B12-REBIND")
+    first = client.post(
+        f"/diagrams/{diagram['id']}/components",
+        json={"tag": "V-1", "part_id": part["id"], "properties": {"node_external_id": "valve-1"}},
+    ).json()
+    # Second component claims the same node via properties but stays unbound
+    # (create would now 409; seed an unbound duplicate the way old data can look).
+    unbound = client.post(
+        f"/diagrams/{diagram['id']}/components",
+        json={"tag": "V-2", "part_id": part["id"]},
+    ).json()
+    client.put(
+        f"/components/{unbound['id']}",
+        json={"properties": {"node_external_id": "valve-1"}, "node_id": None},
+    )
+
+    client.put(f"/diagrams/{diagram['id']}/graph", json=graph_payload("valve-1"))
+    components = {c["tag"]: c for c in client.get(f"/diagrams/{diagram['id']}/components").json()}
+
+    assert components["V-1"]["node_id"] == first["node_id"]
+    assert components["V-2"]["node_id"] is None
+
+
 # --- B6: trace links must reference real objects and not duplicate ---
 
 
