@@ -102,6 +102,23 @@ def apply_updates(item, payload) -> None:
             setattr(item, field, value)
 
 
+def ensure_node_unbound(
+    db: Session,
+    node_id: str,
+    *,
+    exclude_component_id: str | None = None,
+) -> None:
+    """Reject binding a second component to the same diagram node."""
+    query = select(ComponentInstance).where(ComponentInstance.node_id == node_id)
+    if exclude_component_id is not None:
+        query = query.where(ComponentInstance.id != exclude_component_id)
+    if db.scalar(query) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Diagram node already has a component bound",
+        )
+
+
 def normalized_name(name: str) -> str:
     return name.strip().lower()
 
@@ -444,20 +461,23 @@ def update_diagram_graph(
 
     # Re-bind components that lost their node link (e.g. data severed by the
     # previous delete-and-recreate save behavior) when the node still exists.
+    # Only one component may own a given node (uq_component_node).
     nodes_by_external_id = {
         node.external_id: node
         for node in db.scalars(select(DiagramNode).where(DiagramNode.diagram_id == diagram_id))
     }
-    components = db.scalars(
-        select(ComponentInstance).where(ComponentInstance.diagram_id == diagram_id)
+    components = list(
+        db.scalars(select(ComponentInstance).where(ComponentInstance.diagram_id == diagram_id))
     )
+    occupied_node_ids = {component.node_id for component in components if component.node_id}
     for component in components:
         if component.node_id is not None:
             continue
         external_id = (component.properties or {}).get("node_external_id")
         node = nodes_by_external_id.get(external_id) if external_id else None
-        if node is not None:
+        if node is not None and node.id not in occupied_node_ids:
             component.node_id = node.id
+            occupied_node_ids.add(node.id)
 
     record_change(
         db, "diagram", diagram.id, "updated", f"Updated graph for {diagram.name}", actor=user.email
@@ -685,6 +705,7 @@ def create_component(
         node = require_model(db, DiagramNode, data["node_id"])
         if node.diagram_id != diagram_id:
             raise HTTPException(status_code=400, detail="Component node must belong to diagram")
+        ensure_node_unbound(db, data["node_id"])
 
     component = ComponentInstance(diagram_id=diagram_id, **data)
     db.add(component)
@@ -732,6 +753,7 @@ def update_component(
         node = require_model(db, DiagramNode, payload.node_id)
         if node.diagram_id != component.diagram_id:
             raise HTTPException(status_code=400, detail="Component node must belong to diagram")
+        ensure_node_unbound(db, payload.node_id, exclude_component_id=component_id)
 
     apply_updates(component, payload)
     record_change(
