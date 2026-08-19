@@ -50,7 +50,7 @@ import {
   type ContextMenuState,
   type PlacementTool
 } from "./components/pid/overlays";
-import { removeNodesKeepingSectionContents } from "./components/pid/graphEdits";
+import { applyComponentTagToNodes, removeNodesKeepingSectionContents } from "./components/pid/graphEdits";
 import { EditorSettingsContext, type LabelMode } from "./components/pid/settings";
 import { SymbolEditorModal } from "./components/pid/SymbolEditorModal";
 import { PanelResizer, useStoredWidth } from "./components/resizable";
@@ -1578,10 +1578,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     const diagramId = selectedDiagram.id;
     const systemId = selectedDiagram.system_id;
     const part = selectedPart;
-    const node = selectedNode;
+    const nodeId = selectedNode.id;
+    const symbolType = String(selectedNode.data?.symbolType ?? "component");
     const tag = componentTag;
-    const snapshotNodes = nodes;
-    const snapshotEdges = edges;
     void runAction("Placed component.", async () => {
       if (graphDirty) {
         throw new Error("Save the diagram first — parts can only be placed on saved nodes.");
@@ -1590,23 +1589,29 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         tag,
         part_id: part.id,
         quantity: 1,
-        properties: { node_external_id: node.id }
+        properties: { node_external_id: nodeId }
       });
-      // Keep the descriptive label; the tag is carried separately so the
-      // caption setting can switch between them.
-      const nextNodes = snapshotNodes.map((entry) =>
-        entry.id === node.id ? { ...entry, data: { ...entry.data, tag: component.tag } } : entry
-      );
+      // Build the follow-up graph save from the live canvas — not a snapshot
+      // frozen at click time — so edits made while createComponent was in
+      // flight are not overwritten on the server or wiped locally.
+      const nextNodes = applyComponentTagToNodes(nodesRef.current, nodeId, component.tag);
+      const liveEdges = edgesRef.current;
+      const generationAtSave = graphDirtyGeneration.current;
       // Always finish API writes for the diagram that received the part, even if
       // the user switched selection mid-request; only skip local UI updates.
-      await api.updateDiagramGraph(diagramId, buildGraphPayload(nextNodes, snapshotEdges));
+      await api.updateDiagramGraph(diagramId, buildGraphPayload(nextNodes, liveEdges));
       const nextComponents = await api.listComponents(diagramId);
       if (selectedDiagramIdRef.current !== diagramId) return;
-      setNodes(nextNodes);
+      setNodes((current) => applyComponentTagToNodes(current, nodeId, component.tag));
       setComponents(nextComponents);
       setSelectedComponentId(component.id);
       setDiagrams(await api.listDiagrams(systemId));
-      setComponentTag(suggestTag(String(node.data?.symbolType ?? "component"), nextComponents));
+      setComponentTag(suggestTag(symbolType, nextComponents));
+      // Mid-place edits after the PUT payload was built stay dirty (same
+      // contract as saveGraph).
+      if (graphDirtyGeneration.current === generationAtSave) {
+        setGraphDirty(false);
+      }
     }, "component");
   }
 
