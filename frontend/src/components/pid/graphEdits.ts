@@ -1,6 +1,23 @@
 import type { Edge, Node } from "reactflow";
 
 /**
+ * Stamp a placed component tag onto a node in the current canvas list.
+ * Callers must pass the live node array (e.g. nodesRef.current) — not a
+ * snapshot frozen before an async createComponent — or mid-place edits are lost.
+ */
+export function applyComponentTagToNodes<N extends Node>(
+  nodes: N[],
+  nodeId: string,
+  tag: string
+): N[] {
+  return nodes.map((entry) =>
+    entry.id === nodeId
+      ? { ...entry, data: { ...(entry.data as Record<string, unknown>), tag } }
+      : entry
+  );
+}
+
+/**
  * Remove nodes by id without React Flow's parent cascade.
  * Sections release their children (absolute positions restored) so Delete
  * matches the toolbar/context-menu "Delete section (keep contents)" action.
