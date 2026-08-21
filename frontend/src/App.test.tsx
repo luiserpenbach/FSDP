@@ -481,6 +481,83 @@ describe("App", () => {
     expect(screen.queryByText("V-A")).not.toBeInTheDocument();
   });
 
+  it("keeps the diagram dirty when the canvas is edited after graph load but before components finish", async () => {
+    let resolveComponentsB!: (body: unknown) => void;
+    const componentsBPromise = new Promise<unknown>((resolve) => {
+      resolveComponentsB = resolve;
+    });
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      const path = new URL(url, "http://localhost").pathname;
+
+      if (path === "/auth/me") return jsonResponse(TEST_USER);
+      if (path === "/projects" && method === "GET") return jsonResponse([PROJECT]);
+      if (path === "/projects/p1/systems") return jsonResponse([SYSTEM]);
+      if (path === "/projects/p1/requirements") return jsonResponse([]);
+      if (path === "/projects/p1/bom") return jsonResponse([]);
+      if (path === "/parts" && method === "GET") return jsonResponse([]);
+      if (path === "/changes") return jsonResponse([]);
+      if (path === "/systems/s1/diagrams" && method === "GET") {
+        return jsonResponse([DIAGRAM_A, DIAGRAM_B_SAME_SYSTEM]);
+      }
+      if (path === "/diagrams/d1" && method === "GET") return jsonResponse(DIAGRAM_A);
+      if (path === "/diagrams/d2" && method === "GET") return jsonResponse(DIAGRAM_B_SAME_SYSTEM);
+      if (path === "/diagrams/d1/components") return jsonResponse([COMPONENT_A]);
+      if (path === "/diagrams/d2/components") {
+        return componentsBPromise.then((body) => jsonResponse(body));
+      }
+      if (path === "/diagrams/d1/bom" || path === "/diagrams/d2/bom") return jsonResponse([]);
+      return jsonResponse({ detail: `unmocked ${method} ${path}` }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+    await waitFor(() => {
+      const projectSelects = screen.getAllByLabelText("Project");
+      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
+    });
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Open diagram")).toHaveValue("d1");
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Valve A")).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText("Open diagram"), { target: { value: "d2" } });
+    await waitFor(() => {
+      expect(screen.getByLabelText("Open diagram")).toHaveValue("d2");
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Valve B")).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/diagrams/d2/components"))).toBe(
+        true
+      );
+    });
+
+    await makeDiagramDirty();
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+
+    resolveComponentsB([COMPONENT_B]);
+    // Allow the in-flight load to finish its component/BoM phase and attempt to
+    // clear dirty — the mid-load edit must still be protected.
+    await waitFor(() => {
+      expect(screen.getByText("Loaded saved diagram.")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save graph" })).not.toBeDisabled();
+  });
+
   it("ignores a stale system diagram list so a slower prior response cannot switch the open P&ID", async () => {
     let resolveDiagramsA!: (body: unknown) => void;
     const diagramsAPromise = new Promise<unknown>((resolve) => {
