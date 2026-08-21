@@ -1,11 +1,11 @@
 # Part Catalog Concept
 
-Status: proposed for review. Not implemented.
+Status: decisions locked (2026-08-21). Not implemented.
 Audience: product, propulsion, systems, supply chain, and anyone who will live in this page daily.
 
 This document describes a fully featured Parts Catalog for FSDP: what it is, how it sits in the digital thread, the object model, the screens, the rules, and a phased path from the current MVP form to that product.
 
-It is written against the current codebase (`parts` table, `/parts` page, P&ID placement, BoM readiness, change impact) and against Epic 3 in [requirements.md](requirements.md).
+It is written against the current codebase (`parts` table, `/parts` page, P&ID placement, BoM readiness, change impact) and against Epic 3 in [requirements.md](requirements.md). Locked product decisions are in [§16](#16-locked-decisions).
 
 ---
 
@@ -56,7 +56,7 @@ The current page is a **data-entry stub**. The data model already hints at a ric
 ### Propulsion / fluid engineer
 
 - Find a part that is legal for this fluid, MEOP, temperature, and connection in under 30 seconds.
-- Place it on a P&ID node and see tag + P/N + qualification on the canvas.
+- Place it on a P&ID node and see tag + part name + qualification on the canvas.
 - See whether the house-preferred part already exists before inventing a new one.
 - When the preferred part is long-lead or restricted, pick a ranked alternate that still fits.
 
@@ -76,21 +76,21 @@ The current page is a **data-entry stub**. The data model already hints at a ric
 
 - Treat “preferred / qualified / restricted” as controlled data, not a dropdown anyone can flip.
 - Attach the evidence that made a part qualified (test report, CoC, compatibility memo).
-- Refuse placement of restricted parts on flight systems without an explicit deviation.
+- Warn on restricted parts; record a reason. Do not silently place them as if they were preferred.
 
 ---
 
 ## 4. Design principles
 
 1. **One identity, many uses.** Catalog part ≠ diagram component ≠ serial number. Do not collapse these.
-2. **Org-wide library, project-filtered views.** The catalog is shared. A project may later have an approved-parts list (AVL); it does not own the parts.
+2. **Org-wide library, project-filtered views.** The catalog is shared. A project may later have an approved-parts list (AVL); it does not own the parts. Part names are unique across the whole catalog, not per project.
 3. **Status is earned.** New parts default to `unqualified` / `unreviewed`. Preferred and certified are explicit promotions with an actor.
 4. **Obsolete, don’t delete.** Once a part has been placed or appeared on a released BoM, it stays in the historical record.
-5. **Type-aware, not generic PLM.** A relief valve and a pressure transducer do not share the same form. Common fields plus a type-specific payload.
-6. **Selection is contextual.** The picker on a P&ID knows the symbol type and the connected line’s fluid / P / T. The browse page is for library work.
-7. **Completeness is visible.** A part can exist as a stub; procurement readiness and placement warnings say what is missing. Do not block create on every field.
+5. **The user decides what a part is.** A part is any catalog identity the engineer needs: valve, fitting, hose, fastener, GSE cart, make-to-print body, anything. The platform does not restrict the catalog to P&ID palette hardware. Type is a user-managed label, not a closed enum.
+6. **Selection is contextual.** The picker on a P&ID can filter by an *optional* symbol mapping and by the connected line’s fluid / P / T. The browse page is for library work. Filters never hide the rest of the library behind a hard lock.
+7. **Completeness is visible.** A part can exist as a stub; procurement readiness and placement **warnings** say what is missing. Do not block create on every field. Do not hard-block placement for rating/fluid mismatch.
 8. **No silent engineering values.** Empty pressure rating is “unrated,” never `0`.
-9. **Match the P&ID symbol language.** `part_type` is a controlled vocabulary aligned with palette symbols (`valve`, `relief_valve`, `sensor`, …), with a subtype for ball / solenoid / burst disc / PT / TC.
+9. **Warn, don’t block, on engineering mismatch.** Line MEOP above part rating, unknown fluid compatibility, draft/unqualified status: warn on place and on BoM. The engineer keeps control.
 10. **Keep the MVP thread intact.** Placement, BoM roll-up, readiness, and change impact keep using `part_id`. New objects hang off `Part`; they do not replace it.
 
 ---
@@ -99,20 +99,21 @@ The current page is a **data-entry stub**. The data model already hints at a ric
 
 ```mermaid
 flowchart TB
+  Settings[Catalog / project settings]
+  Scheme[Part-name scheme]
   Part[Part identity]
-  Rev[PartRevision]
   Vendor[Vendor]
   Offering[VendorOffering]
   Compat[FluidCompatibility]
   Alt[Alternate / supersession]
-  Doc[CatalogDocument]
+  Doc[CatalogDocument file]
   Qual[QualificationRecord]
   Inst[ComponentInstance]
   Bom[BomSnapshot row]
   Req[Requirement via TraceLink]
-  AVL[ProjectApprovedPart]
 
-  Part --> Rev
+  Settings --> Scheme
+  Scheme -.->|Generate name| Part
   Part --> Compat
   Part --> Alt
   Part --> Doc
@@ -120,11 +121,8 @@ flowchart TB
   Vendor --> Offering
   Offering --> Part
   Inst --> Part
-  Inst --> Rev
   Bom --> Part
   Req --> Part
-  AVL --> Part
-  AVL --> Project
 ```
 
 ### 5.1 `Part` — the identity
@@ -133,13 +131,14 @@ Stable across revisions of datasheets.
 
 | Field | Role |
 |---|---|
-| `part_number` | Unique internal P/N. Human-assigned; validated non-blank. Optional Amphora scheme later (e.g. `AMPH-SV-001`). |
-| `description` | Noun-first, engineering English. “NC solenoid valve, 1/4 in, 24 VDC.” |
-| `part_type` | Controlled type matching P&ID symbols. |
-| `subtype` | Finer class: `solenoid`, `ball`, `check`, `burst_disc`, `pressure_transducer`, `thermocouple`. |
+| `part_number` | **Part name.** Unique across the entire catalog (all projects). Non-blank. Typed by the user or filled by **Generate**. Format is not enforced. |
+| `description` | Noun-first, engineering English. “NC solenoid valve, 1/4 in, 24 VDC.” Need not be unique. |
+| `part_type` | User-defined type label. Suggested list from settings; users can add a new type at create time. Not limited to P&ID symbols. |
+| `subtype` | Optional finer label, also user-defined. |
 | `source_type` | `internal` (house standard) · `vendor` (bought to MPN) · `custom` (make-to-print). |
 | `lifecycle_status` | `draft` · `active` · `legacy` · `restricted` · `obsolete`. Orthogonal to qualification. |
-| `preferred` | Boolean. At most one preferred part per (type, subtype, a defined family). Soft rule, warned not hard-blocked. |
+| `preferred` | Boolean flag. Not unique. Many preferred parts may coexist. |
+| `pid_symbol` | Optional. If set, the Diagrams picker can rank this part when that symbol is selected. Blank is fine. |
 | `owner` | Responsible engineer (user). |
 | `notes` | Free text; not a substitute for structured fields. |
 
@@ -154,18 +153,37 @@ Stable across revisions of datasheets.
 
 Migration: map current `preferred` → lifecycle `active` + `preferred=true` + qualification `qualified`. Map `legacy` / `restricted` onto lifecycle. Map `unqualified` as-is. Keep a read-only compatibility field or dual-write during transition so existing BoM readiness does not break.
 
-### 5.2 `PartRevision`
+### 5.2 Part name scheme (Settings)
 
-Datasheet changes without changing the P/N.
+The identifying field is the **part name** (`part_number` in the API). It must be unique globally. Users may type any unique name. They may also press **Generate** next to the field.
 
-- `revision` (e.g. `A`, `B`, `1`).
-- Frozen copy of ratings and type-specific attributes at that rev.
-- `effective_from` / `superseded_by`.
-- Component instances and released BoM rows **pin a revision**. Editing the live catalog does not rewrite history.
+Generate uses a scheme stored in Settings (the existing `/settings` page already has a “Project Configuration” placeholder). Catalog numbering is org-wide because names are global; a project may override the prefix so generated names stay unique across programs.
 
-Phase 1 can keep a single `revision` string on `Part` (today’s column) and introduce the child table when the first real datasheet change needs history.
+| Setting | Scope | Example |
+|---|---|---|
+| Template | Org (catalog settings) | `{prefix}-{type}-{seq}` |
+| Default prefix | Org | `AMPH` |
+| Sequence padding | Org | `3` → `001` |
+| Type codes | Org, one per user-defined part type | `valve` → `SV`, `fitting` → `FT` |
+| Project prefix | Optional per project | `HV1` instead of `AMPH` when that project is selected |
 
-### 5.3 `Vendor` and `VendorOffering`
+**Generate behavior**
+
+1. Resolve prefix (project override if the current project has one, else org default).
+2. Resolve type code from the part type just chosen; if none, use `XX` or omit `{type}` per template.
+3. Allocate the next sequence for that prefix (atomic, catalog-wide) so two users cannot mint the same name.
+4. Fill the field. The user can edit it before save.
+5. On save, uniqueness is checked across all parts. Collision → 409, Generate again.
+
+The scheme is **not a format validator**. Manually entered names such as a vendor MPN used as the internal name are valid as long as they are unique.
+
+Admins edit the template, prefixes, and type-code table on Settings. Engineers can add a new part type from the create form; that type appears in Settings for a code to be assigned later. Until a code exists, Generate still works (prefix + sequence, or `XX`).
+
+### 5.3 `revision` string (no revision table in v1)
+
+Keep today’s single `revision` field on `Part` (e.g. `A`, `B`). BoM snapshot rows copy that string when generated. There is **no** `PartRevision` child table in this concept’s first delivery. Datasheet history is the uploaded files plus the change log.
+
+### 5.4 `Vendor` and `VendorOffering`
 
 Manufacturer is not a string forever.
 
@@ -176,7 +194,7 @@ One internal part can have several offerings (second source). One offering is pr
 
 Custom/make-to-print parts may have no offering.
 
-### 5.4 `FluidCompatibility`
+### 5.5 `FluidCompatibility`
 
 First-class, because it is the main selection constraint in this domain.
 
@@ -186,9 +204,9 @@ Per part, a row per fluid (or fluid family):
 - Rating: `compatible` · `compatible_with_controls` · `incompatible` · `unknown`.
 - Notes: e.g. “oxygen-cleaned only,” “PTFE seat not for IPA.”
 
-Unknown is allowed; it produces a warning on placement and a readiness issue, not a hard block, until SMA policy says otherwise.
+Unknown is allowed; it produces a **warning** on placement and in BoM readiness. Never a hard block.
 
-### 5.5 Alternates and supersession
+### 5.6 Alternates and supersession
 
 Directed links between parts:
 
@@ -200,43 +218,36 @@ Directed links between parts:
 
 Alternate ranking should prefer: preferred → qualified → active → unrestricted, then better lead time.
 
-### 5.6 `QualificationRecord` and `CatalogDocument`
+### 5.7 `QualificationRecord` and `CatalogDocument` (files in v1)
 
-- Document: datasheet, drawing, CAD (link or file), CoC template, test report, compatibility memo, oxygen-clean procedure. Metadata: title, kind, revision, URI or stored blob, uploaded_by, uploaded_at.
+Documents include **file upload in v1**, not URL-only.
+
+- `CatalogDocument`: title, kind (datasheet, drawing, CAD, CoC, test report, memo, photo, other), original filename, content type, size, uploaded_by, uploaded_at, optional revision label.
+- Bytes stored on the application server (disk volume beside the database). Download is an authenticated GET (same cookie session as BoM CSV).
+- Optional URL in addition to a file, for vendor pages.
+- Size and type limits (PDF, PNG, JPG, STEP/STP, ZIP, XLSX, DOCX; tens of MB). No CAD parsing — the file is an attachment.
 - Qualification record: points at documents, states the claim (“qualified for GHe, 350 bar, −40 to 60 °C”), status, expires_at, approved_by.
 
 Certification status on the part is a roll-up of the latest qualification/cert records, not a free dropdown with no evidence.
 
-### 5.7 `ProjectApprovedPart` (AVL) — later phase
+### 5.8 Project approved-parts list (AVL) — later
 
-Optional join: this project may only place parts in this list, or must warn when placing off-list. Default until then: any `active` catalog part is placeable, with warnings for unqualified / restricted / incompatible.
+After the shared library is in daily use. Not v1. Until then any **non-obsolete** catalog part is placeable, with warnings for draft / unqualified / restricted / rating / fluid.
 
 ---
 
-## 6. Classification (aligned with the P&ID palette)
+## 6. Classification — user-defined types
 
-Controlled `part_type` values. Subtypes are suggestions; the type list is the contract with the canvas.
+A part is whatever the user says it is. The catalog does not decide that fittings are “later” or that only P&ID glyphs count. Valves, AN adapters, flex hoses, fasteners, heaters, GSE, make-to-print bodies, and unnamed one-offs all belong here if the engineer catalogs them.
 
-| `part_type` | P&ID symbol | Typical subtypes |
-|---|---|---|
-| `valve` | valve | ball, needle, globe, solenoid, latching, manual |
-| `check_valve` | check_valve | poppet, swing |
-| `regulator` | regulator | dome, spring, back-pressure |
-| `relief_valve` | relief_valve | spring, pilot, burst_disc |
-| `sensor` | sensor | pressure, temperature, flow, level |
-| `filter` | filter | sintered, etched-disc, coalescing |
-| `pump` | pump | centrifugal, PD, turbopump (placeholder) |
-| `fitting` | (often omitted / junction) | elbow, tee, adapter, AN, VCR, weld |
-| `hose` | line-associated | flex, vacuum-jacketed |
-| `orifice` | custom / valve-like | fixed, adjustable |
-| `tank` | tank / source | COPV, dewar, bottle |
-| `quick_disconnect` | custom | GSE, flight |
-| `instrument_valve` | valve | manifold, 2-way, 3-way |
-| `other` | generic component | escape hatch |
+**`part_type` is a user-managed vocabulary**, not a closed enum:
 
-Placement rule: the picker defaults to parts whose `part_type` matches the selected symbol. The engineer can widen the filter (e.g. place a burst disc on a relief-valve symbol) with a visible “type mismatch” warning.
+- Settings ships with a starter list (valve, check valve, regulator, relief, sensor, filter, pump, fitting, hose, tank, …) so Generate codes and filters have something to work with.
+- Create-part accepts a new type string. That type is added to the org list.
+- Subtype is the same pattern: free label, remembered for next time.
+- Optional `pid_symbol` on a part (or on a type in Settings) tells the Diagrams picker “rank these when the user selected a valve glyph.” It is a convenience, not a permission. Any part may be placed on any symbol; mismatch is a warning.
 
-Junctions, notes, and section boxes are **not** catalog parts.
+Canvas-only decorations (notes, section boxes, untyped junctions) still do not need a catalog row. That is a diagram concern, not a ban on cataloging fittings.
 
 ---
 
@@ -249,58 +260,30 @@ Junctions, notes, and section boxes are **not** catalog parts.
 - Pressure rating (MAWP, bar). Optional proof / burst later.
 - Temperature min / max (°C).
 - Mass (kg).
-- End connections: size + standard per port (`1/4 AN`, `1/2 VCR`, `1/4 NPT`, `weld 12.7 mm`). Ports named to match symbol ports (`in`, `out`, `vent`, `sense`, `pilot`).
+- End connections: size + standard per port, named however the user needs (`in`, `out`, `vent`, or custom).
 - Envelope: JSON/structured L×W×H or diameter × length (already `dimensions`).
 - Cleanliness class: `as_received` · `visibly_clean` · `precision_clean` · `oxygen_clean`.
-- Cv / Kv where it applies (valves, regulators, filters, orifices).
+- Cv / Kv when the user fills them. Not required by type.
 
-### 7.2 Type-specific payload (`attributes` JSON, schema per type)
+### 7.2 Optional attribute templates (`attributes` JSON)
 
-Validated by backend per `part_type`. Unknown keys rejected. This avoids a 80-column table while staying queryable for filters that matter.
+A free JSON map on the part. The backend does **not** reject unknown keys. Settings may attach an optional field template to a type (fail position, set pressure, micron rating, …). Templates are hints in the form — extra fields always allowed. A type with no template is still a valid part.
 
-**Valve / check / solenoid**
+Starter templates (users can ignore or edit in Settings):
 
-- Fail position: NC / NO / last
-- Actuation: manual, solenoid, pneumatic, motor
-- Voltage / pneumatic pressure
-- Leakage class
-- Cycle life (optional)
+**Valve / check / solenoid** — fail position, actuation, voltage / pneumatic pressure, leakage class, cycle life.
 
-**Regulator**
+**Regulator** — sensing, outlet range, setpoint, Cv, relief on body.
 
-- Sensing: dome / spring / referenced
-- Outlet range, setpoint
-- Cv
-- Relief on body? (bool)
+**Relief / burst disc** — set / burst pressure, crack / full-lift, reseat, capacity, vent to.
 
-**Relief / burst disc**
+**Sensor** — measured quantity, range, units, accuracy, output.
 
-- Set / burst pressure
-- Crack / full-lift
-- Reseat
-- Relieving capacity (if known)
-- Direction / vent to
+**Filter** — micron rating, collapse pressure, replaceable element.
 
-**Sensor**
+**Tank / COPV** — volume, MEOP / proof, fluid service.
 
-- Measured quantity, range, units
-- Accuracy
-- Output: 4–20 mA, 0–10 V, digital
-- Process connection
-
-**Filter**
-
-- Micron rating
-- Collapse pressure
-- Element replaceable?
-
-**Tank / COPV**
-
-- Volume
-- MEOP / proof
-- Fluid service
-
-Keep the JSON in `Part.metadata_` / a dedicated `attributes` column. Do not invent a new database per type.
+Keep this in `Part.metadata_` or a dedicated `attributes` column. Do not invent a table per type.
 
 ### 7.3 Completeness score
 
@@ -313,7 +296,7 @@ A derived 0–100 used in the table and picker, not stored as gospel:
 - Primary vendor offering: needed to call a BoM “procurement-ready.”
 - Qualification evidence: needed for preferred / certified.
 
-The BoM readiness service grows from the three current checks to this list, with issue codes (`unrated`, `no_material`, `not_qualified`, `restricted`, `obsolete`, `incompatible_fluid`, `no_vendor`, `long_lead`, `expired_cert`).
+The BoM readiness service grows from the three current checks to this list, with issue **codes and severity**. Rating/fluid/draft/unqualified mismatches are **warnings** (shown, do not fail `ready` by themselves). Missing identity on a BoM row, obsolete parts, and unresolved (no catalog part) stay blocking for “procurement-ready.”
 
 ---
 
@@ -333,13 +316,13 @@ stateDiagram-v2
 
 **Create:** engineer or admin. Defaults: lifecycle `draft`, qualification `unqualified`, certification `unreviewed`, `preferred=false`.
 
-**Publish to active:** engineer. Means “this P/N is real and may be placed.” Still unqualified until evidence exists.
+**Publish to active:** engineer. Means “this name is real.” Placement does not require active: drafts and unqualified parts **may be placed**, with warnings.
 
-**Preferred:** catalog owner / admin. Implies active + qualified. Unsetting preferred does not unqualified the part.
+**Preferred:** catalog owner / admin. Implies active + qualified. Unsetting preferred does not unqualified the part. Preferred is not unique.
 
-**Restricted:** SMA or admin. Still visible; placement requires a typed reason stored on the component instance (`properties.restriction_waiver`). BoM readiness always flags it.
+**Restricted:** SMA or admin. Still visible and placeable; warn and ask for a reason stored on the component instance (`properties.restriction_waiver`). BoM readiness flags it as a warning.
 
-**Obsolete:** cannot place on new components. Existing placements remain; where-used and impact still resolve. Delete is allowed only for `draft` parts with zero placements and zero BoM rows (including historical).
+**Obsolete:** cannot place on **new** components. Existing placements remain; where-used and impact still resolve. Delete is allowed only for `draft` parts with zero placements and zero BoM rows (including historical).
 
 **Qualification promotion:** requires at least one `QualificationRecord` in `approved` with a document. Demotion to `disqualified` records a reason and immediately fails readiness.
 
@@ -351,17 +334,16 @@ Viewers can read the catalog. They cannot place, edit, or change status.
 
 ### 9.1 P&ID placement (the primary write path)
 
-Current flow stays, but becomes type-aware:
+Current flow stays, with optional ranking — never a hard type lock:
 
 1. Select a symbol node (or drop a symbol, then assign).
-2. Open **Assign part** (inspector or shortcut). Picker opens pre-filtered:
-   - `part_type` matches symbol
-   - lifecycle in `active` (optional toggle: show legacy)
-   - search box
-   - chips: preferred, qualified, compatible with this line’s fluid, MEOP ≤ rating
-3. Highlight mismatches rather than hiding everything: e.g. “rating 200 bar < line 240 bar.”
-4. Confirm → `ComponentInstance` with `part_id`, optional `revision`, tag auto-suggested (`V-3`) if empty.
-5. Canvas badge: tag, P/N, qualification tint (preferred green, unqualified amber, restricted red).
+2. Open **Assign part**. Picker opens with search, the full library, and optional chips:
+   - type matches the symbol’s optional mapping (toggle off to see everything)
+   - preferred, qualified, compatible with this line’s fluid, rating ≥ line pressure
+   - include drafts / legacy
+3. **Warn, don’t hide or block:** e.g. “rating 200 bar < line 240 bar,” “draft,” “unqualified,” “fluid unknown.”
+4. Confirm → `ComponentInstance` with `part_id`, tag auto-suggested if empty. Draft and unqualified are allowed.
+5. Canvas badge: tag, part name, qualification tint (preferred green, unqualified amber, restricted red).
 
 Unassigned symbols remain legal. BoM readiness already complains (“No catalog part is linked”). That is the correct pressure: don’t force a P/N on a concept sketch.
 
@@ -414,7 +396,7 @@ Replace the current two-panel “form + table” with three surfaces. Same route
 
 A working catalog, not a dump.
 
-- Full-width table: P/N, description, type/subtype, manufacturer, material, rating, qualification, lifecycle, completeness, preferred star.
+- Full-width table: name, description, type/subtype, manufacturer, material, rating, qualification, lifecycle, completeness, preferred star.
 - Facets / filters: type, subtype, qualification, lifecycle, material, fluid compatibility, manufacturer, “incomplete,” “used in current project.”
 - Search: P/N, description, MPN, manufacturer (and later full text in notes/docs titles).
 - Saved views: *Preferred valves*, *Unqualified in use*, *Oxygen service*, *My drafts*.
@@ -436,7 +418,7 @@ Single-part workspace. Tabs, not one infinite form:
 7. **Alternates** — ranked graph, supersession.
 8. **History** — change events for this part (actor, field-level later).
 
-Header actions: Edit, Clone (new P/N, copy attributes), Place, Export datasheet summary, Obsolete (with confirm + where-used count).
+Header actions: Edit, Clone (Generate a new unique name, copy attributes), Place, Export datasheet summary, Obsolete (with confirm + where-used count).
 
 Clone is how reuse actually happens: “same valve, different voltage” should not start from a blank form.
 
@@ -444,41 +426,55 @@ Clone is how reuse actually happens: “same valve, different voltage” should 
 
 Drawer or full page, two-step:
 
-1. Type + subtype + P/N + description + source. That create a `draft`.
-2. Ratings, fluids, vendor — skippable, completeness shows the holes.
+1. Type (existing or new) + optional subtype + **part name** + description + source. That creates a `draft`.
+2. Ratings, fluids, vendor, files — skippable; completeness shows the holes.
+
+**Part name field:** text input plus a **Generate** control that fills the next name from the Settings scheme (see §5.2). The user can type a unique name instead. Duplicate names are rejected globally.
 
 Do not put qualification/certification on the create form. Those are promotions on the detail page. This is the fix for the old “every new part is preferred/certified” bug, structurally, not just as a default.
+
+Attach files on create or immediately on the detail **Documents** tab.
 
 ### 10.4 Contextual picker (embedded on Diagrams)
 
 Modal. Not the full library.
 
-- Search + type filter locked to symbol (unlockable).
-- Ranked results: preferred first, then qualified, then by rating margin vs line MEOP.
-- One-line why: “Preferred · 350 bar ≥ 240 bar line · GHe compatible.”
-- Footer: “Create new part of this type” → create flow with type pre-filled, return to picker.
+- Search over the whole library. Optional type chip from the selected symbol; user can clear it.
+- Ranked results: preferred first, then qualified, then by rating margin vs line pressure. Drafts included, marked.
+- One-line why: “Preferred · 350 bar ≥ 240 bar line · GHe compatible” or “Warning: 200 bar < 240 bar line.”
+- Footer: “Create new part” → create flow (type pre-filled if a chip was on), return to picker.
 
 ### 10.5 Compare
 
 Select 2–3 rows in the library → Compare. Side-by-side: ratings, materials, fluids, Cv, connections, lead time, qualification. Used for alternate decisions. Phase 2.
 
+### 10.6 Settings (existing `/settings`)
+
+Replace the “Project Configuration” placeholder with:
+
+- **Catalog numbering:** template, default prefix, sequence padding, type → code table, next-sequence preview.
+- **Project prefix:** when a project is selected, optional override used by Generate (names remain globally unique).
+- **Part types:** list of user-defined types, optional default `pid_symbol`, optional attribute template.
+- Accounts (already there).
+
 ---
 
 ## 11. Rules (product, not just validation)
 
-| Rule | On create/edit | On place | On BoM release |
+| Rule | On create/edit | On place | On BoM |
 |---|---|---|---|
-| Blank P/N / type / description | Block | — | — |
-| Duplicate P/N | Block | — | — |
-| Pressure `""` | Store null (unrated), never 0 | Warn | Issue `unrated` |
-| Lifecycle draft | Allowed | Warn or block (decision: see §16) | Issue |
-| Restricted | Allowed | Waiver required | Always issue |
-| Obsolete | — | Block | Issue if still present |
-| Type vs symbol mismatch | — | Warn | — |
-| Line MEOP > part rating | — | Warn (block if project policy) | Issue |
-| Line fluid incompatible | — | Warn / block if `incompatible` | Issue |
-| Fluid `unknown` | Allowed | Warn | Issue |
-| No primary vendor | Allowed | — | Issue `no_vendor` |
+| Blank name / type / description | Block | — | — |
+| Duplicate part name (global) | Block | — | — |
+| Pressure `""` | Store null (unrated), never 0 | Warn | Warn `unrated` |
+| Lifecycle draft | Allowed | Warn | Warn |
+| Unqualified | Allowed | Warn | Warn |
+| Restricted | Allowed | Warn + reason | Warn |
+| Obsolete | — | Block new places | Issue (blocking) |
+| Type vs symbol mismatch | — | Warn | Warn |
+| Line pressure > part rating | — | Warn | Warn |
+| Line fluid incompatible / unknown | Allowed | Warn | Warn |
+| No primary vendor | Allowed | — | Warn `no_vendor` |
+| No catalog part on component | — | — | Issue (blocking) |
 | Delete | Only draft + unused | — | — |
 | Flip to preferred | Must be active + qualified | — | — |
 
@@ -502,10 +498,11 @@ Global header search (today a non-functional box) should hit parts first, then r
 
 ## 13. Import, export, documents
 
-- **Export CSV/XLSX** of the current library filter: all engineering fields + primary vendor + status. Same columns as an extended BoM where it makes sense.
-- **Import CSV** for initial catalog stand-up (admin). Dry-run with row errors; no silent overwrite of P/Ns that are in use. Phase 2.
-- **Documents:** upload to object storage or attach URL. MVP can be URL-only (datasheet link) so we do not build a file service first. CAD/STEP ingestion stays deferred per the PRD; a filename + URI is enough.
+- **Documents (v1):** upload files on the part (see §5.7). List, download, replace, delete. Optional vendor URL alongside a file.
+- **Export CSV/XLSX** of the current library filter: all engineering fields + primary vendor + status.
+- **Import CSV** for initial catalog stand-up (admin). Dry-run with row errors; no silent overwrite of names that are in use. Phase 2.
 - **Clone + import** is how vendor catalogs enter: not a live punch-out to Swagelok.
+- CAD/STEP **parsing** stays deferred; attaching a STEP file is in v1.
 
 ---
 
@@ -515,12 +512,13 @@ Global header search (today a non-functional box) should hit parts first, then r
 |---|---|---|---|
 | Browse / search / where-used | yes | yes | yes |
 | Place on diagram | no | yes | yes |
+| Generate part name | no | yes | yes |
 | Create draft, edit draft/active technical fields | no | yes | yes |
 | Publish draft → active | no | yes | yes |
 | Set preferred | no | no | yes |
 | Restrict / obsolete | no | no* | yes |
 | Approve qualification record | no | no | yes |
-| Import CSV, manage vendors | no | no | yes |
+| Import CSV, manage vendors, edit name scheme | no | no | yes |
 | Delete unused draft | no | own drafts | yes |
 
 \*Responsible-engineer restrict/obsolete can be added when that role exists. Until then, admin only.
@@ -534,7 +532,7 @@ All mutations already go through `record_change`; field-level diffs are a later 
 These belong to later epics or other systems. The catalog should have seams, not implementations:
 
 - ERP / purchasing execution, POs, receiving, serialised inventory.
-- Full CAD vault, automatic STEP parsing, geometry-based envelope clash.
+- Full CAD vault, automatic STEP parsing, geometry-based envelope clash. Attaching CAD files is in scope; interpreting them is not.
 - Live vendor API punch-out.
 - Lot/serial as-built (that is Manufacturing, hanging off `ComponentInstance`, not `Part`).
 - Automatic FFF from geometry; alternates are declared.
@@ -544,33 +542,18 @@ These belong to later epics or other systems. The catalog should have seams, not
 
 ---
 
-## 16. Open questions for review
+## 16. Locked decisions
 
-Please mark a preference on these; they change the first slice.
+Recorded 2026-08-21.
 
-1. **May engineers place `draft` or `unqualified` parts?**  
-   Recommendation: **yes, with warnings.** Concept sketches should not wait on SMA. Released BoMs stay blocked by readiness.
-
-2. **Hard-block vs warn when line MEOP exceeds part rating?**  
-   Recommendation: **warn on place, fail readiness on release.** Hard-block once we trust line pressures (they were TBD for a long time).
-
-3. **One preferred part per subtype globally, or per fluid service?**  
-   Recommendation: **per (type, subtype, fluid family)** when compatibility exists; otherwise per subtype. Do not over-constrain v1 — preferred is a star, not a uniqueness constraint.
-
-4. **Internal P/N scheme:** free string vs enforced `AMPH-xx-nnn`?  
-   Recommendation: **free string with optional prefix helper.** Enforcement is a policy fight; uniqueness is enough.
-
-5. **Documents:** URL-only first, or file upload in v1?  
-   Recommendation: **URL + optional local upload if the environment already has object storage; otherwise URL.**
-
-6. **AVL (project approved list):** needed before internal daily use, or after a healthy org catalog?  
-   Recommendation: **after.** One shared library, warnings for unqualified/restricted. AVL when a second vehicle program exists.
-
-7. **Part revisions as a child table in the first slice?**  
-   Recommendation: **no.** Keep today’s `revision` string; pin it onto BoM rows. Introduce `PartRevision` when the first datasheet change would otherwise smash history.
-
-8. **Fittings and hoses in the catalog, or only “major” components?**  
-   Recommendation: **types exist, but the first UI emphasizes palette-aligned hardware.** Fittings can wait so the library does not become 4,000 adapters before it has 40 valves.
+1. **Place drafts / unqualified parts?** Yes, with warnings. Obsolete still cannot be newly placed.
+2. **Line pressure above part rating?** Warn only — on place and on BoM. Never hard-block.
+3. **Uniqueness:** the **part name** is unique globally (whole catalog, all projects). `preferred` is a flag, not a uniqueness constraint.
+4. **Name format is not enforced.** A **Generate** button fills the name field from a scheme defined on the **Settings** page (org template + optional per-project prefix). Users may type any unique name.
+5. **Documents:** file upload in v1 (server disk + authenticated download). URLs optional extra.
+6. **Project AVL:** after the shared library is working. Not v1.
+7. **Part revision table:** no. Keep the existing `revision` string.
+8. **What is a part?** Up to the user. No platform rule that fittings/hoses are out of scope or that types must match the P&ID palette. Types are user-defined; optional symbol mapping is only a picker convenience.
 
 ---
 
@@ -578,66 +561,65 @@ Please mark a preference on these; they change the first slice.
 
 Each phase should be usable alone. No big-bang rewrite of `/parts`.
 
-### Phase A — Make the stub honest (small, unblocks trust)
+### Phase A — Honest library + identity
 
 - Show all fields the API already has: source type, revision, Tmin/Tmax, Cv, mass.
-- Controlled `part_type` select aligned with palette symbols.
-- Filters + search on the library table (wire up existing query params).
-- Completeness hints; stop treating empty rating as 0 (already partly fixed).
-- Lifecycle: add `obsolete`; map UI away from overloading `qualification_status` with preferred/legacy (additive, dual-write).
-- Where-used panel on the selected part (reuse change-impact API).
-- Delete CTA explains obsolete; obsolete action instead of delete-when-placed.
-- Placement picker filters by selected symbol type.
+- Part name unique globally; create/edit field labeled accordingly.
+- **Generate** name button + Settings scheme (template, prefix, type codes, optional project prefix). Fill the existing `/settings` “Project Configuration” placeholder.
+- User-defined types (starter list + add-on-create). Optional `pid_symbol` mapping in Settings.
+- Filters + search on the library table.
+- Completeness hints; empty rating stays unrated.
+- Lifecycle: add `obsolete`; stop overloading qualification with preferred/legacy.
+- Where-used panel (reuse change-impact API).
+- Obsolete instead of delete-when-placed.
+- **File upload** on the part (documents tab).
 
-This phase is mostly frontend plus a few enums. Highest ratio of “feels like a catalog.”
+### Phase B — Contextual selection
 
-### Phase B — Contextual selection (the digital-thread payoff)
-
-- Assign-part modal on the canvas with ranked results.
-- Line fluid / P / T vs part ratings and compatibility (compatibility table + editor).
-- Canvas badge: P/N + qualification tint; click through to `/parts/:id`.
+- Assign-part modal on the canvas; full library searchable; optional type chip.
+- Warn-only for draft, unqualified, rating vs line pressure, fluid compatibility.
+- Canvas badge: part name + qualification tint; click through to `/parts/:id`.
 - Replace-part on an existing tag.
-- Readiness issue codes expanded (`incompatible_fluid`, `obsolete`, `restricted`).
+- Readiness issue codes with warning vs blocking severity.
 - Requirement → part trace links.
 
-### Phase C — Vendors, documents, alternates
+### Phase C — Vendors, qualification evidence, alternates
 
 - Vendor + offering objects; primary source on BoM export.
-- Document URLs + qualification records; preferred/certified require evidence.
+- Qualification records pointing at uploaded files; preferred/certified require evidence.
 - Alternate / supersession links; picker “show alternates.”
-- Clone part.
+- Clone part (Generate a new unique name).
 - CSV export of library; admin CSV import.
 - Compare 2–3 parts.
 
-### Phase D — Control plane
+### Phase D — Control plane (later)
 
-- `PartRevision` history; instances pin rev.
 - Project AVL.
 - Field-level audit on status changes.
 - Expired certs, long-lead flags, single-source warnings.
-- Optional file upload.
 - Saved views, header global search hitting parts.
+- `PartRevision` history only if a later decision reverses §16.7.
 
 ---
 
 ## 18. Success criteria (how we know this worked)
 
-Aligned with the PRD metrics that the catalog actually moves:
-
-- An engineer can find and place a preferred valve for a GHe line (known MEOP + fluid) in **under 30 seconds**.
-- A BoM generated from a fully assigned diagram produces a **procurement-ready** result or a **precise** issue list (no silent unqualified-as-preferred).
-- Restricting or obsoleting a part shows **every live tag and released snapshot** on the part page without going to Reviews.
-- Reuse: placing a part that already exists is faster than creating a look-alike (clone + search + preferred ranking).
+- An engineer can find and place a preferred part for a known line (fluid + pressure) in **under 30 seconds**, including from a draft/unqualified row if that is what they choose.
+- Generate produces a unique name from Settings without blocking a typed name.
+- Any kind of hardware can be cataloged; a fitting is a first-class part.
+- Rating/fluid mismatches **warn** and never prevent placing or saving.
+- Restricting or obsoleting a part shows **every live tag and released snapshot** on the part page.
+- Datasheets and CoCs can be uploaded and downloaded while signed in.
 - Zero catalog deletes of parts that ever appeared on a released BoM.
 
 ---
 
-## 19. Suggested first review pass
+## 19. Remaining review
 
-When reading this, please react at three levels:
+Decisions in §16 are locked. Still useful to confirm:
 
-1. **Thesis:** org-wide identity + uses on diagrams, not a per-project spreadsheet. Agree / not.
-2. **Split of status:** lifecycle × qualification × preferred × certification. Too many axes, or the right untangle of today’s two dropdowns?
-3. **Phase A vs B:** is the next engineering week the honest library (A) or the canvas picker (B)? Recommendation is **A then B** so placement has something worth picking.
+1. **Thesis:** org-wide identity + uses on diagrams — still agreed?
+2. **Status split:** lifecycle × qualification × preferred × certification — too many axes, or the right untangle?
+3. **Name scheme tokens:** is `{prefix}-{type}-{seq}` the right default template to put on Settings, or do you already have an Amphora scheme to paste in?
 
-Mark decisions on the eight questions in §16. Those are the only gates needed to turn this into implementation tasks.
+Phase A is the next implementation slice: unique names, Generate + Settings, user-defined types, file upload, honest library.
