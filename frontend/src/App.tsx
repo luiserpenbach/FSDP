@@ -521,13 +521,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     historyRef.current = { past: [], future: [] };
     setHistoryVersion((version) => version + 1);
     const generation = ++diagramLoadGeneration.current;
+    // Clear the previous canvas immediately so it cannot be edited into the
+    // incoming diagram's undo stack or saved over after the switch.
+    setComponents([]);
+    setBomSnapshots([]);
+    setSelectedBomId("");
+    setNodes([]);
+    setEdges([]);
+    setGraphDirty(false);
     if (!selectedDiagramId) {
-      setComponents([]);
-      setBomSnapshots([]);
-      setSelectedBomId("");
-      setNodes([]);
-      setEdges([]);
-      setGraphDirty(false);
       return;
     }
     const diagramId = selectedDiagramId;
@@ -538,6 +540,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       const graphNodes = sortSectionsFirst((diagram.graph.nodes ?? []).map(normalizeGraphNode));
       setNodes(graphNodes);
       setEdges(fixJunctionEdgeHandles(graphNodes, (diagram.graph.edges ?? []).map(normalizeOrthogonalEdge)));
+      // Authoritative graph is installed — drop any history recorded against the
+      // empty placeholder canvas, then snapshot dirty generation so supplemental
+      // component/BoM fetches cannot clear dirtiness from mid-load edits.
+      historyRef.current = { past: [], future: [] };
+      setHistoryVersion((version) => version + 1);
+      const dirtyGenerationAfterGraph = graphDirtyGeneration.current;
+      setGraphDirty(false);
       const nextComponents = await api.listComponents(diagram.id);
       if (generation !== diagramLoadGeneration.current) return;
       setComponents(nextComponents);
@@ -545,7 +554,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       if (generation !== diagramLoadGeneration.current) return;
       setBomSnapshots(snapshots);
       setSelectedBomId(snapshots[0]?.id ?? "");
-      setGraphDirty(false);
+      // Mid-load canvas edits bump the generation; keep dirty so Save and
+      // discard guards still protect those unsaved changes.
+      if (graphDirtyGeneration.current === dirtyGenerationAfterGraph) {
+        setGraphDirty(false);
+      }
     });
   }, [selectedDiagramId, setEdges, setNodes]);
 
