@@ -156,6 +156,51 @@ def test_admin_cannot_deactivate_own_account(client: TestClient) -> None:
     assert response.status_code == 400
 
 
+def test_sole_admin_cannot_demote_own_role(client: TestClient) -> None:
+    """API must preserve ≥1 active admin; UI disables the control but is not the trust boundary."""
+    me = client.get("/auth/me").json()
+
+    demote = client.put(f"/auth/users/{me['id']}", json={"role": "engineer"})
+    still_me = client.get("/auth/me").json()
+
+    assert demote.status_code == 400
+    assert still_me["role"] == "admin"
+
+
+def test_cannot_remove_last_active_admin(client: TestClient) -> None:
+    me = client.get("/auth/me").json()
+    other = client.post(
+        "/auth/users",
+        json={
+            "email": "second-admin@fsdp.test",
+            "name": "Second Admin",
+            "password": "second-admin-pass",
+            "role": "admin",
+        },
+    ).json()
+
+    remaining = anonymous_client()
+    assert (
+        remaining.post(
+            "/auth/login",
+            json={"email": "second-admin@fsdp.test", "password": "second-admin-pass"},
+        ).status_code
+        == 200
+    )
+    # Leave only `other` as admin.
+    demoted = remaining.put(f"/auth/users/{me['id']}", json={"role": "engineer"})
+    assert demoted.status_code == 200
+
+    blocked_deactivate = remaining.put(f"/auth/users/{other['id']}", json={"is_active": False})
+    blocked_demote = remaining.put(f"/auth/users/{other['id']}", json={"role": "viewer"})
+    still = remaining.get("/auth/me").json()
+
+    assert blocked_deactivate.status_code == 400
+    assert blocked_demote.status_code == 400
+    assert still["role"] == "admin"
+    assert still["is_active"] is True
+
+
 def test_deletes_are_audited_with_actor(client: TestClient) -> None:
     project = client.post("/projects", json={"name": "Audit Me"}).json()
     client.delete(f"/projects/{project['id']}")

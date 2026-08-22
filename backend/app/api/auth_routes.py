@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -15,6 +15,17 @@ from app.models import User
 from app.schemas import LoginRequest, UserCreate, UserRead, UserUpdate
 
 auth_router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _active_admin_count(db: Session) -> int:
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(User.role == "admin", User.is_active.is_(True))
+        )
+        or 0
+    )
 
 
 @auth_router.post("/login", response_model=UserRead)
@@ -101,6 +112,13 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
     if payload.is_active is False and user.id == admin.id:
         raise HTTPException(status_code=400, detail="You cannot deactivate your own account")
+    if (
+        payload.role is not None
+        and payload.role != "admin"
+        and user.id == admin.id
+        and user.role == "admin"
+    ):
+        raise HTTPException(status_code=400, detail="You cannot demote your own admin role")
 
     data = payload.model_dump(exclude_unset=True)
     password = data.pop("password", None)
@@ -108,6 +126,14 @@ def update_user(
         user.password_hash = hash_password(password)
     for field, value in data.items():
         setattr(user, field, value)
+    # Reject any update that would leave the deployment with zero active admins
+    # (self-demotion, or demoting/deactivating the last other admin).
+    db.flush()
+    if _active_admin_count(db) < 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot remove the last active administrator",
+        )
     db.commit()
     db.refresh(user)
     return user
