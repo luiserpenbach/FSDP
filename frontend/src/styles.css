@@ -617,9 +617,177 @@ tr.selectedRow:hover {
 
 .catalogFilters {
   display: grid;
+  flex: 1;
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.catalogPage {
+  height: 100vh;
+  max-width: none;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 14px;
+}
+
+.catalogWorkspace {
+  display: flex;
+  flex: 1;
+  gap: 0;
+  min-height: 0;
+}
+
+.catalogLibrary {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.catalogLibrary > h2 {
+  flex: 0 0 auto;
+}
+
+.catalogToolbar {
+  align-items: end;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 10px 16px;
   margin-bottom: 8px;
+}
+
+.catalogToolbarActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.catalogLibrary .tableWrapFill {
+  flex: 1;
+  margin-top: 4px;
+  max-height: none;
+  min-height: 0;
+}
+
+.catalogCount {
+  flex: 0 0 auto;
+  margin: 8px 0 0;
+}
+
+.catalogWorkspace > .panelResizer {
+  align-self: stretch;
+  flex: 0 0 6px;
+}
+
+.catalogInspector {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.catalogInspectorPanel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.catalogInspectorPanel > h2 {
+  flex: 0 0 auto;
+}
+
+.catalogInspectorBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.catalogInspectorActions {
+  margin: 0;
+}
+
+.catalogInspectorBody h3 {
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.catalogOverview {
+  display: grid;
+  gap: 2px 16px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.catalogDetail {
+  margin: 0 0 8px;
+}
+
+.catalogDetail span {
+  color: var(--text-3);
+  display: block;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.catalogDetail strong {
+  color: var(--text);
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.columnPicker {
+  position: relative;
+}
+
+.columnPickerMenu {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 360px;
+  min-width: 200px;
+  overflow: auto;
+  padding: 8px 10px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 8;
+}
+
+.columnPickerMenu .checkboxLabel {
+  margin: 0;
+  padding: 3px 2px;
+}
+
+.partEditModal {
+  width: min(640px, 100%);
+}
+
+.partEditForm {
+  margin: 0;
+  overflow: auto;
+  padding: 4px 18px 16px;
 }
 
 .inputWithAction {
@@ -2288,11 +2456,13 @@ span.symbolListPendingName.untitled {
   }
 
   .sidebar .panelResizer,
-  .diagramLayout > .panelResizer {
+  .diagramLayout > .panelResizer,
+  .catalogWorkspace > .panelResizer {
     display: none;
   }
 
-  .inspector {
+  .inspector,
+  .catalogInspector {
     width: auto !important;
   }
 

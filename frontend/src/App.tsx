@@ -2034,7 +2034,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         <Route
           path="/parts"
           element={
-            <PageLayout title="Parts Catalog" description="Org-wide hardware library">
+            <PageLayout className="catalogPage" title="Parts Catalog" description="Org-wide hardware library">
               <PartsCatalog
                 parts={parts}
                 selectedPartId={selectedPartId}

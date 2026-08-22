@@ -1,8 +1,16 @@
 import type { ReactNode } from "react";
 
-export function Panel({ title, children }: { title: string; children: ReactNode }) {
+export function Panel({
+  title,
+  children,
+  className = ""
+}: {
+  title: string;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
-    <article className="panel">
+    <article className={`panel ${className}`.trim()}>
       <h2>{title}</h2>
       {children}
     </article>
@@ -122,16 +130,18 @@ export function DataTable<T>({
   columns,
   getKey,
   selectedKey,
-  onSelect
+  onSelect,
+  className = ""
 }: {
   rows: T[];
   columns: Array<{ header: string; render: (row: T) => ReactNode }>;
   getKey: (row: T, index: number) => string;
   selectedKey?: string;
   onSelect?: (row: T) => void;
+  className?: string;
 }) {
   return (
-    <div className="tableWrap">
+    <div className={`tableWrap ${className}`.trim()}>
       <table>
         <thead>
           <tr>
