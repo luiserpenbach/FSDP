@@ -488,11 +488,7 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
-    await waitFor(() => {
-      const projectSelects = screen.getAllByLabelText("Project");
-      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
-    });
+    await waitForWorkspace();
 
     fireEvent.click(
       screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
