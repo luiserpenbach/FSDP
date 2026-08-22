@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "reactflow";
 import {
+  applyComponentTagToNodes,
   attachToSectionAtAbsolutePosition,
   removeNodesKeepingSectionContents,
   sectionContainingPoint
@@ -55,6 +56,43 @@ describe("sectionContainingPoint / attachToSectionAtAbsolutePosition", () => {
 
     expect(attached.parentNode).toBeUndefined();
     expect(attached.position).toEqual(absolute);
+  });
+});
+
+describe("applyComponentTagToNodes", () => {
+  it("keeps mid-place canvas edits when tagging the live node list", () => {
+    const atClickTime = [
+      node({
+        id: "valve-a",
+        type: "pidSymbol",
+        data: { label: "Valve A", symbolType: "valve", rotation: 0 }
+      })
+    ];
+    const afterMidPlaceEdit = [
+      node({
+        id: "valve-a",
+        type: "pidSymbol",
+        data: { label: "Valve A", symbolType: "valve", rotation: 90 }
+      })
+    ];
+
+    // Correct: tag whatever is on the canvas after createComponent returns.
+    const fromLive = applyComponentTagToNodes(afterMidPlaceEdit, "valve-a", "V-1");
+    expect(fromLive[0]?.data).toMatchObject({ rotation: 90, tag: "V-1" });
+
+    // Old bug: tagging a click-time snapshot would drop the rotation.
+    const fromStale = applyComponentTagToNodes(atClickTime, "valve-a", "V-1");
+    expect(fromStale[0]?.data).toMatchObject({ rotation: 0, tag: "V-1" });
+  });
+
+  it("leaves other nodes unchanged", () => {
+    const nodes = [
+      node({ id: "valve-a", data: { label: "A" } }),
+      node({ id: "pump-1", data: { label: "P" } })
+    ];
+    const next = applyComponentTagToNodes(nodes, "valve-a", "V-1");
+    expect(next[1]).toBe(nodes[1]);
+    expect(next[0]?.data).toMatchObject({ label: "A", tag: "V-1" });
   });
 });
 
