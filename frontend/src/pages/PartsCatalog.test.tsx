@@ -153,7 +153,10 @@ describe("PartsCatalog", () => {
 
   it("exports the visible library rows as CSV", async () => {
     stubCatalogFetch();
-    const createObjectURL = vi.fn((_blob: Blob) => "blob:parts");
+    const createObjectURL = vi.fn((blob: Blob) => {
+      expect(blob).toBeInstanceOf(Blob);
+      return "blob:parts";
+    });
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
