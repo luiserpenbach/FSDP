@@ -197,30 +197,6 @@ function jsonResponse(body: unknown, status = 200) {
   });
 }
 
-function findPaletteCell(label: string) {
-  return screen.getAllByRole("button").find(
-    (button) =>
-      button.classList.contains("paletteCell") &&
-      button.querySelector(".paletteCellName")?.textContent === label
-  );
-}
-
-async function clickCanvasToPlace(x = 400, y = 300) {
-  const pane = await waitFor(() => document.querySelector(".react-flow__pane") as HTMLElement);
-  fireEvent.click(pane, { clientX: x, clientY: y });
-}
-
-async function placeSymbolFromPalette(label: string) {
-  fireEvent.click(screen.getByRole("button", { name: "Symbols" }));
-  const paletteButton = await waitFor(() => {
-    const match = findPaletteCell(label);
-    if (!match) throw new Error(`Palette cell not found: ${label}`);
-    return match;
-  });
-  fireEvent.click(paletteButton);
-  await clickCanvasToPlace();
-}
-
 async function makeDiagramDirty() {
   const node = await waitFor(() => document.querySelector(".react-flow__node") as HTMLElement);
   fireEvent.click(node);
