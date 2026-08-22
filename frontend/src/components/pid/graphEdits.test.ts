@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "reactflow";
-import { removeNodesKeepingSectionContents } from "./graphEdits";
+import {
+  attachToSectionAtAbsolutePosition,
+  removeNodesKeepingSectionContents,
+  sectionContainingPoint
+} from "./graphEdits";
 
 function node(partial: Partial<Node> & Pick<Node, "id">): Node {
   return {
@@ -13,6 +17,46 @@ function node(partial: Partial<Node> & Pick<Node, "id">): Node {
 function edge(partial: Partial<Edge> & Pick<Edge, "id" | "source" | "target">): Edge {
   return { ...partial };
 }
+
+describe("sectionContainingPoint / attachToSectionAtAbsolutePosition", () => {
+  const section = node({
+    id: "section-1",
+    type: "pidSection",
+    position: { x: 100, y: 50 },
+    style: { width: 200, height: 120 }
+  });
+
+  it("finds the section under a flow point", () => {
+    expect(sectionContainingPoint([section], { x: 150, y: 80 })?.id).toBe("section-1");
+    expect(sectionContainingPoint([section], { x: 10, y: 10 })).toBeUndefined();
+  });
+
+  it("parents a junction placed at an absolute join point inside a section", () => {
+    const absolute = { x: 140, y: 90 };
+    const attached = attachToSectionAtAbsolutePosition(
+      node({ id: "junction-1", type: "pidJunction" }),
+      [section],
+      absolute,
+      { width: 20, height: 20 }
+    );
+
+    expect(attached.parentNode).toBe("section-1");
+    expect(attached.position).toEqual({ x: 40, y: 40 });
+  });
+
+  it("leaves absolute placement when the join point is outside every section", () => {
+    const absolute = { x: 10, y: 10 };
+    const attached = attachToSectionAtAbsolutePosition(
+      node({ id: "junction-1", type: "pidJunction" }),
+      [section],
+      absolute,
+      { width: 20, height: 20 }
+    );
+
+    expect(attached.parentNode).toBeUndefined();
+    expect(attached.position).toEqual(absolute);
+  });
+});
 
 describe("removeNodesKeepingSectionContents", () => {
   it("deletes a section while keeping children and their edges", () => {
