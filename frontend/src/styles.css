@@ -615,6 +615,43 @@ tr.selectedRow:hover {
   font-size: 13px;
 }
 
+.catalogFilters {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin-bottom: 8px;
+}
+
+.inputWithAction {
+  display: flex;
+  gap: 8px;
+}
+
+.inputWithAction input {
+  flex: 1;
+}
+
+.inputWithAction button {
+  flex: 0 0 auto;
+}
+
+.splitFields {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.checkboxLabel {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.checkboxLabel input {
+  width: auto;
+}
+
 .snapshotMeta {
   align-items: center;
   color: var(--text-2);

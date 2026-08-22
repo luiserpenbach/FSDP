@@ -42,6 +42,8 @@ PARTS = [
         "mass_kg": 0.35,
         "qualification_status": "unqualified",
         "certification_status": "unreviewed",
+        "lifecycle_status": "draft",
+        "preferred": False,
     },
     {
         "part_number": "AMPH-PR-001",
@@ -54,6 +56,8 @@ PARTS = [
         "mass_kg": 1.8,
         "qualification_status": "qualified",
         "certification_status": "in_review",
+        "lifecycle_status": "active",
+        "preferred": False,
     },
     {
         "part_number": "AMPH-SV-001",
@@ -64,8 +68,10 @@ PARTS = [
         "pressure_rating_bar": 350.0,
         "cv": 0.8,
         "mass_kg": 0.9,
-        "qualification_status": "preferred",
+        "qualification_status": "qualified",
         "certification_status": "certified",
+        "lifecycle_status": "active",
+        "preferred": True,
     },
     {
         "part_number": "AMPH-RV-001",
@@ -77,6 +83,8 @@ PARTS = [
         "mass_kg": 0.6,
         "qualification_status": "qualified",
         "certification_status": "certified",
+        "lifecycle_status": "active",
+        "preferred": False,
     },
     {
         "part_number": "AMPH-PT-001",
@@ -86,8 +94,10 @@ PARTS = [
         "material": "17-4PH",
         "pressure_rating_bar": 500.0,
         "mass_kg": 0.2,
-        "qualification_status": "preferred",
+        "qualification_status": "qualified",
         "certification_status": "certified",
+        "lifecycle_status": "active",
+        "preferred": True,
     },
 ]
 

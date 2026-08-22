@@ -33,8 +33,10 @@ def test_bom_generation_rolls_up_component_quantities() -> None:
         description="Solenoid valve",
         part_type="valve",
         source_type="internal",
-        qualification_status="preferred",
-        certification_status="qualified",
+        qualification_status="qualified",
+        certification_status="certified",
+        preferred=True,
+        lifecycle_status="active",
     )
     db.add_all([project, system, diagram, part])
     db.flush()

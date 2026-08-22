@@ -161,7 +161,7 @@ Generate uses a scheme stored in Settings (the existing `/settings` page already
 
 | Setting | Scope | Example |
 |---|---|---|
-| Template | Org (catalog settings) | `{prefix}-{type}-{seq}` |
+| Template | Org (catalog settings) | `{prefix}-{seq}` (locked for now) |
 | Default prefix | Org | `AMPH` |
 | Sequence padding | Org | `3` → `001` |
 | Type codes | Org, one per user-defined part type | `valve` → `SV`, `fitting` → `FT` |
@@ -170,8 +170,8 @@ Generate uses a scheme stored in Settings (the existing `/settings` page already
 **Generate behavior**
 
 1. Resolve prefix (project override if the current project has one, else org default).
-2. Resolve type code from the part type just chosen; if none, use `XX` or omit `{type}` per template.
-3. Allocate the next sequence for that prefix (atomic, catalog-wide) so two users cannot mint the same name.
+2. Allocate the next sequence for that prefix (atomic, catalog-wide) so two users cannot mint the same name.
+3. Format `{prefix}-{seq}` with zero-padding from Settings (default 3 → `AMPH-001`).
 4. Fill the field. The user can edit it before save.
 5. On save, uniqueness is checked across all parts. Collision → 409, Generate again.
 
@@ -549,7 +549,7 @@ Recorded 2026-08-21.
 1. **Place drafts / unqualified parts?** Yes, with warnings. Obsolete still cannot be newly placed.
 2. **Line pressure above part rating?** Warn only — on place and on BoM. Never hard-block.
 3. **Uniqueness:** the **part name** is unique globally (whole catalog, all projects). `preferred` is a flag, not a uniqueness constraint.
-4. **Name format is not enforced.** A **Generate** button fills the name field from a scheme defined on the **Settings** page (org template + optional per-project prefix). Users may type any unique name.
+4. **Name format is not enforced.** A **Generate** button fills the name field from a scheme defined on the **Settings** page. Template for now: **`{prefix}-{seq}`** (e.g. `AMPH-001`). Optional per-project prefix. Users may type any unique name.
 5. **Documents:** file upload in v1 (server disk + authenticated download). URLs optional extra.
 6. **Project AVL:** after the shared library is working. Not v1.
 7. **Part revision table:** no. Keep the existing `revision` string.
@@ -620,6 +620,6 @@ Decisions in §16 are locked. Still useful to confirm:
 
 1. **Thesis:** org-wide identity + uses on diagrams — still agreed?
 2. **Status split:** lifecycle × qualification × preferred × certification — too many axes, or the right untangle?
-3. **Name scheme tokens:** is `{prefix}-{type}-{seq}` the right default template to put on Settings, or do you already have an Amphora scheme to paste in?
+3. **Name scheme:** `{prefix}-{seq}` is locked for v1 (e.g. `AMPH-001`). Type codes can wait.
 
 Phase A is the next implementation slice: unique names, Generate + Settings, user-defined types, file upload, honest library.

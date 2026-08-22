@@ -96,6 +96,11 @@ const PILL_TONES: Record<string, string> = {
   unreviewed: "muted",
   rejected: "bad",
   draft: "muted",
+  active: "good",
+  obsolete: "bad",
+  disqualified: "bad",
+  expired: "warn",
+  in_qualification: "warn",
   approved: "good",
   released: "good",
   created: "good",
@@ -104,7 +109,6 @@ const PILL_TONES: Record<string, string> = {
   admin: "warn",
   engineer: "info",
   viewer: "muted",
-  active: "good",
   inactive: "bad"
 };
 
