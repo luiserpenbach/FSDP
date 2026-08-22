@@ -716,11 +716,22 @@ tr.selectedRow:hover {
   margin: 0;
   max-width: 640px;
   min-width: 0;
+  position: relative;
   width: 100%;
+}
+
+.catalogSearch svg {
+  color: var(--text-3);
+  left: 11px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
 }
 
 .catalogSearch input {
   margin: 0;
+  padding-left: 34px;
 }
 
 .catalogPageActions {
@@ -751,40 +762,37 @@ tr.selectedRow:hover {
 
 .catalogTableToolbar {
   align-items: center;
-  background: var(--surface-2);
+  background: var(--surface);
   border-bottom: 1px solid var(--line);
   display: flex;
   flex: 0 0 auto;
-  gap: 12px;
+  gap: 4px;
   justify-content: space-between;
   min-height: 44px;
-  padding: 0 10px;
+  padding: 0 8px 0 12px;
 }
 
 .catalogTableTools {
   align-items: center;
   display: flex;
+  gap: 2px;
   min-width: 0;
-}
-
-.catalogTableTools > * {
-  align-items: center;
-  display: inline-flex;
-  height: 44px;
-}
-
-.catalogTableTools > * + * {
-  border-left: 1px solid var(--line);
-  padding-left: 10px;
-  margin-left: 10px;
 }
 
 .catalogTableCount {
   color: var(--text-2);
   font-size: 13px;
   font-weight: 600;
-  padding-right: 2px;
+  padding: 0 10px 0 2px;
   white-space: nowrap;
+}
+
+.catalogToolDivider {
+  align-self: center;
+  background: var(--line);
+  flex: 0 0 1px;
+  height: 18px;
+  width: 1px;
 }
 
 .catalogTableToolbar select {
@@ -794,7 +802,7 @@ tr.selectedRow:hover {
   height: auto;
   margin: 0;
   min-width: 132px;
-  padding: 6px 8px;
+  padding: 6px 10px;
   width: auto;
 }
 

@@ -468,6 +468,10 @@ export function PartsCatalog({
         <h1>Parts</h1>
         <label className="catalogSearch">
           <span className="srOnly">Search parts</span>
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M10.5 10.5 L14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
           <input
             type="search"
             placeholder="Search parts"
@@ -491,6 +495,7 @@ export function PartsCatalog({
             <span className="catalogTableCount">
               {visibleParts.length} {visibleParts.length === 1 ? "part" : "parts"}
             </span>
+            <span className="catalogToolDivider" />
             <select
               aria-label="Filter by type"
               value={typeFilter}
@@ -503,6 +508,7 @@ export function PartsCatalog({
                 </option>
               ))}
             </select>
+            <span className="catalogToolDivider" />
             <select
               aria-label="Filter by lifecycle"
               value={lifecycleFilter}
