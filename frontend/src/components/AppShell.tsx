@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { PanelResizer, useStoredWidth } from "./resizable";
-import { Select } from "./ui";
 
 export type NavItem = {
   path: string;
@@ -31,12 +30,6 @@ export function Brand() {
 export function AppShell({
   children,
   navItems,
-  projectValue,
-  projectOptions,
-  onProjectChange,
-  systemValue,
-  systemOptions,
-  onSystemChange,
   busy,
   message,
   error,
@@ -45,12 +38,6 @@ export function AppShell({
 }: {
   children: ReactNode;
   navItems: NavItem[];
-  projectValue: string;
-  projectOptions: Array<{ value: string; label: string }>;
-  onProjectChange: (value: string) => void;
-  systemValue: string;
-  systemOptions: Array<{ value: string; label: string }>;
-  onSystemChange: (value: string) => void;
   busy: boolean;
   message: string;
   error: string;
@@ -71,27 +58,19 @@ export function AppShell({
             </NavLink>
           ))}
         </nav>
+        <div className="sidebarFooter">
+          <span className={error ? "status statusError" : "status"}>{busy ? "Working…" : error || message}</span>
+          <div className="userBox">
+            <span className="userLabel">{userLabel}</span>
+            <button className="signOut" onClick={onSignOut} type="button">
+              Sign out
+            </button>
+          </div>
+        </div>
         <PanelResizer width={sidebarWidth} onResize={setSidebarWidth} direction={1} label="Resize navigation panel" />
       </aside>
 
-      <div className="appMain">
-        <header className="topBar">
-          <div className="contextSelectors">
-            <Select label="Project" value={projectValue} options={projectOptions} onChange={onProjectChange} />
-            <Select label="System" value={systemValue} options={systemOptions} onChange={onSystemChange} />
-          </div>
-          <div className="statusStack">
-            <span className={error ? "status statusError" : "status"}>
-              {busy ? "Working…" : error || message}
-            </span>
-          </div>
-          <div className="userBox">
-            <span className="userLabel">{userLabel}</span>
-            <button className="signOut" onClick={onSignOut} type="button">Sign out</button>
-          </div>
-        </header>
-        {children}
-      </div>
+      <div className="appMain">{children}</div>
     </div>
   );
 }

@@ -1,15 +1,18 @@
 import csv
 import io
 import re
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from app.core.security import require_writer
+from app.core.security import require_admin, require_writer
 from app.db import get_db
 from app.models import (
     BomSnapshot,
+    CatalogDocument,
     ChangeEvent,
     ComponentInstance,
     Diagram,
@@ -28,6 +31,9 @@ from app.schemas import (
     BomReadinessRead,
     BomSnapshotRead,
     BomStatusUpdate,
+    CatalogDocumentRead,
+    CatalogSettingsRead,
+    CatalogSettingsUpdate,
     ChangeEventRead,
     ComponentInstanceCreate,
     ComponentInstanceRead,
@@ -39,10 +45,14 @@ from app.schemas import (
     FluidSystemCreate,
     FluidSystemRead,
     FluidSystemUpdate,
+    GeneratePartNameRead,
     ImpactRead,
     PartCreate,
     PartRead,
     PartUpdate,
+    PartUsageBomRead,
+    PartUsageComponentRead,
+    PartUsageRead,
     PidSymbolCreate,
     PidSymbolRead,
     PidSymbolUpdate,
@@ -57,7 +67,17 @@ from app.schemas import (
     TraceLinkRead,
 )
 from app.services.bom import generate_bom_snapshot
-from app.services.catalog import qualification_warnings
+from app.services.catalog import (
+    DOCUMENT_KINDS,
+    MAX_DOCUMENT_BYTES,
+    catalog_files_root,
+    document_suffix_allowed,
+    ensure_catalog_settings,
+    generate_part_name,
+    qualification_warnings,
+    remember_part_type,
+    sanitize_upload_filename,
+)
 from app.services.change_impact import get_change_impact
 from app.services.traceability import (
     delete_trace_links_for,
@@ -553,12 +573,13 @@ def create_part(
 ) -> Part:
     existing = db.scalar(select(Part).where(Part.part_number == payload.part_number))
     if existing:
-        raise HTTPException(status_code=409, detail="Part number already exists")
+        raise HTTPException(status_code=409, detail="Part name already exists")
 
     data = payload.model_dump()
     data["metadata_"] = data.pop("metadata")
     part = Part(**data)
     db.add(part)
+    remember_part_type(db, part.part_type)
     db.flush()
     record_change(
         db, "part", part.id, "created", f"Created part {part.part_number}", actor=user.email
@@ -570,14 +591,26 @@ def create_part(
 
 @router.get("/parts", response_model=list[PartRead])
 def list_parts(
+    q: str | None = None,
     part_type: str | None = None,
     material: str | None = None,
     manufacturer: str | None = None,
     qualification_status: str | None = None,
+    lifecycle_status: str | None = None,
+    preferred: bool | None = None,
     min_pressure_bar: float | None = None,
     db: Session = Depends(get_db),
 ) -> list[Part]:
     stmt = select(Part)
+    if q and q.strip():
+        term = f"%{q.strip()}%"
+        stmt = stmt.where(
+            or_(
+                Part.part_number.ilike(term),
+                Part.description.ilike(term),
+                Part.manufacturer.ilike(term),
+            )
+        )
     if part_type:
         stmt = stmt.where(Part.part_type == part_type)
     if material:
@@ -586,6 +619,10 @@ def list_parts(
         stmt = stmt.where(Part.manufacturer == manufacturer)
     if qualification_status:
         stmt = stmt.where(Part.qualification_status == qualification_status)
+    if lifecycle_status:
+        stmt = stmt.where(Part.lifecycle_status == lifecycle_status)
+    if preferred is not None:
+        stmt = stmt.where(Part.preferred.is_(preferred))
     if min_pressure_bar is not None:
         stmt = stmt.where(Part.pressure_rating_bar >= min_pressure_bar)
     return list(db.scalars(stmt.order_by(Part.part_number)))
@@ -609,9 +646,11 @@ def update_part(
             select(Part).where(Part.part_number == payload.part_number, Part.id != part_id)
         )
         if existing:
-            raise HTTPException(status_code=409, detail="Part number already exists")
+            raise HTTPException(status_code=409, detail="Part name already exists")
 
     apply_updates(part, payload)
+    if payload.part_type:
+        remember_part_type(db, payload.part_type)
     record_change(
         db, "part", part.id, "updated", f"Updated part {part.part_number}", actor=user.email
     )
@@ -640,11 +679,273 @@ def delete_part(
                 "Remove those components first or mark the part obsolete instead of deleting it."
             ),
         )
+    for document in db.scalars(select(CatalogDocument).where(CatalogDocument.part_id == part_id)):
+        stored = catalog_files_root() / document.storage_path
+        if stored.is_file():
+            stored.unlink()
     delete_trace_links_for(db, "part", part.id)
     record_change(
         db, "part", part.id, "deleted", f"Deleted part {part.part_number}", actor=user.email
     )
     db.delete(part)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.get("/catalog/settings", response_model=CatalogSettingsRead)
+def get_catalog_settings(db: Session = Depends(get_db)) -> CatalogSettingsRead:
+    row = ensure_catalog_settings(db)
+    db.commit()
+    return CatalogSettingsRead(
+        prefix=row.prefix,
+        sequence_padding=row.sequence_padding,
+        next_sequence=row.next_sequence,
+        part_types=list(row.part_types or []),
+    )
+
+
+@router.put("/catalog/settings", response_model=CatalogSettingsRead)
+def update_catalog_settings(
+    payload: CatalogSettingsUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_admin),
+) -> CatalogSettingsRead:
+    row = ensure_catalog_settings(db)
+    data = payload.model_dump(exclude_unset=True)
+    if "part_types" in data and data["part_types"] is not None:
+        seen: list[str] = []
+        existing = set()
+        for item in data["part_types"]:
+            cleaned = item.strip()
+            if cleaned and cleaned.casefold() not in existing:
+                seen.append(cleaned)
+                existing.add(cleaned.casefold())
+        data["part_types"] = seen
+    for field, value in data.items():
+        setattr(row, field, value)
+    record_change(
+        db,
+        "catalog_settings",
+        row.id,
+        "updated",
+        f"Updated catalog settings (prefix {row.prefix})",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(row)
+    return CatalogSettingsRead(
+        prefix=row.prefix,
+        sequence_padding=row.sequence_padding,
+        next_sequence=row.next_sequence,
+        part_types=list(row.part_types or []),
+    )
+
+
+@router.post("/catalog/generate-name", response_model=GeneratePartNameRead)
+def generate_catalog_part_name(
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> GeneratePartNameRead:
+    if project_id:
+        require_model(db, Project, project_id)
+    name = generate_part_name(db, project_id)
+    record_change(
+        db,
+        "catalog_settings",
+        "default",
+        "generated",
+        f"Generated part name {name}",
+        actor=user.email,
+    )
+    db.commit()
+    return GeneratePartNameRead(part_number=name)
+
+
+@router.post("/parts/{part_id}/obsolete", response_model=PartRead)
+def obsolete_part(
+    part_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Part:
+    part = require_model(db, Part, part_id)
+    part.lifecycle_status = "obsolete"
+    part.preferred = False
+    record_change(
+        db, "part", part.id, "updated", f"Marked part {part.part_number} obsolete", actor=user.email
+    )
+    db.commit()
+    db.refresh(part)
+    return part
+
+
+@router.get("/parts/{part_id}/usage", response_model=PartUsageRead)
+def get_part_usage(part_id: str, db: Session = Depends(get_db)) -> PartUsageRead:
+    part = require_model(db, Part, part_id)
+    components = list(
+        db.scalars(select(ComponentInstance).where(ComponentInstance.part_id == part.id))
+    )
+    usage_components: list[PartUsageComponentRead] = []
+    diagram_ids: set[str] = set()
+    for component in components:
+        diagram = db.get(Diagram, component.diagram_id)
+        system = db.get(FluidSystem, diagram.system_id) if diagram else None
+        project = db.get(Project, system.project_id) if system else None
+        if diagram is None or system is None or project is None:
+            continue
+        diagram_ids.add(diagram.id)
+        usage_components.append(
+            PartUsageComponentRead(
+                id=component.id,
+                tag=component.tag,
+                quantity=component.quantity,
+                diagram_id=diagram.id,
+                diagram_name=diagram.name,
+                system_id=system.id,
+                system_name=system.name,
+                project_id=project.id,
+                project_name=project.name,
+            )
+        )
+    snapshots = []
+    if diagram_ids:
+        snapshots = list(
+            db.scalars(
+                select(BomSnapshot)
+                .where(BomSnapshot.diagram_id.in_(diagram_ids))
+                .order_by(BomSnapshot.created_at.desc())
+            )
+        )
+    return PartUsageRead(
+        components=usage_components,
+        bom_snapshots=[
+            PartUsageBomRead(
+                id=snapshot.id,
+                diagram_id=snapshot.diagram_id,
+                revision=snapshot.revision,
+                status=snapshot.status,
+            )
+            for snapshot in snapshots
+        ],
+    )
+
+
+def _document_file_path(storage_path: str) -> Path:
+    root = catalog_files_root().resolve()
+    path = (root / storage_path).resolve()
+    if root not in path.parents and path != root:
+        raise HTTPException(status_code=400, detail="Invalid document path")
+    return path
+
+
+@router.get("/parts/{part_id}/documents", response_model=list[CatalogDocumentRead])
+def list_part_documents(part_id: str, db: Session = Depends(get_db)) -> list[CatalogDocument]:
+    require_model(db, Part, part_id)
+    return list(
+        db.scalars(
+            select(CatalogDocument)
+            .where(CatalogDocument.part_id == part_id)
+            .order_by(CatalogDocument.created_at.desc())
+        )
+    )
+
+
+@router.post(
+    "/parts/{part_id}/documents", response_model=CatalogDocumentRead, status_code=201
+)
+def upload_part_document(
+    part_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+    file: UploadFile = File(...),
+    title: str | None = Form(None),
+    kind: str = Form("other"),
+    source_url: str | None = Form(None),
+) -> CatalogDocument:
+    part = require_model(db, Part, part_id)
+    if kind not in DOCUMENT_KINDS:
+        raise HTTPException(status_code=422, detail="Invalid document kind")
+    filename = sanitize_upload_filename(file.filename or "upload")
+    if not document_suffix_allowed(filename):
+        raise HTTPException(status_code=422, detail="File type is not allowed")
+    payload = file.file.read()
+    if len(payload) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(status_code=413, detail="File is larger than 25 MB")
+    if not payload:
+        raise HTTPException(status_code=422, detail="File is empty")
+
+    document = CatalogDocument(
+        part_id=part.id,
+        title=(title or "").strip() or Path(filename).stem,
+        kind=kind,
+        original_filename=filename,
+        content_type=file.content_type or "application/octet-stream",
+        size_bytes=len(payload),
+        storage_path="",
+        source_url=(source_url or "").strip() or None,
+        uploaded_by=user.email,
+    )
+    db.add(document)
+    db.flush()
+    relative = f"{part.id}/{document.id}_{filename}"
+    dest = _document_file_path(relative)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(payload)
+    document.storage_path = relative
+    record_change(
+        db,
+        "part",
+        part.id,
+        "updated",
+        f"Uploaded {filename} to {part.part_number}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(document)
+    return document
+
+
+@router.get("/parts/{part_id}/documents/{document_id}/file")
+def download_part_document(
+    part_id: str, document_id: str, db: Session = Depends(get_db)
+) -> FileResponse:
+    require_model(db, Part, part_id)
+    document = require_model(db, CatalogDocument, document_id)
+    if document.part_id != part_id:
+        raise HTTPException(status_code=404, detail="CatalogDocument not found")
+    path = _document_file_path(document.storage_path)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File is missing")
+    return FileResponse(
+        path,
+        filename=document.original_filename,
+        media_type=document.content_type,
+    )
+
+
+@router.delete("/parts/{part_id}/documents/{document_id}", status_code=204)
+def delete_part_document(
+    part_id: str,
+    document_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Response:
+    part = require_model(db, Part, part_id)
+    document = require_model(db, CatalogDocument, document_id)
+    if document.part_id != part_id:
+        raise HTTPException(status_code=404, detail="CatalogDocument not found")
+    stored = _document_file_path(document.storage_path)
+    if stored.is_file():
+        stored.unlink()
+    record_change(
+        db,
+        "part",
+        part.id,
+        "updated",
+        f"Removed document {document.original_filename} from {part.part_number}",
+        actor=user.email,
+    )
+    db.delete(document)
     db.commit()
     return Response(status_code=204)
 
@@ -660,7 +961,12 @@ def create_component(
 ) -> ComponentInstance:
     require_model(db, Diagram, diagram_id)
     if payload.part_id:
-        require_model(db, Part, payload.part_id)
+        placed = require_model(db, Part, payload.part_id)
+        if placed.lifecycle_status == "obsolete":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Part {placed.part_number} is obsolete and cannot be placed.",
+            )
     existing_tag = db.scalar(
         select(ComponentInstance).where(
             ComponentInstance.diagram_id == diagram_id,
@@ -715,7 +1021,12 @@ def update_component(
 ) -> ComponentInstance:
     component = require_model(db, ComponentInstance, component_id)
     if payload.part_id:
-        require_model(db, Part, payload.part_id)
+        placed = require_model(db, Part, payload.part_id)
+        if placed.lifecycle_status == "obsolete":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Part {placed.part_number} is obsolete and cannot be placed.",
+            )
     if payload.tag is not None:
         existing_tag = db.scalar(
             select(ComponentInstance).where(

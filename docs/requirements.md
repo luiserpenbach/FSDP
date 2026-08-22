@@ -158,6 +158,8 @@ Includes:
 - Datasheets, CAD, test reports, certificates, and CoCs.
 - Alternate part recommendations based on pressure rating, envelope, material compatibility, lead time, and cost.
 
+A proposed product concept for this epic (object model, UX, digital-thread rules, and phased delivery) is in [part-catalog-concept.md](part-catalog-concept.md). It is not implemented.
+
 ### Epic 4: Fluid Analysis Suite
 
 Goal: perform first-order engineering analysis inside the platform.

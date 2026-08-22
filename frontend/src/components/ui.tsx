@@ -1,9 +1,22 @@
 import type { ReactNode } from "react";
 
-export function Panel({ title, children }: { title: string; children: ReactNode }) {
+export function Panel({
+  title,
+  children,
+  className = "",
+  actions
+}: {
+  title: string;
+  children: ReactNode;
+  className?: string;
+  actions?: ReactNode;
+}) {
   return (
-    <article className="panel">
-      <h2>{title}</h2>
+    <article className={`panel ${className}`.trim()}>
+      <div className="panelHead">
+        <h2>{title}</h2>
+        {actions}
+      </div>
       {children}
     </article>
   );
@@ -96,6 +109,11 @@ const PILL_TONES: Record<string, string> = {
   unreviewed: "muted",
   rejected: "bad",
   draft: "muted",
+  active: "good",
+  obsolete: "bad",
+  disqualified: "bad",
+  expired: "warn",
+  in_qualification: "warn",
   approved: "good",
   released: "good",
   created: "good",
@@ -104,7 +122,6 @@ const PILL_TONES: Record<string, string> = {
   admin: "warn",
   engineer: "info",
   viewer: "muted",
-  active: "good",
   inactive: "bad"
 };
 
@@ -118,16 +135,18 @@ export function DataTable<T>({
   columns,
   getKey,
   selectedKey,
-  onSelect
+  onSelect,
+  className = ""
 }: {
   rows: T[];
   columns: Array<{ header: string; render: (row: T) => ReactNode }>;
   getKey: (row: T, index: number) => string;
   selectedKey?: string;
   onSelect?: (row: T) => void;
+  className?: string;
 }) {
   return (
-    <div className="tableWrap">
+    <div className={`tableWrap ${className}`.trim()}>
       <table>
         <thead>
           <tr>

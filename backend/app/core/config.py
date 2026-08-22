@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     admin_name: str = "FSDP Admin"
 
     expose_docs: bool = True
+    catalog_files_dir: str = "var/catalog-files"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="FSDP_")
 

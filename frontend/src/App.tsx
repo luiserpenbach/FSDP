@@ -59,7 +59,9 @@ import { api, bomCsvUrl, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { LoginPage } from "./pages/LoginPage";
+import { CatalogSettingsPanel } from "./pages/CatalogSettingsPanel";
 import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout";
+import { PartsCatalog } from "./pages/PartsCatalog";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
@@ -114,8 +116,6 @@ function parseOptionalNumber(raw: string, field: string): number | null {
   return parsed;
 }
 
-const qualificationOptions = ["unqualified", "qualified", "preferred", "legacy", "restricted"].map((value) => ({ value, label: value }));
-const certificationOptions = ["unreviewed", "in_review", "certified", "rejected"].map((value) => ({ value, label: value }));
 const roleOptions = ["engineer", "viewer", "admin"].map((value) => ({ value, label: value }));
 
 const navItems: NavItem[] = [
@@ -383,7 +383,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [projectForm, setProjectForm] = useState({ name: "Demo Propulsion System", owner: "Propulsion Engineering", description: "MVP digital-thread project for FSDP." });
   const [systemForm, setSystemForm] = useState({ name: "Helium Pressurization", fluid: "GHe", description: "Pressurization system MVP workspace." });
   const [diagramName, setDiagramName] = useState("MVP P&ID");
-  const [partForm, setPartForm] = useState({ part_number: "VALVE-001", description: "Normally closed solenoid valve", part_type: "valve", manufacturer: "Internal Standard", material: "316L", pressure_rating_bar: "350", qualification_status: "unqualified", certification_status: "unreviewed" });
   const [componentTag, setComponentTag] = useState("V-1");
   const [requirementForm, setRequirementForm] = useState({ key: "FSDP-REQ-1", title: "Maintain pressure boundary compatibility", text: "All pressurized components shall be compatible with maximum expected operating pressure.", requirement_type: "safety", verification_method: "analysis" });
 
@@ -466,9 +465,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSelectedProjectId((current) => current || next[0]?.id || "");
     });
     void runAction("Loaded parts.", async () => {
-      const next = await api.listParts();
-      setParts(next);
-      setSelectedPartId((current) => current || next[0]?.id || "");
+      setParts(await api.listParts());
     });
     void runAction("Loaded change history.", async () => {
       setChanges(await api.listChanges());
@@ -638,21 +635,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSystemForm({ name: selectedSystem.name, fluid: selectedSystem.fluid ?? "", description: selectedSystem.description ?? "" });
     }
   }, [selectedSystem]);
-
-  useEffect(() => {
-    if (selectedPart) {
-      setPartForm({
-        part_number: selectedPart.part_number,
-        description: selectedPart.description,
-        part_type: selectedPart.part_type,
-        manufacturer: selectedPart.manufacturer ?? "",
-        material: selectedPart.material ?? "",
-        pressure_rating_bar: String(selectedPart.pressure_rating_bar ?? ""),
-        qualification_status: selectedPart.qualification_status,
-        certification_status: selectedPart.certification_status
-      });
-    }
-  }, [selectedPart]);
 
   useEffect(() => {
     if (selectedRequirement) {
@@ -1413,54 +1395,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     });
   }
 
-  function parsePressureRating(): number | null {
-    const cleaned = partForm.pressure_rating_bar.trim();
-    if (!cleaned) return null;
-    const parsed = Number(cleaned);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      throw new Error("Pressure rating must be a non-negative number (leave empty if unrated).");
-    }
-    return parsed;
-  }
-
-  function submitPart(event: FormEvent) {
-    event.preventDefault();
-    void runAction("Created part.", async () => {
-      const part = await api.createPart({
-        ...partForm,
-        pressure_rating_bar: parsePressureRating(),
-        source_type: "internal",
-        qualification_status: partForm.qualification_status || "unqualified",
-        certification_status: partForm.certification_status || "unreviewed"
-      });
-      setParts(await api.listParts());
-      setSelectedPartId(part.id);
-    }, "part");
-  }
-
-  function updatePart() {
-    if (!selectedPart) return;
-    void runAction("Updated part.", async () => {
-      await api.updatePart(selectedPart.id, {
-        ...partForm,
-        pressure_rating_bar: parsePressureRating(),
-        qualification_status: partForm.qualification_status || "unqualified",
-        certification_status: partForm.certification_status || "unreviewed"
-      });
-      setParts(await api.listParts());
-    }, "part");
-  }
-
-  function deletePart() {
-    if (!selectedPart || !window.confirm(`Delete part "${selectedPart.part_number}"?`)) return;
-    void runAction("Deleted part.", async () => {
-      await api.deletePart(selectedPart.id);
-      const next = await api.listParts();
-      setParts(next);
-      setSelectedPartId(next[0]?.id || "");
-    });
-  }
-
   function submitDiagram(event: FormEvent) {
     event.preventDefault();
     if (!selectedSystem) return;
@@ -1734,9 +1668,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     });
   }
 
-  const projectOptions = projects.map((project) => ({ value: project.id, label: project.name }));
-  const systemOptions = systems.map((system) => ({ value: system.id, label: system.name }));
-
   const symbolNodeSelected = selectedNode?.type === "pidSymbol";
   const resizableNodeSelected = symbolNodeSelected || selectedNode?.type === "pidSection";
   const selectedNodeWidth = Math.round(selectedNode?.width ?? Number(selectedNode?.style?.width ?? 0)) || 0;
@@ -1780,12 +1711,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     <EditorSettingsContext.Provider value={editorSettings}>
     <AppShell
       navItems={navItems}
-      projectValue={selectedProjectId}
-      projectOptions={projectOptions}
-      onProjectChange={selectProject}
-      systemValue={selectedSystemId}
-      systemOptions={systemOptions}
-      onSystemChange={selectSystem}
       busy={busy}
       message={message}
       error={error}
@@ -2098,27 +2023,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         <Route
           path="/parts"
           element={
-            <PageLayout title="Parts Catalog" description="Internal and vendor parts">
-              <section className="grid">
-                <Panel title="Part Editor">
-                  <form onSubmit={submitPart}>
-                    <TextInput label="Part number" value={partForm.part_number} onChange={(partNumber) => setPartForm({ ...partForm, part_number: partNumber })} />
-                    <TextInput label="Description" value={partForm.description} onChange={(description) => setPartForm({ ...partForm, description })} />
-                    <TextInput label="Type" value={partForm.part_type} onChange={(partType) => setPartForm({ ...partForm, part_type: partType })} />
-                    <TextInput label="Manufacturer" value={partForm.manufacturer} onChange={(manufacturer) => setPartForm({ ...partForm, manufacturer })} />
-                    <TextInput label="Material" value={partForm.material} onChange={(material) => setPartForm({ ...partForm, material })} />
-                    <TextInput label="Pressure rating bar" value={partForm.pressure_rating_bar} onChange={(pressure) => setPartForm({ ...partForm, pressure_rating_bar: pressure })} />
-                    <Select label="Qualification status" value={partForm.qualification_status} options={qualificationOptions} onChange={(qualificationStatus) => setPartForm({ ...partForm, qualification_status: qualificationStatus })} />
-                    <Select label="Certification status" value={partForm.certification_status} options={certificationOptions} onChange={(certificationStatus) => setPartForm({ ...partForm, certification_status: certificationStatus })} />
-                    <FormError message={formErrors.part} />
-                    <button disabled={busy || !partForm.part_number || !partForm.description}>Add part</button>
-                  </form>
-                  <div className="buttonRow"><button disabled={!selectedPart} onClick={updatePart}>Update selected</button><button className="danger" disabled={!selectedPart} onClick={deletePart}>Delete selected</button></div>
-                </Panel>
-                <Panel title="Parts">
-                  <DataTable rows={parts} selectedKey={selectedPartId} getKey={(part) => part.id} onSelect={(part) => setSelectedPartId(part.id)} columns={[{ header: "Part", render: (part) => <span className="mono">{part.part_number}</span> }, { header: "Type", render: (part) => part.part_type }, { header: "Material", render: (part) => part.material ?? "—" }, { header: "Bar", render: (part) => <span className="mono">{part.pressure_rating_bar ?? "—"}</span> }, { header: "Qualification", render: (part) => <StatusPill value={part.qualification_status} /> }]} />
-                </Panel>
-              </section>
+            <PageLayout className="catalogPage" title="Parts" description="" showHeader={false}>
+              <PartsCatalog
+                parts={parts}
+                selectedPartId={selectedPartId}
+                projectId={selectedProjectId || undefined}
+                onSelectPart={setSelectedPartId}
+                onPartsChanged={setParts}
+              />
             </PageLayout>
           }
         />
@@ -2297,7 +2209,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     <p className="hint">You are signed in as {user.email} ({user.role}). Ask an administrator to manage accounts.</p>
                   </Panel>
                 )}
-                <PlaceholderCard title="Project Configuration" body="Unit systems, templates, and controlled vocabularies will live here." />
+                <CatalogSettingsPanel
+                  project={selectedProject}
+                  isAdmin={isAdmin}
+                  onProjectUpdated={(updated) => {
+                    setProjects((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+                  }}
+                />
               </section>
             </PageLayout>
           }

@@ -267,11 +267,63 @@ button.danger:disabled {
   text-transform: uppercase;
 }
 
+.srOnly {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  width: 1px;
+}
+
 .sideNav {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
   margin-top: 6px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.sidebarFooter {
+  border-top: 1px solid var(--ink-line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: auto;
+  padding: 14px 8px 4px;
+}
+
+.sidebarFooter .status {
+  background: var(--ink-800);
+  border-color: var(--ink-line);
+  color: #aebdd0;
+  text-align: left;
+}
+
+.sidebarFooter .status.statusError {
+  background: rgba(179, 38, 30, 0.18);
+  border-color: #8c1d17;
+  color: #f3c4c1;
+}
+
+.sidebarFooter .userBox {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebarFooter .userLabel {
+  color: #c5d0de;
+  white-space: normal;
+}
+
+.sidebarFooter .signOut {
+  border-color: var(--ink-line);
+  color: #aebdd0;
 }
 
 .navItem {
@@ -451,14 +503,25 @@ button.signOut {
   padding: 16px 18px 18px;
 }
 
-.panel > h2 {
+.panelHead {
+  align-items: center;
   border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 0 0 10px;
+  min-width: 0;
+  padding-bottom: 7px;
+}
+
+.panelHead h2 {
   color: var(--text-3);
+  flex: 1;
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.12em;
-  margin: 0 0 10px;
-  padding-bottom: 7px;
+  margin: 0;
+  padding: 0;
   text-transform: uppercase;
 }
 
@@ -613,6 +676,309 @@ tr.selectedRow:hover {
 .hint {
   color: var(--text-3);
   font-size: 13px;
+}
+
+.catalogFilters {
+  display: grid;
+  flex: 1;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin-bottom: 0;
+  min-width: 0;
+}
+
+.catalogPage {
+  height: 100vh;
+  max-width: none;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: 14px;
+}
+
+.catalogPageHeader {
+  align-items: center;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 16px;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+
+.catalogPageHeader h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.catalogSearch {
+  display: block;
+  margin: 0;
+  max-width: 640px;
+  min-width: 0;
+  position: relative;
+  width: 100%;
+}
+
+.catalogSearch svg {
+  color: var(--text-3);
+  left: 11px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.catalogSearch input {
+  margin: 0;
+  padding-left: 34px;
+}
+
+.catalogPageActions {
+  display: flex;
+  gap: 8px;
+}
+
+.catalogPageActions button {
+  margin: 0;
+}
+
+.catalogWorkspace {
+  display: flex;
+  flex: 1;
+  gap: 0;
+  min-height: 0;
+}
+
+.catalogLibrary {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.catalogTableToolbar {
+  align-items: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 8px 0 12px;
+}
+
+.catalogTableTools {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+}
+
+.catalogTableCount {
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 10px 0 2px;
+  white-space: nowrap;
+}
+
+.catalogToolDivider {
+  align-self: center;
+  background: var(--line);
+  flex: 0 0 1px;
+  height: 18px;
+  width: 1px;
+}
+
+.catalogTableToolbar select {
+  background: transparent;
+  border: none;
+  display: inline-block;
+  height: auto;
+  margin: 0;
+  min-width: 132px;
+  padding: 6px 10px;
+  width: auto;
+}
+
+.catalogTableToolbar select:focus-visible {
+  box-shadow: none;
+}
+
+button.catalogToolButton {
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px;
+}
+
+button.catalogToolButton:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.catalogLibrary .tableWrapFill {
+  border: none;
+  border-radius: 0;
+  flex: 1;
+  margin: 0;
+  max-height: none;
+  min-height: 0;
+}
+
+.catalogWorkspace > .panelResizer {
+  align-self: stretch;
+  flex: 0 0 6px;
+}
+
+.catalogInspector {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  max-width: 34%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.catalogInspectorPanel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.catalogInspectorPanel > .panelHead {
+  flex: 0 0 auto;
+}
+
+.catalogInspectorBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.catalogInspectorActions {
+  margin: 0;
+}
+
+.catalogInspectorBody h3 {
+  border-bottom: 1px solid var(--line-soft);
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.catalogOverview {
+  display: grid;
+  gap: 2px 16px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.catalogDetail {
+  margin: 0 0 8px;
+}
+
+.catalogDetail span {
+  color: var(--text-3);
+  display: block;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.catalogDetail strong {
+  color: var(--text);
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+
+.columnPicker {
+  position: relative;
+}
+
+.columnPickerMenu {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 360px;
+  min-width: 200px;
+  overflow: auto;
+  padding: 8px 10px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 8;
+}
+
+.columnPickerMenu .checkboxLabel {
+  margin: 0;
+  padding: 3px 2px;
+}
+
+.partEditModal {
+  width: min(640px, 100%);
+}
+
+.partEditForm {
+  margin: 0;
+  overflow: auto;
+  padding: 4px 18px 16px;
+}
+
+.inputWithAction {
+  display: flex;
+  gap: 8px;
+}
+
+.inputWithAction input {
+  flex: 1;
+}
+
+.inputWithAction button {
+  flex: 0 0 auto;
+}
+
+.splitFields {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.checkboxLabel {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.checkboxLabel input {
+  width: auto;
 }
 
 .snapshotMeta {
@@ -817,7 +1183,7 @@ button.paletteItem:hover .paletteGlyph {
   border: 1px solid var(--line);
   border-radius: 0 0 var(--radius) var(--radius);
   border-top: none;
-  height: calc(100vh - 238px);
+  height: calc(100vh - 188px);
   min-height: 460px;
   overflow: hidden;
   position: relative;
@@ -831,7 +1197,7 @@ button.paletteItem:hover .paletteGlyph {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-height: calc(100vh - 148px);
+  max-height: calc(100vh - 98px);
   overflow-y: auto;
 }
 
@@ -2251,27 +2617,14 @@ span.symbolListPendingName.untitled {
   }
 
   .sidebar .panelResizer,
-  .diagramLayout > .panelResizer {
+  .diagramLayout > .panelResizer,
+  .catalogWorkspace > .panelResizer {
     display: none;
   }
 
-  .inspector {
+  .inspector,
+  .catalogInspector {
     width: auto !important;
-  }
-
-  .topBar {
-    align-items: stretch;
-    flex-direction: column;
-    position: static;
-  }
-
-  .contextSelectors {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .statusStack {
-    text-align: left;
   }
 
   .grid {

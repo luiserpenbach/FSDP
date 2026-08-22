@@ -2,7 +2,7 @@ import re
 from datetime import datetime
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def clean_required_text(value: str) -> str:
@@ -104,18 +104,21 @@ class ProjectCreate(BaseModel):
     name: str
     description: str | None = None
     owner: str | None = None
+    part_name_prefix: str | None = None
 
 
 class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     owner: str | None = None
+    part_name_prefix: str | None = None
 
 
 class ProjectRead(ProjectCreate, OrmModel):
     id: str
     created_at: datetime
     updated_at: datetime
+    part_name_next_sequence: int = 1
 
 
 class FluidSystemCreate(BaseModel):
@@ -153,6 +156,9 @@ class PartCreate(BaseModel):
     dimensions: dict[str, Any] = Field(default_factory=dict)
     certification_status: str = "unreviewed"
     qualification_status: str = "unqualified"
+    lifecycle_status: str = "draft"
+    preferred: bool = False
+    notes: str | None = None
     metadata: dict[str, Any] = Field(
         default_factory=dict, validation_alias=AliasChoices("metadata", "metadata_")
     )
@@ -161,6 +167,50 @@ class PartCreate(BaseModel):
     @classmethod
     def _required_text(cls, value: str) -> str:
         return clean_required_text(value)
+
+    @field_validator("source_type")
+    @classmethod
+    def _source_type(cls, value: str) -> str:
+        from app.services.catalog import SOURCE_TYPES
+
+        if value not in SOURCE_TYPES:
+            raise ValueError("must be one of: " + ", ".join(sorted(SOURCE_TYPES)))
+        return value
+
+    @field_validator("lifecycle_status")
+    @classmethod
+    def _lifecycle(cls, value: str) -> str:
+        from app.services.catalog import LIFECYCLE_STATUSES
+
+        if value not in LIFECYCLE_STATUSES:
+            raise ValueError("must be one of: " + ", ".join(sorted(LIFECYCLE_STATUSES)))
+        return value
+
+    @field_validator("qualification_status")
+    @classmethod
+    def _qualification(cls, value: str) -> str:
+        from app.services.catalog import QUALIFICATION_STATUSES
+
+        if value not in QUALIFICATION_STATUSES:
+            raise ValueError("must be one of: " + ", ".join(sorted(QUALIFICATION_STATUSES)))
+        return value
+
+    @field_validator("certification_status")
+    @classmethod
+    def _certification(cls, value: str) -> str:
+        from app.services.catalog import CERTIFICATION_STATUSES
+
+        if value not in CERTIFICATION_STATUSES:
+            raise ValueError("must be one of: " + ", ".join(sorted(CERTIFICATION_STATUSES)))
+        return value
+
+    @model_validator(mode="after")
+    def _active_when_qualified(self) -> "PartCreate":
+        if self.lifecycle_status == "draft" and (
+            self.preferred or self.qualification_status == "qualified"
+        ):
+            self.lifecycle_status = "active"
+        return self
 
 
 class PartUpdate(BaseModel):
@@ -179,6 +229,9 @@ class PartUpdate(BaseModel):
     dimensions: dict[str, Any] | None = None
     certification_status: str | None = None
     qualification_status: str | None = None
+    lifecycle_status: str | None = None
+    preferred: bool | None = None
+    notes: str | None = None
     metadata: dict[str, Any] | None = Field(
         default=None, validation_alias=AliasChoices("metadata", "metadata_")
     )
@@ -188,16 +241,133 @@ class PartUpdate(BaseModel):
     def _required_text(cls, value: str | None) -> str | None:
         return clean_optional_text(value)
 
+    @field_validator("source_type")
+    @classmethod
+    def _source_type(cls, value: str | None) -> str | None:
+        from app.services.catalog import SOURCE_TYPES
+
+        if value is None:
+            return None
+        if value not in SOURCE_TYPES:
+            raise ValueError("must be one of: " + ", ".join(sorted(SOURCE_TYPES)))
+        return value
+
+    @field_validator("lifecycle_status")
+    @classmethod
+    def _lifecycle(cls, value: str | None) -> str | None:
+        from app.services.catalog import LIFECYCLE_STATUSES
+
+        if value is None:
+            return None
+        if value not in LIFECYCLE_STATUSES:
+            raise ValueError("must be one of: " + ", ".join(sorted(LIFECYCLE_STATUSES)))
+        return value
+
+    @field_validator("qualification_status")
+    @classmethod
+    def _qualification(cls, value: str | None) -> str | None:
+        from app.services.catalog import QUALIFICATION_STATUSES
+
+        if value is None:
+            return None
+        if value not in QUALIFICATION_STATUSES:
+            raise ValueError("must be one of: " + ", ".join(sorted(QUALIFICATION_STATUSES)))
+        return value
+
+    @field_validator("certification_status")
+    @classmethod
+    def _certification(cls, value: str | None) -> str | None:
+        from app.services.catalog import CERTIFICATION_STATUSES
+
+        if value is None:
+            return None
+        if value not in CERTIFICATION_STATUSES:
+            raise ValueError("must be one of: " + ", ".join(sorted(CERTIFICATION_STATUSES)))
+        return value
+
 
 class PartRead(PartCreate, OrmModel):
     id: str
     created_at: datetime
     updated_at: datetime
+    completeness: int = 0
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         validation_alias="metadata_",
         serialization_alias="metadata",
     )
+
+
+class CatalogSettingsRead(OrmModel):
+    prefix: str
+    sequence_padding: int
+    next_sequence: int
+    part_types: list[str]
+
+
+class CatalogSettingsUpdate(BaseModel):
+    prefix: str | None = None
+    sequence_padding: int | None = Field(default=None, ge=1, le=8)
+    next_sequence: int | None = Field(default=None, ge=1)
+    part_types: list[str] | None = None
+
+    @field_validator("prefix")
+    @classmethod
+    def _prefix(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("must not be blank")
+        if any(ch.isspace() for ch in cleaned):
+            raise ValueError("must not contain spaces")
+        return cleaned
+
+
+class GeneratePartNameRequest(BaseModel):
+    project_id: str | None = None
+
+
+class GeneratePartNameRead(BaseModel):
+    part_number: str
+
+
+class CatalogDocumentRead(OrmModel):
+    id: str
+    part_id: str
+    title: str
+    kind: str
+    original_filename: str
+    content_type: str
+    size_bytes: int
+    source_url: str | None = None
+    uploaded_by: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PartUsageComponentRead(OrmModel):
+    id: str
+    tag: str
+    quantity: int
+    diagram_id: str
+    diagram_name: str
+    system_id: str
+    system_name: str
+    project_id: str
+    project_name: str
+
+
+class PartUsageBomRead(OrmModel):
+    id: str
+    diagram_id: str
+    revision: int
+    status: str
+
+
+class PartUsageRead(BaseModel):
+    components: list[PartUsageComponentRead]
+    bom_snapshots: list[PartUsageBomRead]
 
 
 # Symbols are rendered via dangerouslySetInnerHTML. Block active content and

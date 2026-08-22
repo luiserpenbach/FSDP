@@ -5,19 +5,23 @@ export function PageLayout({
   title,
   description,
   className = "",
+  showHeader = true,
   children
 }: {
   title: string;
   description: string;
   className?: string;
+  showHeader?: boolean;
   children: ReactNode;
 }) {
   return (
     <main className={`page ${className}`.trim()}>
-      <header className="pageHeader">
-        <h1>{title}</h1>
-        <p>{description}</p>
-      </header>
+      {showHeader && (
+        <header className="pageHeader">
+          <h1>{title}</h1>
+          {description ? <p>{description}</p> : null}
+        </header>
+      )}
       {children}
     </main>
   );

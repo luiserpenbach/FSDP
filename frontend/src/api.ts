@@ -4,10 +4,13 @@ import type {
   BomSnapshot,
   ChangeEvent,
   ComponentInstance,
+  CatalogDocument,
+  CatalogSettings,
   Diagram,
   FluidSystem,
   Impact,
   Part,
+  PartUsage,
   PidSymbolDef,
   Project,
   ProjectBom,
@@ -81,7 +84,10 @@ export const api = {
   listProjects: () => request<Project[]>("/projects"),
   createProject: (body: { name: string; description?: string; owner?: string }) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(body) }),
-  updateProject: (projectId: string, body: { name?: string; description?: string; owner?: string }) =>
+  updateProject: (
+    projectId: string,
+    body: { name?: string; description?: string; owner?: string; part_name_prefix?: string }
+  ) =>
     request<Project>(`/projects/${projectId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteProject: (projectId: string) =>
     requestNoContent(`/projects/${projectId}`, { method: "DELETE" }),
@@ -113,12 +119,70 @@ export const api = {
   updateSymbol: (symbolId: string, body: Partial<Omit<PidSymbolDef, "id">>) =>
     request<PidSymbolDef>(`/symbols/${symbolId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteSymbol: (symbolId: string) => requestNoContent(`/symbols/${symbolId}`, { method: "DELETE" }),
-  listParts: () => request<Part[]>("/parts"),
+  listParts: (params?: {
+    q?: string;
+    part_type?: string;
+    lifecycle_status?: string;
+    qualification_status?: string;
+  }) => {
+    const query = new URLSearchParams();
+    if (params?.q) query.set("q", params.q);
+    if (params?.part_type) query.set("part_type", params.part_type);
+    if (params?.lifecycle_status) query.set("lifecycle_status", params.lifecycle_status);
+    if (params?.qualification_status) query.set("qualification_status", params.qualification_status);
+    const suffix = query.size ? `?${query.toString()}` : "";
+    return request<Part[]>(`/parts${suffix}`);
+  },
   createPart: (body: Partial<Part> & { part_number: string; description: string; part_type: string }) =>
     request<Part>("/parts", { method: "POST", body: JSON.stringify(body) }),
   updatePart: (partId: string, body: Partial<Part>) =>
     request<Part>(`/parts/${partId}`, { method: "PUT", body: JSON.stringify(body) }),
   deletePart: (partId: string) => requestNoContent(`/parts/${partId}`, { method: "DELETE" }),
+  obsoletePart: (partId: string) =>
+    request<Part>(`/parts/${partId}/obsolete`, { method: "POST" }),
+  getPartUsage: (partId: string) => request<PartUsage>(`/parts/${partId}/usage`),
+  getCatalogSettings: () => request<CatalogSettings>("/catalog/settings"),
+  updateCatalogSettings: (body: Partial<CatalogSettings>) =>
+    request<CatalogSettings>("/catalog/settings", { method: "PUT", body: JSON.stringify(body) }),
+  generatePartName: (projectId?: string) => {
+    const suffix = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    return request<{ part_number: string }>(`/catalog/generate-name${suffix}`, { method: "POST" });
+  },
+  listPartDocuments: (partId: string) => request<CatalogDocument[]>(`/parts/${partId}/documents`),
+  uploadPartDocument: async (partId: string, file: File, title: string, kind: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("title", title);
+    form.append("kind", kind);
+    const response = await fetch(`${API_BASE_URL}/parts/${partId}/documents`, {
+      credentials: "include",
+      method: "POST",
+      body: form
+    });
+    if (!response.ok) {
+      if (response.status === 401) unauthorizedHandler?.();
+      throw await toApiError(response);
+    }
+    return response.json() as Promise<CatalogDocument>;
+  },
+  downloadPartDocument: async (partId: string, documentId: string, filename: string) => {
+    const response = await fetch(`${API_BASE_URL}/parts/${partId}/documents/${documentId}/file`, {
+      credentials: "include"
+    });
+    if (!response.ok) {
+      if (response.status === 401) unauthorizedHandler?.();
+      throw await toApiError(response);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  },
+  deletePartDocument: (partId: string, documentId: string) =>
+    requestNoContent(`/parts/${partId}/documents/${documentId}`, { method: "DELETE" }),
   listComponents: (diagramId: string) =>
     request<ComponentInstance[]>(`/diagrams/${diagramId}/components`),
   createComponent: (

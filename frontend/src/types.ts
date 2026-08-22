@@ -21,6 +21,7 @@ export type Project = {
   name: string;
   description?: string | null;
   owner?: string | null;
+  part_name_prefix?: string | null;
 };
 
 export type FluidSystem = {
@@ -41,8 +42,56 @@ export type Part = {
   source_type: string;
   material?: string | null;
   pressure_rating_bar?: number | null;
+  temperature_min_c?: number | null;
+  temperature_max_c?: number | null;
+  cv?: number | null;
+  mass_kg?: number | null;
   qualification_status: string;
   certification_status: string;
+  lifecycle_status: string;
+  preferred: boolean;
+  notes?: string | null;
+  completeness?: number;
+};
+
+export type CatalogSettings = {
+  prefix: string;
+  sequence_padding: number;
+  next_sequence: number;
+  part_types: string[];
+};
+
+export type CatalogDocument = {
+  id: string;
+  part_id: string;
+  title: string;
+  kind: string;
+  original_filename: string;
+  content_type: string;
+  size_bytes: number;
+  source_url?: string | null;
+  uploaded_by?: string | null;
+  created_at: string;
+};
+
+export type PartUsage = {
+  components: Array<{
+    id: string;
+    tag: string;
+    quantity: number;
+    diagram_id: string;
+    diagram_name: string;
+    system_id: string;
+    system_name: string;
+    project_id: string;
+    project_name: string;
+  }>;
+  bom_snapshots: Array<{
+    id: string;
+    diagram_id: string;
+    revision: number;
+    status: string;
+  }>;
 };
 
 export type Diagram = {

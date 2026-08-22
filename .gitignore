@@ -18,6 +18,10 @@ coverage/
 .env.*
 !.env.example
 
+# Catalog document uploads
+backend/var/
+var/
+
 # IDE and OS
 .DS_Store
 Thumbs.db

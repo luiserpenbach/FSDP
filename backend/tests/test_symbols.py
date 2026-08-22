@@ -71,7 +71,10 @@ def test_symbol_accepts_safe_drawing_markup(client: TestClient) -> None:
         json={
             "name": "Drawn Valve",
             "view_box": "0 0 64 40",
-            "svg": VALVE_SVG + '<rect x="2" y="2" width="4" height="4" /><circle cx="32" cy="20" r="3" />',
+            "svg": (
+                VALVE_SVG
+                + '<rect x="2" y="2" width="4" height="4" /><circle cx="32" cy="20" r="3" />'
+            ),
             "ports": [],
         },
     )

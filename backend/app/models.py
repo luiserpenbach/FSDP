@@ -53,6 +53,8 @@ class Project(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(160), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     owner: Mapped[str | None] = mapped_column(String(160))
+    part_name_prefix: Mapped[str | None] = mapped_column(String(40))
+    part_name_next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
     systems: Mapped[list[FluidSystem]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
@@ -96,7 +98,23 @@ class Part(TimestampMixin, Base):
     dimensions: Mapped[dict] = mapped_column(JSON, default=dict)
     certification_status: Mapped[str] = mapped_column(String(80), default="unreviewed")
     qualification_status: Mapped[str] = mapped_column(String(80), default="unqualified")
+    lifecycle_status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
+    preferred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notes: Mapped[str | None] = mapped_column(Text)
     metadata_: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+
+    @property
+    def completeness(self) -> int:
+        checks = [
+            bool(self.part_number),
+            bool(self.description),
+            bool(self.part_type),
+            bool(self.material),
+            self.pressure_rating_bar is not None,
+            self.temperature_min_c is not None or self.temperature_max_c is not None,
+            bool(self.manufacturer) or self.source_type == "custom",
+        ]
+        return round(100 * sum(1 for check in checks if check) / len(checks))
 
 
 class Diagram(TimestampMixin, Base):
@@ -247,3 +265,56 @@ class ChangeEvent(TimestampMixin, Base):
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     actor: Mapped[str | None] = mapped_column(String(160))
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+CATALOG_SETTINGS_ID = "default"
+
+DEFAULT_PART_TYPES = [
+    "valve",
+    "check_valve",
+    "regulator",
+    "relief_valve",
+    "sensor",
+    "filter",
+    "pump",
+    "fitting",
+    "hose",
+    "orifice",
+    "tank",
+    "quick_disconnect",
+    "other",
+]
+
+
+class CatalogSettings(TimestampMixin, Base):
+    """Singleton org catalog numbering and type vocabulary."""
+
+    __tablename__ = "catalog_settings"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: CATALOG_SETTINGS_ID
+    )
+    prefix: Mapped[str] = mapped_column(String(40), nullable=False, default="AMPH")
+    sequence_padding: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    part_types: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class CatalogDocument(TimestampMixin, Base):
+    __tablename__ = "catalog_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    part_id: Mapped[str] = mapped_column(ForeignKey("parts.id", ondelete="CASCADE"))
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(
+        String(120), nullable=False, default="application/octet-stream"
+    )
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(500))
+    uploaded_by: Mapped[str | None] = mapped_column(String(160))
+
+    part: Mapped[Part] = relationship()
+
