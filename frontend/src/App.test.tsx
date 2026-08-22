@@ -293,7 +293,8 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.getByText("Parts Catalog")).toBeInTheDocument();
     expect(screen.getByText("BoM & Procurement")).toBeInTheDocument();
-    expect(screen.getByText("Test Engineer · admin")).toBeInTheDocument();
+    expect(screen.getByText("Test Engineer")).toBeInTheDocument();
+    expect(screen.getByText("admin")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Project")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("System")).not.toBeInTheDocument();
