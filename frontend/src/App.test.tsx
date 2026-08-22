@@ -265,14 +265,16 @@ function mockWorkspaceFetch(overrides?: {
   });
 }
 
-async function openDirtyDiagram() {
-  render(<App />);
-
+async function waitForWorkspace(projectName = PROJECT.name) {
   expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
   await waitFor(() => {
-    const projectSelects = screen.getAllByLabelText("Project");
-    expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
+    expect(screen.getByText(projectName)).toBeInTheDocument();
   });
+}
+
+async function openDirtyDiagram() {
+  render(<App />);
+  await waitForWorkspace();
 
   fireEvent.click(
     screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
@@ -317,7 +319,8 @@ describe("App", () => {
     expect(screen.getByText("BoM & Procurement")).toBeInTheDocument();
     expect(screen.getByText("Test Engineer · admin")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Project")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Project")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("System")).not.toBeInTheDocument();
   });
 
   it("shows the login page when there is no session", async () => {
@@ -367,10 +370,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
-    await waitFor(() => {
-      const projectSelects = screen.getAllByLabelText("Project");
-      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
-    });
+    await waitForWorkspace();
 
     fireEvent.click(screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!);
     expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
@@ -435,10 +435,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
-    await waitFor(() => {
-      const projectSelects = screen.getAllByLabelText("Project");
-      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
-    });
+    await waitForWorkspace();
 
     fireEvent.click(
       screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
@@ -515,17 +512,17 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
-    await waitFor(() => {
-      const projectSelects = screen.getAllByLabelText("Project");
-      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
-    });
+    await waitForWorkspace(PROJECT_A.name);
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/systems/s1/diagrams"))).toBe(true);
     });
 
-    const projectSelect = screen.getAllByLabelText("Project").find((el) => el.tagName === "SELECT") as HTMLSelectElement;
-    fireEvent.change(projectSelect, { target: { value: "p2" } });
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/systems"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Systems" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Project B"));
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/systems/s2/diagrams"))).toBe(true);
@@ -586,10 +583,7 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
-    await waitFor(() => {
-      const projectSelects = screen.getAllByLabelText("Project");
-      expect(projectSelects.some((el) => (el as HTMLSelectElement).value === "p1")).toBe(true);
-    });
+    await waitForWorkspace();
 
     fireEvent.click(
       screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!

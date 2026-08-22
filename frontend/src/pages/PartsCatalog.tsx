@@ -145,6 +145,60 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+function csvEscape(value: string): string {
+  if (/[",\n]/.test(value)) return `"${value.replaceAll('"', '""')}"`;
+  return value;
+}
+
+function partColumnText(part: Part, id: ColumnId): string {
+  switch (id) {
+    case "name":
+      return part.part_number;
+    case "description":
+      return part.description ?? "";
+    case "type":
+      return part.part_type;
+    case "source":
+      return part.source_type ?? "";
+    case "manufacturer":
+      return part.manufacturer ?? "";
+    case "material":
+      return part.material ?? "";
+    case "revision":
+      return part.revision ?? "";
+    case "bar":
+      return part.pressure_rating_bar == null ? "" : String(part.pressure_rating_bar);
+    case "lifecycle":
+      return part.lifecycle_status;
+    case "qual":
+      return part.qualification_status;
+    case "cert":
+      return part.certification_status;
+    case "preferred":
+      return part.preferred ? "yes" : "no";
+    case "completeness":
+      return part.completeness == null ? "" : String(part.completeness);
+  }
+}
+
+export function buildCatalogCsv(parts: Part[], columnIds: Iterable<ColumnId>): string {
+  const visible = new Set(columnIds);
+  const cols = COLUMN_DEFS.filter((column) => visible.has(column.id));
+  const header = cols.map((column) => csvEscape(column.label)).join(",");
+  const rows = parts.map((part) => cols.map((column) => csvEscape(partColumnText(part, column.id))).join(","));
+  return [header, ...rows].join("\n");
+}
+
+function downloadTextFile(filename: string, contents: string, mime: string) {
+  const blob = new Blob([contents], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function ColumnPicker({
   visible,
   onChange
@@ -175,7 +229,19 @@ function ColumnPicker({
 
   return (
     <div className="columnPicker" ref={rootRef}>
-      <button type="button" aria-expanded={open} aria-haspopup="true" onClick={() => setOpen((current) => !current)}>
+      <button
+        type="button"
+        className="catalogToolButton"
+        aria-expanded={open}
+        aria-haspopup="true"
+        aria-label="Columns"
+        title="Columns"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <rect x="1.5" y="2" width="5" height="12" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
+          <rect x="9.5" y="2" width="5" height="12" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
+        </svg>
         Columns
       </button>
       {open && (
@@ -388,26 +454,69 @@ export function PartsCatalog({
     persistVisibleColumns(next);
   }
 
+  function exportVisibleParts() {
+    downloadTextFile(
+      "parts.csv",
+      buildCatalogCsv(visibleParts, visibleColumns),
+      "text/csv;charset=utf-8"
+    );
+  }
+
   return (
-    <section className="catalogWorkspace">
-      <Panel className="catalogLibrary" title="Library">
-        <div className="catalogToolbar">
-          <div className="catalogFilters">
-            <TextInput label="Search" value={query} onChange={setQuery} />
-            <Select
-              label="Type"
+    <>
+      <header className="catalogPageHeader">
+        <h1>Parts</h1>
+        <label className="catalogSearch">
+          <span className="srOnly">Search parts</span>
+          <input
+            type="search"
+            placeholder="Search parts"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
+        <div className="catalogPageActions">
+          <button type="button" onClick={exportVisibleParts}>
+            Export
+          </button>
+          <button type="button" className="primary" onClick={openCreate}>
+            + New part
+          </button>
+        </div>
+      </header>
+      <section className="catalogWorkspace">
+      <article className="panel catalogLibrary">
+        <div className="catalogTableToolbar">
+          <div className="catalogTableTools">
+            <span className="catalogTableCount">
+              {visibleParts.length} {visibleParts.length === 1 ? "part" : "parts"}
+            </span>
+            <select
+              aria-label="Filter by type"
               value={typeFilter}
-              options={typeOptions.map((value) => ({ value, label: value }))}
-              onChange={setTypeFilter}
-            />
-            <Select label="Lifecycle" value={lifecycleFilter} options={LIFECYCLE_OPTIONS} onChange={setLifecycleFilter} />
+              onChange={(event) => setTypeFilter(event.target.value)}
+            >
+              <option value="">All types</option>
+              {typeOptions.map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label="Filter by lifecycle"
+              value={lifecycleFilter}
+              onChange={(event) => setLifecycleFilter(event.target.value)}
+            >
+              <option value="">All lifecycles</option>
+              {LIFECYCLE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </div>
-          <div className="catalogToolbarActions">
-            <ColumnPicker visible={visibleColumns} onChange={setColumns} />
-            <button type="button" className="primary" onClick={openCreate}>
-              New part
-            </button>
-          </div>
+          <ColumnPicker visible={visibleColumns} onChange={setColumns} />
         </div>
         <DataTable
           className="tableWrapFill"
@@ -417,10 +526,7 @@ export function PartsCatalog({
           onSelect={(part) => onSelectPart(part.id)}
           columns={libraryColumns}
         />
-        <p className="hint catalogCount">
-          {visibleParts.length} of {parts.length} parts. Click a row to inspect it.
-        </p>
-      </Panel>
+      </article>
       {selectedPart && (
         <>
           <PanelResizer
@@ -691,6 +797,7 @@ export function PartsCatalog({
           </div>
         </div>
       )}
-    </section>
+      </section>
+    </>
   );
 }

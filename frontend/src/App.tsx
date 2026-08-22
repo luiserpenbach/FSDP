@@ -1668,9 +1668,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     });
   }
 
-  const projectOptions = projects.map((project) => ({ value: project.id, label: project.name }));
-  const systemOptions = systems.map((system) => ({ value: system.id, label: system.name }));
-
   const symbolNodeSelected = selectedNode?.type === "pidSymbol";
   const resizableNodeSelected = symbolNodeSelected || selectedNode?.type === "pidSection";
   const selectedNodeWidth = Math.round(selectedNode?.width ?? Number(selectedNode?.style?.width ?? 0)) || 0;
@@ -1714,12 +1711,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     <EditorSettingsContext.Provider value={editorSettings}>
     <AppShell
       navItems={navItems}
-      projectValue={selectedProjectId}
-      projectOptions={projectOptions}
-      onProjectChange={selectProject}
-      systemValue={selectedSystemId}
-      systemOptions={systemOptions}
-      onSystemChange={selectSystem}
       busy={busy}
       message={message}
       error={error}
@@ -2032,7 +2023,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         <Route
           path="/parts"
           element={
-            <PageLayout className="catalogPage" title="Parts Catalog" description="Org-wide hardware library">
+            <PageLayout className="catalogPage" title="Parts" description="" showHeader={false}>
               <PartsCatalog
                 parts={parts}
                 selectedPartId={selectedPartId}

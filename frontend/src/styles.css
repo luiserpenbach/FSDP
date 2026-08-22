@@ -267,11 +267,63 @@ button.danger:disabled {
   text-transform: uppercase;
 }
 
+.srOnly {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  width: 1px;
+}
+
 .sideNav {
   display: flex;
+  flex: 1;
   flex-direction: column;
   gap: 2px;
   margin-top: 6px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.sidebarFooter {
+  border-top: 1px solid var(--ink-line);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: auto;
+  padding: 14px 8px 4px;
+}
+
+.sidebarFooter .status {
+  background: var(--ink-800);
+  border-color: var(--ink-line);
+  color: #aebdd0;
+  text-align: left;
+}
+
+.sidebarFooter .status.statusError {
+  background: rgba(179, 38, 30, 0.18);
+  border-color: #8c1d17;
+  color: #f3c4c1;
+}
+
+.sidebarFooter .userBox {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebarFooter .userLabel {
+  color: #c5d0de;
+  white-space: normal;
+}
+
+.sidebarFooter .signOut {
+  border-color: var(--ink-line);
+  color: #aebdd0;
 }
 
 .navItem {
@@ -643,6 +695,43 @@ tr.selectedRow:hover {
   padding-bottom: 14px;
 }
 
+.catalogPageHeader {
+  align-items: center;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 16px;
+  grid-template-columns: auto minmax(220px, 1fr) auto;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+
+.catalogPageHeader h1 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.catalogSearch {
+  display: block;
+  margin: 0;
+  max-width: 640px;
+  min-width: 0;
+  width: 100%;
+}
+
+.catalogSearch input {
+  margin: 0;
+}
+
+.catalogPageActions {
+  display: flex;
+  gap: 8px;
+}
+
+.catalogPageActions button {
+  margin: 0;
+}
+
 .catalogWorkspace {
   display: flex;
   flex: 1;
@@ -656,38 +745,88 @@ tr.selectedRow:hover {
   flex-direction: column;
   min-height: 0;
   min-width: 0;
+  overflow: hidden;
+  padding: 0;
 }
 
-.catalogLibrary > .panelHead,
-.catalogInspectorPanel > .panelHead {
-  flex: 0 0 auto;
-}
-
-.catalogToolbar {
-  align-items: end;
+.catalogTableToolbar {
+  align-items: center;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
   display: flex;
   flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-  margin-bottom: 8px;
+  gap: 12px;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 10px;
 }
 
-.catalogToolbarActions {
+.catalogTableTools {
+  align-items: center;
   display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
+  min-width: 0;
+}
+
+.catalogTableTools > * {
+  align-items: center;
+  display: inline-flex;
+  height: 44px;
+}
+
+.catalogTableTools > * + * {
+  border-left: 1px solid var(--line);
+  padding-left: 10px;
+  margin-left: 10px;
+}
+
+.catalogTableCount {
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  padding-right: 2px;
+  white-space: nowrap;
+}
+
+.catalogTableToolbar select {
+  background: transparent;
+  border: none;
+  display: inline-block;
+  height: auto;
+  margin: 0;
+  min-width: 132px;
+  padding: 6px 8px;
+  width: auto;
+}
+
+.catalogTableToolbar select:focus-visible {
+  box-shadow: none;
+}
+
+button.catalogToolButton {
+  align-items: center;
+  background: transparent;
+  border: none;
+  color: var(--text-2);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px;
+}
+
+button.catalogToolButton:hover:not(:disabled) {
+  background: var(--surface);
+  color: var(--text);
 }
 
 .catalogLibrary .tableWrapFill {
+  border: none;
+  border-radius: 0;
   flex: 1;
-  margin-top: 4px;
+  margin: 0;
   max-height: none;
   min-height: 0;
-}
-
-.catalogCount {
-  flex: 0 0 auto;
-  margin: 8px 0 0;
 }
 
 .catalogWorkspace > .panelResizer {
@@ -1036,7 +1175,7 @@ button.paletteItem:hover .paletteGlyph {
   border: 1px solid var(--line);
   border-radius: 0 0 var(--radius) var(--radius);
   border-top: none;
-  height: calc(100vh - 238px);
+  height: calc(100vh - 188px);
   min-height: 460px;
   overflow: hidden;
   position: relative;
@@ -1050,7 +1189,7 @@ button.paletteItem:hover .paletteGlyph {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-height: calc(100vh - 148px);
+  max-height: calc(100vh - 98px);
   overflow-y: auto;
 }
 
@@ -2478,21 +2617,6 @@ span.symbolListPendingName.untitled {
   .inspector,
   .catalogInspector {
     width: auto !important;
-  }
-
-  .topBar {
-    align-items: stretch;
-    flex-direction: column;
-    position: static;
-  }
-
-  .contextSelectors {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .statusStack {
-    text-align: left;
   }
 
   .grid {

@@ -102,8 +102,8 @@ describe("PartsCatalog", () => {
       />
     );
 
-    expect(await screen.findByText("Library")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "New part" }));
+    expect(await screen.findByRole("heading", { name: "Parts" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "+ New part" }));
     expect(screen.getByRole("heading", { name: "New part" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Generate" }));
     await waitFor(() => {
@@ -149,5 +149,27 @@ describe("PartsCatalog", () => {
     fireEvent.click(screen.getByLabelText("Material"));
     expect(screen.queryByRole("columnheader", { name: "Material" })).not.toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Name" })).toBeInTheDocument();
+  });
+
+  it("exports the visible library rows as CSV", async () => {
+    stubCatalogFetch();
+    const createObjectURL = vi.fn(() => "blob:parts");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    render(<CatalogHarness />);
+    expect(await screen.findByText("AMPH-010")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+
+    expect(createObjectURL).toHaveBeenCalled();
+    const blob = createObjectURL.mock.calls[0]?.[0] as Blob;
+    expect(blob.type).toContain("csv");
+    const csv = await blob.text();
+    expect(csv).toContain("Name");
+    expect(csv).toContain("AMPH-010");
+    expect(csv).toContain("SS316");
+    expect(click).toHaveBeenCalled();
+    click.mockRestore();
   });
 });
