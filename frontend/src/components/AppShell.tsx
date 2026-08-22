@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { NavLink } from "react-router-dom";
+import { NavGlyph, userInitials } from "./NavIcons";
 import { PanelResizer, useStoredWidth } from "./resizable";
 
 export type NavItem = {
@@ -33,7 +34,8 @@ export function AppShell({
   busy,
   message,
   error,
-  userLabel,
+  userName,
+  userRole,
   onSignOut
 }: {
   children: ReactNode;
@@ -41,10 +43,12 @@ export function AppShell({
   busy: boolean;
   message: string;
   error: string;
-  userLabel: string;
+  userName: string;
+  userRole: string;
   onSignOut: () => void;
 }) {
-  const [sidebarWidth, setSidebarWidth] = useStoredWidth("fsdp.sidebarWidth", 248, 180, 420);
+  const [sidebarWidth, setSidebarWidth] = useStoredWidth("fsdp.sidebarWidth", 248, 196, 360);
+  const statusText = busy ? "Working…" : error || (message !== "Ready" ? message : "");
 
   return (
     <div className="appShell" style={{ gridTemplateColumns: `${sidebarWidth}px minmax(0, 1fr)` }}>
@@ -52,16 +56,29 @@ export function AppShell({
         <Brand />
         <nav className="sideNav" aria-label="Primary navigation">
           {navItems.map((item) => (
-            <NavLink className={({ isActive }) => (isActive ? "navItem active" : "navItem")} key={item.path} to={item.path}>
+            <NavLink
+              className={({ isActive }) => (isActive ? "navItem active" : "navItem")}
+              key={item.path}
+              to={item.path}
+              title={item.description}
+            >
+              <NavGlyph path={item.path} />
               <span>{item.label}</span>
-              <small>{item.description}</small>
             </NavLink>
           ))}
         </nav>
         <div className="sidebarFooter">
-          <span className={error ? "status statusError" : "status"}>{busy ? "Working…" : error || message}</span>
-          <div className="userBox">
-            <span className="userLabel">{userLabel}</span>
+          {statusText ? (
+            <span className={error ? "sidebarStatus isError" : "sidebarStatus"}>{statusText}</span>
+          ) : null}
+          <div className="sidebarUser">
+            <span className="userAvatar" aria-hidden="true">
+              {userInitials(userName)}
+            </span>
+            <div className="userMeta">
+              <span className="userName">{userName}</span>
+              <span className="userRole">{userRole}</span>
+            </div>
             <button className="signOut" onClick={onSignOut} type="button">
               Sign out
             </button>

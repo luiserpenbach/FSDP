@@ -1714,7 +1714,8 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       busy={busy}
       message={message}
       error={error}
-      userLabel={`${user.name} · ${user.role}`}
+      userName={user.name}
+      userRole={user.role}
       onSignOut={onSignOut}
     >
       <Routes>

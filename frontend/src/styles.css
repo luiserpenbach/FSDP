@@ -220,51 +220,51 @@ button.danger:disabled {
 }
 
 .sidebar {
-  background: linear-gradient(180deg, var(--ink-900) 0%, var(--ink-950) 100%);
-  border-right: 1px solid var(--ink-line);
-  color: #aebdd0;
+  background: #f4f6f8;
+  border-right: 1px solid #e4e9ef;
+  color: var(--text);
   display: flex;
   flex-direction: column;
-  padding: 18px 14px;
+  padding: 12px 10px 10px;
 }
 
 .brand {
   align-items: center;
   display: flex;
-  gap: 11px;
-  padding: 2px 8px 16px;
+  gap: 10px;
+  padding: 6px 8px 14px;
 }
 
 .brandMark {
   align-items: center;
-  background: var(--ink-800);
-  border: 1px solid var(--ink-line);
-  border-radius: 9px;
-  color: var(--amber);
+  background: #eceff3;
+  border: 1px solid #e0e5ec;
+  border-radius: 8px;
+  color: var(--amber-deep);
   display: inline-flex;
-  height: 36px;
+  height: 28px;
   justify-content: center;
-  width: 36px;
+  width: 28px;
 }
 
 .brandMark svg {
-  height: 22px;
-  width: 22px;
+  height: 16px;
+  width: 16px;
 }
 
 .brand strong {
-  color: #f2f6fb;
+  color: var(--text);
   display: block;
-  font-size: 15px;
-  letter-spacing: 0.08em;
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
 }
 
 .brand small {
-  color: #6c7d93;
+  color: var(--text-3);
   display: block;
-  font-size: 10.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.01em;
 }
 
 .srOnly {
@@ -283,85 +283,116 @@ button.danger:disabled {
   flex: 1;
   flex-direction: column;
   gap: 2px;
-  margin-top: 6px;
   min-height: 0;
   overflow: auto;
+  padding: 0 2px;
 }
 
 .sidebarFooter {
-  border-top: 1px solid var(--ink-line);
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-top: auto;
-  padding: 14px 8px 4px;
-}
-
-.sidebarFooter .status {
-  background: var(--ink-800);
-  border-color: var(--ink-line);
-  color: #aebdd0;
-  text-align: left;
-}
-
-.sidebarFooter .status.statusError {
-  background: rgba(179, 38, 30, 0.18);
-  border-color: #8c1d17;
-  color: #f3c4c1;
-}
-
-.sidebarFooter .userBox {
-  align-items: flex-start;
-  flex-direction: column;
   gap: 8px;
+  margin-top: auto;
+  padding: 10px 4px 2px;
 }
 
-.sidebarFooter .userLabel {
-  color: #c5d0de;
-  white-space: normal;
+.sidebarStatus {
+  color: var(--text-3);
+  font-size: 11.5px;
+  overflow: hidden;
+  padding: 0 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sidebarFooter .signOut {
-  border-color: var(--ink-line);
-  color: #aebdd0;
+.sidebarStatus.isError {
+  color: var(--red-deep);
+}
+
+.sidebarUser {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  padding: 6px 4px 4px;
+}
+
+.userAvatar {
+  align-items: center;
+  background: #e7ebf1;
+  border-radius: 999px;
+  color: var(--text);
+  display: inline-flex;
+  flex: 0 0 28px;
+  font-size: 10.5px;
+  font-weight: 700;
+  height: 28px;
+  justify-content: center;
+  letter-spacing: 0.02em;
+  width: 28px;
+}
+
+.userMeta {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.userName {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userRole {
+  color: var(--text-3);
+  font-size: 11px;
+  text-transform: capitalize;
 }
 
 .navItem {
-  border-left: 2px solid transparent;
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  color: #93a5bb;
-  display: block;
-  padding: 8px 12px;
+  align-items: center;
+  border-radius: 8px;
+  color: var(--text-2);
+  display: flex;
+  font-weight: 500;
+  gap: 10px;
+  padding: 7px 10px;
   text-decoration: none;
   transition: background 0.12s ease, color 0.12s ease;
 }
 
-.navItem span {
-  display: block;
-  font-size: 13px;
-  font-weight: 600;
+.navGlyph {
+  color: var(--text-3);
+  flex: 0 0 16px;
+  height: 16px;
+  width: 16px;
 }
 
-.navItem small {
-  color: #5d7085;
-  display: block;
-  font-size: 11px;
-  margin-top: 1px;
+.navItem span {
+  font-size: 13.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .navItem:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: #d7e1ee;
+  background: #e9edf2;
+  color: var(--text);
+}
+
+.navItem:hover .navGlyph,
+.navItem.active .navGlyph {
+  color: var(--text);
 }
 
 .navItem.active {
-  background: var(--ink-800);
-  border-left-color: var(--amber);
-  color: #f2f6fb;
-}
-
-.navItem.active small {
-  color: #7d90a8;
+  background: #e4e9ef;
+  color: var(--text);
+  font-weight: 600;
 }
 
 .appMain {
@@ -441,11 +472,17 @@ button.danger:disabled {
 
 button.signOut {
   background: transparent;
-  border: 1px solid var(--line);
-  color: var(--text-2);
+  border: none;
+  color: var(--text-3);
+  flex: 0 0 auto;
   font-size: 12px;
   margin: 0;
-  padding: 5px 10px;
+  padding: 4px 6px;
+}
+
+button.signOut:hover:not(:disabled) {
+  background: #e9edf2;
+  color: var(--text);
 }
 
 /* ---------- Pages ---------- */
