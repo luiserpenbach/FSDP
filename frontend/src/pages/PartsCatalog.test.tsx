@@ -153,7 +153,7 @@ describe("PartsCatalog", () => {
 
   it("exports the visible library rows as CSV", async () => {
     stubCatalogFetch();
-    const createObjectURL = vi.fn(() => "blob:parts");
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:parts");
     const revokeObjectURL = vi.fn();
     vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
@@ -163,7 +163,7 @@ describe("PartsCatalog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
 
     expect(createObjectURL).toHaveBeenCalled();
-    const blob = createObjectURL.mock.calls[0]?.[0] as Blob;
+    const blob = createObjectURL.mock.calls[0][0];
     expect(blob.type).toContain("csv");
     const csv = await blob.text();
     expect(csv).toContain("Name");
