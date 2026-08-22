@@ -3,15 +3,20 @@ import type { ReactNode } from "react";
 export function Panel({
   title,
   children,
-  className = ""
+  className = "",
+  actions
 }: {
   title: string;
   children: ReactNode;
   className?: string;
+  actions?: ReactNode;
 }) {
   return (
     <article className={`panel ${className}`.trim()}>
-      <h2>{title}</h2>
+      <div className="panelHead">
+        <h2>{title}</h2>
+        {actions}
+      </div>
       {children}
     </article>
   );

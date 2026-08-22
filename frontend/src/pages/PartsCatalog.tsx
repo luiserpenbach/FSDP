@@ -430,20 +430,25 @@ export function PartsCatalog({
             label="Resize part details panel"
           />
           <aside className="catalogInspector" style={{ width: inspectorWidth }}>
-            <Panel className="catalogInspectorPanel" title="Part details">
+            <Panel
+              className="catalogInspectorPanel"
+              title="Part details"
+              actions={
+                <button type="button" className="modalClose" aria-label="Close" onClick={() => onSelectPart("")}>
+                  ×
+                </button>
+              }
+            >
               <div className="catalogInspectorBody">
                 <div className="buttonRow catalogInspectorActions">
                   <button type="button" className="primary" disabled={busy} onClick={openEdit}>
                     Edit
                   </button>
                   <button type="button" disabled={busy} onClick={obsoleteSelected}>
-                    Mark obsolete
+                    Obsolete
                   </button>
                   <button type="button" className="danger" disabled={busy} onClick={deleteSelected}>
                     Delete
-                  </button>
-                  <button type="button" onClick={() => onSelectPart("")}>
-                    Close
                   </button>
                 </div>
                 <div className="catalogOverview">

@@ -451,14 +451,25 @@ button.signOut {
   padding: 16px 18px 18px;
 }
 
-.panel > h2 {
+.panelHead {
+  align-items: center;
   border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin: 0 0 10px;
+  min-width: 0;
+  padding-bottom: 7px;
+}
+
+.panelHead h2 {
   color: var(--text-3);
+  flex: 1;
   font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.12em;
-  margin: 0 0 10px;
-  padding-bottom: 7px;
+  margin: 0;
+  padding: 0;
   text-transform: uppercase;
 }
 
@@ -647,7 +658,8 @@ tr.selectedRow:hover {
   min-width: 0;
 }
 
-.catalogLibrary > h2 {
+.catalogLibrary > .panelHead,
+.catalogInspectorPanel > .panelHead {
   flex: 0 0 auto;
 }
 
@@ -700,7 +712,7 @@ tr.selectedRow:hover {
   overflow: hidden;
 }
 
-.catalogInspectorPanel > h2 {
+.catalogInspectorPanel > .panelHead {
   flex: 0 0 auto;
 }
 
