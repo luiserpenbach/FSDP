@@ -14,6 +14,7 @@ import {
   translateEdgeGeometry
 } from "./pid/OrthogonalEdge";
 import {
+  buildSafeCombinedSvg,
   centerOffsetLabel,
   importSvgMarkup,
   linePath,
@@ -351,6 +352,33 @@ describe("serializeShape", () => {
     expect(serializeShape({ kind: "path", d: "M 0 0 L 8 0", strokeWidth: 3.2 })).toBe(
       '<path d="M 0 0 L 8 0" stroke-width="3.2" />'
     );
+  });
+});
+
+describe("buildSafeCombinedSvg", () => {
+  it("joins imported markup with serialized drawn shapes for save", () => {
+    const combined = buildSafeCombinedSvg('<path d="M2 20 H62" />', [
+      { kind: "circle", cx: 32, cy: 20, r: 4 }
+    ]);
+    expect(combined).toContain('d="M2 20 H62"');
+    expect(combined).toContain('cx="32"');
+    expect(combined).toContain('cy="20"');
+    expect(combined).toContain('r="4"');
+    expect(combined).toBeTruthy();
+  });
+
+  it("returns empty when there is nothing to save", () => {
+    expect(buildSafeCombinedSvg("", [])).toBe("");
+  });
+
+  it("strips active content before persistence", () => {
+    const combined = buildSafeCombinedSvg(
+      '<path d="M0 0 H10" /><script>alert(1)</script>',
+      [{ kind: "path", d: "M 0 0 L 8 0" }]
+    );
+    expect(combined.toLowerCase()).not.toContain("<script");
+    expect(combined).toContain('d="M0 0 H10"');
+    expect(combined).toContain('d="M 0 0 L 8 0"');
   });
 });
 

@@ -144,6 +144,11 @@ export function serializeShape(shape: DrawnShape): string {
   }
 }
 
+/** Markup persisted on save: imported SVG + drawn shapes, sanitized. */
+export function buildSafeCombinedSvg(svg: string, drawn: DrawnShape[]): string {
+  return sanitizeSvgInner([svg, ...drawn.map(serializeShape)].filter(Boolean).join("\n"));
+}
+
 /** Cursor readout relative to the viewBox center, e.g. "x +12 · y −4". */
 export function centerOffsetLabel(point: DrawPoint, viewBox: ViewBox): string {
   const part = (value: number) => `${value < 0 ? "−" : "+"}${Math.abs(value)}`;
@@ -270,6 +275,10 @@ export function SymbolEditorModal({
   const zoomWindow = zoomedViewBox(viewBox, zoom);
   const zoomViewBox = `${zoomWindow.x} ${zoomWindow.y} ${zoomWindow.width} ${zoomWindow.height}`;
   const safeImportedSvg = sanitizeSvgInner(draft.svg);
+  // Save / port gating must use the combined glyph (import + drawn), not
+  // import-only markup. Missing this binding crashed the editor after the
+  // SVG-sanitize merge (safeCombinedSvg referenced but never defined).
+  const safeCombinedSvg = buildSafeCombinedSvg(draft.svg, draft.drawn);
   const shapeRect = shapeDraft && tool === "rect" ? normalizedRect(shapeDraft.start, shapeDraft.end) : null;
   const shapeR = shapeDraft && tool === "circle" ? circleRadius(shapeDraft.start, shapeDraft.end) : 0;
   // The stroke controls target the selected shape, or the drawing defaults.
