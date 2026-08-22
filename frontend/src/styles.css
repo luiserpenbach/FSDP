@@ -685,7 +685,9 @@ tr.selectedRow:hover {
 
 .catalogInspector {
   display: flex;
+  flex: 0 1 auto;
   flex-direction: column;
+  max-width: 34%;
   min-height: 0;
   min-width: 0;
 }

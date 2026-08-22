@@ -465,9 +465,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSelectedProjectId((current) => current || next[0]?.id || "");
     });
     void runAction("Loaded parts.", async () => {
-      const next = await api.listParts();
-      setParts(next);
-      setSelectedPartId((current) => current || next[0]?.id || "");
+      setParts(await api.listParts());
     });
     void runAction("Loaded change history.", async () => {
       setChanges(await api.listChanges());

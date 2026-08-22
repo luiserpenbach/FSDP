@@ -223,7 +223,7 @@ export function PartsCatalog({
   const [busy, setBusy] = useState(false);
   const [uploadKind, setUploadKind] = useState("datasheet");
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(loadVisibleColumns);
-  const [inspectorWidth, setInspectorWidth] = useStoredWidth("fsdp.catalogInspectorWidth", 380, 300, 560);
+  const [inspectorWidth, setInspectorWidth] = useStoredWidth("fsdp.catalogInspectorWidth", 320, 260, 440);
 
   const selectedPart = parts.find((part) => part.id === selectedPartId) ?? null;
   const typeOptions = useMemo(() => {
