@@ -54,6 +54,7 @@ import {
   applyComponentTagToNodes,
   attachToSectionAtAbsolutePosition,
   removeNodesKeepingSectionContents,
+  resolvePlaceComponentGraphWrite,
   sectionContainingPoint
 } from "./components/pid/graphEdits";
 import { EditorSettingsContext, type LabelMode } from "./components/pid/settings";
@@ -1538,15 +1539,34 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         quantity: 1,
         properties: { node_external_id: nodeId }
       });
-      // Build the follow-up graph save from the live canvas — not a snapshot
-      // frozen at click time — so edits made while createComponent was in
-      // flight are not overwritten on the server or wiped locally.
-      const nextNodes = applyComponentTagToNodes(nodesRef.current, nodeId, component.tag);
-      const liveEdges = edgesRef.current;
-      const generationAtSave = graphDirtyGeneration.current;
       // Always finish API writes for the diagram that received the part, even if
       // the user switched selection mid-request; only skip local UI updates.
-      await api.updateDiagramGraph(diagramId, buildGraphPayload(nextNodes, liveEdges));
+      // Live canvas refs are only safe while still viewing that diagram — after a
+      // mid-place switch they belong to another canvas and must not be written
+      // onto the placed diagram (that silently clobbers its saved graph).
+      let serverNodes: Node<CanvasNodeData>[] = [];
+      let serverEdges: Edge<OrthogonalEdgeData>[] = [];
+      const stillOnDiagram = selectedDiagramIdRef.current === diagramId;
+      if (!stillOnDiagram) {
+        const diagram = await api.getDiagram(diagramId);
+        serverNodes = sortSectionsFirst((diagram.graph.nodes ?? []).map(normalizeGraphNode));
+        serverEdges = fixJunctionEdgeHandles(
+          serverNodes,
+          (diagram.graph.edges ?? []).map(normalizeOrthogonalEdge)
+        );
+      }
+      const generationAtSave = stillOnDiagram ? graphDirtyGeneration.current : null;
+      const { nodes: nextNodes, edges: graphEdges } = resolvePlaceComponentGraphWrite({
+        placedDiagramId: diagramId,
+        currentDiagramId: selectedDiagramIdRef.current,
+        liveNodes: nodesRef.current,
+        liveEdges: edgesRef.current,
+        serverNodes,
+        serverEdges,
+        nodeId,
+        tag: component.tag
+      });
+      await api.updateDiagramGraph(diagramId, buildGraphPayload(nextNodes, graphEdges));
       const nextComponents = await api.listComponents(diagramId);
       if (selectedDiagramIdRef.current !== diagramId) return;
       setNodes((current) => applyComponentTagToNodes(current, nodeId, component.tag));
@@ -1556,7 +1576,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setComponentTag(suggestTag(symbolType, nextComponents));
       // Mid-place edits after the PUT payload was built stay dirty (same
       // contract as saveGraph).
-      if (graphDirtyGeneration.current === generationAtSave) {
+      if (generationAtSave !== null && graphDirtyGeneration.current === generationAtSave) {
         setGraphDirty(false);
       }
     }, "component");
