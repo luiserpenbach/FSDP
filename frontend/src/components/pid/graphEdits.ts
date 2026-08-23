@@ -65,6 +65,35 @@ export function applyComponentTagToNodes<N extends Node>(
 }
 
 /**
+ * Choose which canvas to write after placeComponent's createComponent returns.
+ * Live refs are correct only while still viewing the placed diagram; after a
+ * mid-place diagram switch they belong to another canvas and must not be PUT
+ * onto the diagram that received the component.
+ */
+export function resolvePlaceComponentGraphWrite<N extends Node, E extends Edge>(options: {
+  placedDiagramId: string;
+  currentDiagramId: string | null | undefined;
+  liveNodes: N[];
+  liveEdges: E[];
+  serverNodes: N[];
+  serverEdges: E[];
+  nodeId: string;
+  tag: string;
+}): { nodes: N[]; edges: E[]; source: "live" | "server" } {
+  const useLive = options.currentDiagramId === options.placedDiagramId;
+  const nodes = applyComponentTagToNodes(
+    useLive ? options.liveNodes : options.serverNodes,
+    options.nodeId,
+    options.tag
+  );
+  return {
+    nodes,
+    edges: useLive ? options.liveEdges : options.serverEdges,
+    source: useLive ? "live" : "server"
+  };
+}
+
+/**
  * Remove nodes by id without React Flow's parent cascade.
  * Sections release their children (absolute positions restored) so Delete
  * matches the toolbar/context-menu "Delete section (keep contents)" action.

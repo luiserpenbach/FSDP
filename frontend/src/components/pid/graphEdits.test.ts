@@ -4,6 +4,7 @@ import {
   applyComponentTagToNodes,
   attachToSectionAtAbsolutePosition,
   removeNodesKeepingSectionContents,
+  resolvePlaceComponentGraphWrite,
   sectionContainingPoint
 } from "./graphEdits";
 
@@ -93,6 +94,59 @@ describe("applyComponentTagToNodes", () => {
     const next = applyComponentTagToNodes(nodes, "valve-a", "V-1");
     expect(next[1]).toBe(nodes[1]);
     expect(next[0]?.data).toMatchObject({ label: "A", tag: "V-1" });
+  });
+});
+
+describe("resolvePlaceComponentGraphWrite", () => {
+  const diagramANodes = [
+    node({
+      id: "valve-a",
+      type: "pidSymbol",
+      data: { label: "Valve A", symbolType: "valve", rotation: 90 }
+    })
+  ];
+  const diagramAEdges = [edge({ id: "a-line", source: "valve-a", target: "valve-a" })];
+  const diagramBNodes = [
+    node({
+      id: "valve-b",
+      type: "pidSymbol",
+      data: { label: "Valve B", symbolType: "valve" }
+    })
+  ];
+  const diagramBEdges = [edge({ id: "b-line", source: "valve-b", target: "valve-b" })];
+
+  it("uses the live canvas while still viewing the placed diagram", () => {
+    const result = resolvePlaceComponentGraphWrite({
+      placedDiagramId: "d1",
+      currentDiagramId: "d1",
+      liveNodes: diagramANodes,
+      liveEdges: diagramAEdges,
+      serverNodes: [],
+      serverEdges: [],
+      nodeId: "valve-a",
+      tag: "V-1"
+    });
+    expect(result.source).toBe("live");
+    expect(result.edges).toBe(diagramAEdges);
+    expect(result.nodes[0]?.data).toMatchObject({ rotation: 90, tag: "V-1" });
+  });
+
+  it("writes the placed diagram's server graph after a mid-place switch — not the other canvas", () => {
+    const result = resolvePlaceComponentGraphWrite({
+      placedDiagramId: "d1",
+      currentDiagramId: "d2",
+      liveNodes: diagramBNodes,
+      liveEdges: diagramBEdges,
+      serverNodes: diagramANodes,
+      serverEdges: diagramAEdges,
+      nodeId: "valve-a",
+      tag: "V-1"
+    });
+    expect(result.source).toBe("server");
+    expect(result.edges).toBe(diagramAEdges);
+    expect(result.nodes.map((entry) => entry.id)).toEqual(["valve-a"]);
+    expect(result.nodes.map((entry) => entry.id)).not.toContain("valve-b");
+    expect(result.nodes[0]?.data).toMatchObject({ label: "Valve A", tag: "V-1" });
   });
 });
 
