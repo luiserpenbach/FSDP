@@ -699,16 +699,23 @@ def delete_part(
                 "Remove those components first or mark the part obsolete instead of deleting it."
             ),
         )
+    # Collect paths first; unlink only after a successful commit so a failed
+    # commit cannot leave DB rows pointing at already-deleted files.
+    stored_files: list[Path] = []
     for document in db.scalars(select(CatalogDocument).where(CatalogDocument.part_id == part_id)):
-        stored = catalog_files_root() / document.storage_path
+        if not document.storage_path:
+            continue
+        stored = _document_file_path(document.storage_path)
         if stored.is_file():
-            stored.unlink()
+            stored_files.append(stored)
     delete_trace_links_for(db, "part", part.id)
     record_change(
         db, "part", part.id, "deleted", f"Deleted part {part.part_number}", actor=user.email
     )
     db.delete(part)
     db.commit()
+    for stored in stored_files:
+        stored.unlink(missing_ok=True)
     return Response(status_code=204)
 
 
@@ -888,7 +895,8 @@ def upload_part_document(
     filename = sanitize_upload_filename(file.filename or "upload")
     if not document_suffix_allowed(filename):
         raise HTTPException(status_code=422, detail="File type is not allowed")
-    payload = file.file.read()
+    # Cap the read so oversized uploads never buffer the full body into memory.
+    payload = file.file.read(MAX_DOCUMENT_BYTES + 1)
     if len(payload) > MAX_DOCUMENT_BYTES:
         raise HTTPException(status_code=413, detail="File is larger than 25 MB")
     if not payload:
@@ -955,8 +963,6 @@ def delete_part_document(
     if document.part_id != part_id:
         raise HTTPException(status_code=404, detail="CatalogDocument not found")
     stored = _document_file_path(document.storage_path)
-    if stored.is_file():
-        stored.unlink()
     record_change(
         db,
         "part",
@@ -967,6 +973,9 @@ def delete_part_document(
     )
     db.delete(document)
     db.commit()
+    # Unlink after commit so a rollback cannot strand a DB row without its file.
+    if stored.is_file():
+        stored.unlink()
     return Response(status_code=204)
 
 

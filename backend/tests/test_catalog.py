@@ -2,10 +2,12 @@
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
+from app.api import routes as routes_mod
 from app.core.config import settings
-
 
 def test_generate_name_uses_prefix_seq(client: TestClient) -> None:
     first = client.post("/catalog/generate-name")
@@ -149,4 +151,80 @@ def test_document_upload_download_delete(client: TestClient, tmp_path: Path, mon
 
     deleted = client.delete(f"/parts/{part['id']}/documents/{document['id']}")
     assert deleted.status_code == 204
+    assert client.get(f"/parts/{part['id']}/documents").json() == []
+    assert not any(p.is_file() for p in tmp_path.rglob("*"))
+
+
+def test_document_delete_keeps_file_when_commit_fails(
+    client: TestClient, tmp_path: Path, monkeypatch
+) -> None:
+    """Unlinking before commit permanently loses bytes if the DB write fails."""
+    monkeypatch.setattr(settings, "catalog_files_dir", str(tmp_path))
+    part = client.post(
+        "/parts",
+        json={"part_number": "DOC-KEEP", "description": "Valve", "part_type": "valve"},
+    ).json()
+    upload = client.post(
+        f"/parts/{part['id']}/documents",
+        files={"file": ("datasheet.pdf", b"%PDF-1.4 keep-me", "application/pdf")},
+        data={"title": "Datasheet", "kind": "datasheet"},
+    )
+    assert upload.status_code == 201, upload.text
+    document = upload.json()
+    stored = next(p for p in tmp_path.rglob("*") if p.is_file())
+    assert stored.read_bytes().startswith(b"%PDF")
+
+    def failing_commit(self: Session) -> None:
+        raise RuntimeError("simulated commit failure")
+
+    monkeypatch.setattr(Session, "commit", failing_commit)
+    with pytest.raises(RuntimeError, match="simulated commit failure"):
+        client.delete(f"/parts/{part['id']}/documents/{document['id']}")
+    monkeypatch.undo()
+
+    assert stored.is_file(), "file must survive a failed delete commit"
+    assert stored.read_bytes().startswith(b"%PDF")
+    listed = client.get(f"/parts/{part['id']}/documents").json()
+    assert len(listed) == 1
+    assert listed[0]["id"] == document["id"]
+
+
+def test_part_delete_unlinks_files_only_after_commit(
+    client: TestClient, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "catalog_files_dir", str(tmp_path))
+    part = client.post(
+        "/parts",
+        json={"part_number": "DOC-PART", "description": "Valve", "part_type": "valve"},
+    ).json()
+    upload = client.post(
+        f"/parts/{part['id']}/documents",
+        files={"file": ("drawing.pdf", b"%PDF-1.4 part-del", "application/pdf")},
+        data={"kind": "drawing"},
+    )
+    assert upload.status_code == 201, upload.text
+    stored = next(p for p in tmp_path.rglob("*") if p.is_file())
+
+    deleted = client.delete(f"/parts/{part['id']}")
+    assert deleted.status_code == 204
+    assert not stored.exists()
+    assert client.get(f"/parts/{part['id']}").status_code == 404
+
+
+def test_document_upload_rejects_oversized_with_capped_read(
+    client: TestClient, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "catalog_files_dir", str(tmp_path))
+    monkeypatch.setattr(routes_mod, "MAX_DOCUMENT_BYTES", 32)
+    part = client.post(
+        "/parts",
+        json={"part_number": "DOC-BIG", "description": "Valve", "part_type": "valve"},
+    ).json()
+
+    rejected = client.post(
+        f"/parts/{part['id']}/documents",
+        files={"file": ("big.pdf", b"x" * 64, "application/pdf")},
+        data={"kind": "other"},
+    )
+    assert rejected.status_code == 413
     assert client.get(f"/parts/{part['id']}/documents").json() == []
