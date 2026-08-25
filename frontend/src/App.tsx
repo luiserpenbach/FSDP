@@ -438,6 +438,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   // Invalidate in-flight diagram loads when the selection changes so a slower
   // response cannot overwrite the newly selected diagram's canvas/components.
   const diagramLoadGeneration = useRef(0);
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  selectedProjectIdRef.current = selectedProjectId;
+  const selectedSystemIdRef = useRef(selectedSystemId);
+  selectedSystemIdRef.current = selectedSystemId;
   const selectedDiagramIdRef = useRef(selectedDiagramId);
   selectedDiagramIdRef.current = selectedDiagramId;
   const busyCountRef = useRef(0);
@@ -1349,9 +1353,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     // Creating a project rewrites the selected project/system/diagram chain and
     // unloads the open canvas. Ask before discarding unsaved P&ID edits.
     if (!confirmDiscardUnsaved()) return;
+    const projectIdAtStart = selectedProjectIdRef.current;
     void runAction("Created project.", async () => {
       const project = await api.createProject(projectForm);
       setProjects(await api.listProjects());
+      // Creating intentionally switches selection — but only if the user has not
+      // already moved to another project while the create was in flight.
+      if (selectedProjectIdRef.current !== projectIdAtStart) return;
       setSelectedProjectId(project.id);
       setSelectedSystemId("");
       setSelectedDiagramId("");
@@ -1369,11 +1377,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function deleteProject() {
     if (!selectedProject || !window.confirm(`Delete project "${selectedProject.name}"?`)) return;
+    const deletedId = selectedProject.id;
     void runAction("Deleted project.", async () => {
-      await api.deleteProject(selectedProject.id);
+      await api.deleteProject(deletedId);
       const next = await api.listProjects();
       setProjects(next);
-      setSelectedProjectId(next[0]?.id || "");
+      // Never force selection if the user already left the deleted project —
+      // setSelectedProjectId bypasses confirmDiscardUnsaved and would unload
+      // whatever canvas they switched to.
+      setSelectedProjectId((current) => (current === deletedId ? next[0]?.id || "" : current));
     });
   }
 
@@ -1383,9 +1395,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     // Creating a system switches the open system and clears the diagram canvas.
     // Ask before discarding unsaved P&ID edits.
     if (!confirmDiscardUnsaved()) return;
+    const projectId = selectedProject.id;
+    const systemIdAtStart = selectedSystemIdRef.current;
     void runAction("Created system.", async () => {
-      const system = await api.createSystem(selectedProject.id, systemForm);
-      setSystems(await api.listSystems(selectedProject.id));
+      const system = await api.createSystem(projectId, systemForm);
+      const next = await api.listSystems(projectId);
+      if (selectedProjectIdRef.current !== projectId) return;
+      setSystems(next);
+      if (selectedSystemIdRef.current !== systemIdAtStart) return;
       setSelectedSystemId(system.id);
       setSelectedDiagramId("");
     }, "system");
@@ -1393,19 +1410,25 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function updateSystem() {
     if (!selectedProject || !selectedSystem) return;
+    const projectId = selectedProject.id;
     void runAction("Updated system.", async () => {
       await api.updateSystem(selectedSystem.id, systemForm);
-      setSystems(await api.listSystems(selectedProject.id));
+      const next = await api.listSystems(projectId);
+      if (selectedProjectIdRef.current !== projectId) return;
+      setSystems(next);
     }, "system");
   }
 
   function deleteSystem() {
     if (!selectedProject || !selectedSystem || !window.confirm(`Delete system "${selectedSystem.name}"?`)) return;
+    const deletedId = selectedSystem.id;
+    const projectId = selectedProject.id;
     void runAction("Deleted system.", async () => {
-      await api.deleteSystem(selectedSystem.id);
-      const next = await api.listSystems(selectedProject.id);
+      await api.deleteSystem(deletedId);
+      const next = await api.listSystems(projectId);
+      if (selectedProjectIdRef.current !== projectId) return;
       setSystems(next);
-      setSelectedSystemId(next[0]?.id || "");
+      setSelectedSystemId((current) => (current === deletedId ? next[0]?.id || "" : current));
     });
   }
 
@@ -1416,9 +1439,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     // discard unsaved edits from the current diagram, and never copy the open
     // canvas into the new one — the API creates an empty graph by design.
     if (!confirmDiscardUnsaved()) return;
+    const systemId = selectedSystem.id;
+    const diagramIdAtStart = selectedDiagramIdRef.current;
     void runAction("Created diagram.", async () => {
-      const created = await api.createDiagram(selectedSystem.id, { name: diagramName });
-      setDiagrams(await api.listDiagrams(selectedSystem.id));
+      const created = await api.createDiagram(systemId, { name: diagramName });
+      const next = await api.listDiagrams(systemId);
+      if (selectedSystemIdRef.current !== systemId) return;
+      setDiagrams(next);
+      if (selectedDiagramIdRef.current !== diagramIdAtStart) return;
       setSelectedDiagramId(created.id);
     }, "diagram");
   }
@@ -1437,25 +1465,38 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       if (graphDirtyGeneration.current === generationAtSave) {
         setGraphDirty(false);
       }
-      setDiagrams(await api.listDiagrams(systemId));
+      const next = await api.listDiagrams(systemId);
+      // A mid-save system switch leaves listDiagrams holding the prior system's
+      // rows — applying them would corrupt the open system's diagram picker.
+      if (selectedSystemIdRef.current !== systemId) return;
+      setDiagrams(next);
     }, "diagram");
   }
 
   function updateDiagram() {
     if (!selectedDiagram) return;
+    const systemId = selectedDiagram.system_id;
     void runAction("Updated diagram.", async () => {
       await api.updateDiagram(selectedDiagram.id, { name: diagramName });
-      setDiagrams(await api.listDiagrams(selectedDiagram.system_id));
+      const next = await api.listDiagrams(systemId);
+      if (selectedSystemIdRef.current !== systemId) return;
+      setDiagrams(next);
     }, "diagram");
   }
 
   function deleteDiagram() {
     if (!selectedDiagram || !window.confirm(`Delete diagram "${selectedDiagram.name}"?`)) return;
+    const deletedId = selectedDiagram.id;
+    const systemId = selectedDiagram.system_id;
     void runAction("Deleted diagram.", async () => {
-      await api.deleteDiagram(selectedDiagram.id);
-      const next = await api.listDiagrams(selectedDiagram.system_id);
+      await api.deleteDiagram(deletedId);
+      const next = await api.listDiagrams(systemId);
+      // PR #5 guarded selection-effect loads; mutation refreshes must do the same.
+      // A late setDiagrams + forced setSelectedDiagramId after a system switch
+      // replaces the open canvas (and silently clears dirty) without discard confirm.
+      if (selectedSystemIdRef.current !== systemId) return;
       setDiagrams(next);
-      setSelectedDiagramId(next[0]?.id || "");
+      setSelectedDiagramId((current) => (current === deletedId ? next[0]?.id || "" : current));
     });
   }
 
@@ -1572,7 +1613,9 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setNodes((current) => applyComponentTagToNodes(current, nodeId, component.tag));
       setComponents(nextComponents);
       setSelectedComponentId(component.id);
-      setDiagrams(await api.listDiagrams(systemId));
+      const nextDiagrams = await api.listDiagrams(systemId);
+      if (selectedSystemIdRef.current !== systemId) return;
+      setDiagrams(nextDiagrams);
       setComponentTag(suggestTag(symbolType, nextComponents));
       // Mid-place edits after the PUT payload was built stay dirty (same
       // contract as saveGraph).

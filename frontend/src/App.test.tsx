@@ -145,6 +145,26 @@ const DIAGRAM_B_SAME_SYSTEM = {
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z"
 };
+const DIAGRAM_A_REMAINING = {
+  id: "d1b",
+  system_id: "s1",
+  name: "Diagram A Remaining",
+  diagram_type: "pid",
+  revision: 1,
+  graph: {
+    nodes: [
+      {
+        id: "valve-a2",
+        type: "pidSymbol",
+        position: { x: 80, y: 80 },
+        data: { label: "Valve A2", symbolType: "valve", rotation: 0 }
+      }
+    ],
+    edges: []
+  },
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
 const DIAGRAM_B = {
   id: "d2",
   system_id: "s2",
@@ -525,6 +545,114 @@ describe("App", () => {
     });
     expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save graph" })).not.toBeDisabled();
+  });
+
+  it("ignores a stale deleteDiagram list refresh so switching systems mid-delete cannot clobber the open P&ID", async () => {
+    let resolveDelete!: (body: unknown) => void;
+    const deletePromise = new Promise<unknown>((resolve) => {
+      resolveDelete = resolve;
+    });
+
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      const path = new URL(url, "http://localhost").pathname;
+
+      if (path === "/auth/me") return jsonResponse(TEST_USER);
+      if (path === "/projects" && method === "GET") return jsonResponse([PROJECT_A, PROJECT_B]);
+      if (path === "/projects/p1/systems") return jsonResponse([SYSTEM_A]);
+      if (path === "/projects/p2/systems") return jsonResponse([SYSTEM_B]);
+      if (path === "/projects/p1/requirements" || path === "/projects/p2/requirements") return jsonResponse([]);
+      if (path === "/projects/p1/bom" || path === "/projects/p2/bom") return jsonResponse([]);
+      if (path === "/parts" && method === "GET") return jsonResponse([]);
+      if (path === "/changes") return jsonResponse([]);
+      if (path === "/systems/s1/diagrams" && method === "GET") {
+        return jsonResponse([DIAGRAM_A, DIAGRAM_A_REMAINING]);
+      }
+      if (path === "/systems/s2/diagrams" && method === "GET") return jsonResponse([DIAGRAM_B]);
+      if (path === "/diagrams/d1" && method === "GET") return jsonResponse(DIAGRAM_A);
+      if (path === "/diagrams/d1b" && method === "GET") return jsonResponse(DIAGRAM_A_REMAINING);
+      if (path === "/diagrams/d2" && method === "GET") return jsonResponse(DIAGRAM_B);
+      if (
+        path === "/diagrams/d1/components" ||
+        path === "/diagrams/d1b/components" ||
+        path === "/diagrams/d2/components"
+      ) {
+        return jsonResponse([]);
+      }
+      if (path === "/diagrams/d1/bom" || path === "/diagrams/d1b/bom" || path === "/diagrams/d2/bom") {
+        return jsonResponse([]);
+      }
+      if (path === "/diagrams/d1" && method === "DELETE") {
+        return deletePromise.then((body) => jsonResponse(body, 204));
+      }
+      return jsonResponse({ detail: `unmocked ${method} ${path}` }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+    await waitForWorkspace(PROJECT_A.name);
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Open diagram")).toHaveValue("d1");
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Valve A")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input, init]) => {
+          const path = String(input);
+          return path.includes("/diagrams/d1") && (init?.method ?? "GET").toUpperCase() === "DELETE";
+        })
+      ).toBe(true);
+    });
+
+    // Switch projects/systems while delete is still in flight. The late list
+    // refresh must not force selection onto System A's remaining diagram.
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/systems"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Systems" })).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Project B"));
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Open diagram")).toHaveValue("d2");
+    });
+    await waitFor(() => {
+      expect(screen.getByText("Valve B")).toBeInTheDocument();
+    });
+
+    await makeDiagramDirty();
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+
+    resolveDelete(null);
+    await waitFor(() => {
+      expect(screen.getByText("Deleted diagram.")).toBeInTheDocument();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(screen.getByLabelText("Open diagram")).toHaveValue("d2");
+    expect(screen.getByLabelText("Open diagram")).not.toHaveValue("d1b");
+    expect(screen.getByText("Valve B")).toBeInTheDocument();
+    expect(screen.queryByText("Valve A2")).not.toBeInTheDocument();
+    // Dirty edits on B must not be silently cleared by the stale selection force.
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+
+    confirmSpy.mockRestore();
   });
 
   it("ignores a stale system diagram list so a slower prior response cannot switch the open P&ID", async () => {
