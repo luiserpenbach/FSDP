@@ -107,6 +107,28 @@ def test_change_impact_finds_component_and_bom_usage_for_part() -> None:
     assert len(impact["affected_bom_snapshots"]) == 1
 
 
+def test_change_impact_keeps_bom_usage_after_part_unplaced() -> None:
+    db = make_session()
+    project = Project(name="Demo")
+    system = FluidSystem(project=project, name="Feed")
+    diagram = Diagram(system=system, name="P&ID", graph={})
+    part = Part(part_number="REG-002", description="Regulator", part_type="regulator")
+    db.add_all([project, system, diagram, part])
+    db.flush()
+    component = ComponentInstance(diagram_id=diagram.id, part_id=part.id, tag="REG-2")
+    db.add(component)
+    db.flush()
+    snapshot = generate_bom_snapshot(db, diagram)
+    snapshot.status = "released"
+    db.delete(component)
+    db.flush()
+
+    impact = get_change_impact(db, "part", part.id)
+
+    assert impact["affected_components"] == []
+    assert [item.id for item in impact["affected_bom_snapshots"]] == [snapshot.id]
+
+
 def test_catalog_warnings_flag_missing_engineering_data() -> None:
     part = Part(part_number="TBD", description="Candidate valve", part_type="valve")
 

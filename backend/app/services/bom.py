@@ -4,6 +4,26 @@ from sqlalchemy.orm import Session
 from app.models import BomSnapshot, ComponentInstance, Diagram, Part
 
 
+def bom_snapshots_containing_part(db: Session, part_id: str) -> list[BomSnapshot]:
+    """Return BoM snapshots whose frozen rows still reference ``part_id``.
+
+    Snapshots store catalog identity in JSON ``rows[].part_id``. After a part is
+    unplaced, live ``ComponentInstance`` rows no longer point at it, but draft
+    and released BoMs must still block delete and appear in where-used/impact.
+    """
+    snapshots = list(
+        db.scalars(select(BomSnapshot).order_by(BomSnapshot.created_at.desc()))
+    )
+    return [
+        snapshot
+        for snapshot in snapshots
+        if any(
+            isinstance(row, dict) and row.get("part_id") == part_id
+            for row in (snapshot.rows or [])
+        )
+    ]
+
+
 def generate_bom_snapshot(db: Session, diagram: Diagram) -> BomSnapshot:
     components = db.scalars(
         select(ComponentInstance).where(ComponentInstance.diagram_id == diagram.id)
