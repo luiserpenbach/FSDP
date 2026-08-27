@@ -66,7 +66,7 @@ from app.schemas import (
     TraceLinkCreate,
     TraceLinkRead,
 )
-from app.services.bom import generate_bom_snapshot
+from app.services.bom import bom_snapshots_containing_part, generate_bom_snapshot
 from app.services.catalog import (
     DOCUMENT_KINDS,
     MAX_DOCUMENT_BYTES,
@@ -699,6 +699,18 @@ def delete_part(
                 "Remove those components first or mark the part obsolete instead of deleting it."
             ),
         )
+    # BoM rows freeze part_id independently of live placements. Allowing delete
+    # after unplace destroys catalog identity/documents while released (and draft)
+    # snapshots still reference the part — mark obsolete instead.
+    bom_hits = bom_snapshots_containing_part(db, part_id)
+    if bom_hits:
+        released = sum(1 for snapshot in bom_hits if snapshot.status == "released")
+        detail = (
+            f"Part {part.part_number} appears on {len(bom_hits)} BoM snapshot(s)"
+            + (f" ({released} released)" if released else "")
+            + ". Mark the part obsolete instead of deleting it."
+        )
+        raise HTTPException(status_code=409, detail=detail)
     for document in db.scalars(select(CatalogDocument).where(CatalogDocument.part_id == part_id)):
         stored = catalog_files_root() / document.storage_path
         if stored.is_file():
@@ -806,14 +818,12 @@ def get_part_usage(part_id: str, db: Session = Depends(get_db)) -> PartUsageRead
         db.scalars(select(ComponentInstance).where(ComponentInstance.part_id == part.id))
     )
     usage_components: list[PartUsageComponentRead] = []
-    diagram_ids: set[str] = set()
     for component in components:
         diagram = db.get(Diagram, component.diagram_id)
         system = db.get(FluidSystem, diagram.system_id) if diagram else None
         project = db.get(Project, system.project_id) if system else None
         if diagram is None or system is None or project is None:
             continue
-        diagram_ids.add(diagram.id)
         usage_components.append(
             PartUsageComponentRead(
                 id=component.id,
@@ -827,15 +837,8 @@ def get_part_usage(part_id: str, db: Session = Depends(get_db)) -> PartUsageRead
                 project_name=project.name,
             )
         )
-    snapshots = []
-    if diagram_ids:
-        snapshots = list(
-            db.scalars(
-                select(BomSnapshot)
-                .where(BomSnapshot.diagram_id.in_(diagram_ids))
-                .order_by(BomSnapshot.created_at.desc())
-            )
-        )
+    # Include historical BoMs that freeze this part_id even after unplace.
+    snapshots = bom_snapshots_containing_part(db, part.id)
     return PartUsageRead(
         components=usage_components,
         bom_snapshots=[

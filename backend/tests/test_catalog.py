@@ -117,6 +117,65 @@ def test_obsolete_blocks_new_placement_and_delete_while_used(client: TestClient)
     assert usage.json()["components"][0]["project_name"] == "Cat Project"
 
 
+def test_delete_blocked_after_unplace_when_part_on_released_bom(
+    client: TestClient, tmp_path: Path, monkeypatch
+) -> None:
+    """Unplacing must not unlock delete while BoM rows still freeze the part."""
+    monkeypatch.setattr(settings, "catalog_files_dir", str(tmp_path))
+    project = client.post("/projects", json={"name": "Hist Project"}).json()
+    system = client.post(f"/projects/{project['id']}/systems", json={"name": "Sys"}).json()
+    diagram = client.post(f"/systems/{system['id']}/diagrams", json={"name": "P&ID"}).json()
+    part = client.post(
+        "/parts",
+        json={"part_number": "HIST-1", "description": "Valve", "part_type": "valve"},
+    ).json()
+    upload = client.post(
+        f"/parts/{part['id']}/documents",
+        files={"file": ("coc.pdf", b"%PDF-1.4 coc", "application/pdf")},
+        data={"title": "CoC", "kind": "coc"},
+    )
+    assert upload.status_code == 201, upload.text
+    component = client.post(
+        f"/diagrams/{diagram['id']}/components", json={"tag": "V-1", "part_id": part["id"]}
+    ).json()
+
+    bom = client.post(f"/diagrams/{diagram['id']}/bom")
+    assert bom.status_code == 201, bom.text
+    released = client.put(f"/bom/{bom.json()['id']}/status", json={"status": "released"})
+    assert released.status_code == 200, released.text
+
+    assert client.delete(f"/components/{component['id']}").status_code == 204
+
+    usage = client.get(f"/parts/{part['id']}/usage")
+    assert usage.status_code == 200
+    body = usage.json()
+    assert body["components"] == []
+    assert len(body["bom_snapshots"]) == 1
+    assert body["bom_snapshots"][0]["status"] == "released"
+
+    impact = client.get(
+        "/changes/impact", params={"object_type": "part", "object_id": part["id"]}
+    )
+    assert impact.status_code == 200
+    assert len(impact.json()["affected_bom_snapshots"]) == 1
+    assert impact.json()["affected_components"] == []
+
+    blocked = client.delete(f"/parts/{part['id']}")
+    assert blocked.status_code == 409
+    assert "BoM snapshot" in blocked.json()["detail"]
+    assert client.get(f"/parts/{part['id']}").status_code == 200
+    assert client.get(f"/parts/{part['id']}/documents").json()
+    readiness = client.get(f"/bom/{bom.json()['id']}/readiness")
+    assert readiness.status_code == 200
+    assert readiness.json()["ready"] is True or readiness.json()["issue_count"] >= 0
+    # Catalog identity must still resolve for the released BoM row.
+    assert not any(
+        "No catalog part is linked" in warning
+        for issue in readiness.json()["issues"]
+        for warning in issue["warnings"]
+    )
+
+
 def test_document_upload_download_delete(client: TestClient, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(settings, "catalog_files_dir", str(tmp_path))
     part = client.post(

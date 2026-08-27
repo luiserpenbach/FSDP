@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import BomSnapshot, ComponentInstance
+from app.services.bom import bom_snapshots_containing_part
 from app.services.traceability import get_trace_links
 
 
@@ -14,11 +15,9 @@ def get_change_impact(db: Session, object_type: str, object_id: str) -> dict:
         affected_components = list(
             db.scalars(select(ComponentInstance).where(ComponentInstance.part_id == object_id))
         )
-        diagram_ids = {component.diagram_id for component in affected_components}
-        if diagram_ids:
-            affected_bom_snapshots = list(
-                db.scalars(select(BomSnapshot).where(BomSnapshot.diagram_id.in_(diagram_ids)))
-            )
+        # Historical BoM rows keep part_id after unplace; do not require a live
+        # component on the same diagram to surface those snapshots.
+        affected_bom_snapshots = bom_snapshots_containing_part(db, object_id)
 
     if object_type == "component":
         component = db.get(ComponentInstance, object_id)
