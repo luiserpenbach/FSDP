@@ -1529,6 +1529,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     const nodeId = selectedNode.id;
     const symbolType = String(selectedNode.data?.symbolType ?? "component");
     const tag = componentTag;
+    // Capture load generation at click time. Switching away and back remounts
+    // the canvas (empty placeholder) while keeping the same diagram id — live
+    // refs are then unsafe even though stillOnDiagram would be true.
+    const loadGenerationAtPlace = diagramLoadGeneration.current;
     void runAction("Placed component.", async () => {
       if (graphDirty) {
         throw new Error("Save the diagram first — parts can only be placed on saved nodes.");
@@ -1541,13 +1545,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       });
       // Always finish API writes for the diagram that received the part, even if
       // the user switched selection mid-request; only skip local UI updates.
-      // Live canvas refs are only safe while still viewing that diagram — after a
-      // mid-place switch they belong to another canvas and must not be written
-      // onto the placed diagram (that silently clobbers its saved graph).
+      // Live canvas refs are only safe on the same diagram load — after a
+      // mid-place switch (including A→B→A) they may belong to another canvas or
+      // the empty mid-load placeholder and must not clobber the saved graph.
+      const stillOnSameLoad =
+        selectedDiagramIdRef.current === diagramId &&
+        diagramLoadGeneration.current === loadGenerationAtPlace;
       let serverNodes: Node<CanvasNodeData>[] = [];
       let serverEdges: Edge<OrthogonalEdgeData>[] = [];
-      const stillOnDiagram = selectedDiagramIdRef.current === diagramId;
-      if (!stillOnDiagram) {
+      if (!stillOnSameLoad) {
         const diagram = await api.getDiagram(diagramId);
         serverNodes = sortSectionsFirst((diagram.graph.nodes ?? []).map(normalizeGraphNode));
         serverEdges = fixJunctionEdgeHandles(
@@ -1555,10 +1561,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           (diagram.graph.edges ?? []).map(normalizeOrthogonalEdge)
         );
       }
-      const generationAtSave = stillOnDiagram ? graphDirtyGeneration.current : null;
+      const generationAtSave = stillOnSameLoad ? graphDirtyGeneration.current : null;
       const { nodes: nextNodes, edges: graphEdges } = resolvePlaceComponentGraphWrite({
         placedDiagramId: diagramId,
         currentDiagramId: selectedDiagramIdRef.current,
+        liveCanvasTrusted: stillOnSameLoad,
         liveNodes: nodesRef.current,
         liveEdges: edgesRef.current,
         serverNodes,
