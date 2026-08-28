@@ -66,13 +66,16 @@ export function applyComponentTagToNodes<N extends Node>(
 
 /**
  * Choose which canvas to write after placeComponent's createComponent returns.
- * Live refs are correct only while still viewing the placed diagram; after a
- * mid-place diagram switch they belong to another canvas and must not be PUT
- * onto the diagram that received the component.
+ * Live refs are correct only while still viewing the placed diagram on the same
+ * load generation; after a mid-place switch (including A→B→A) they may hold
+ * another canvas or the empty mid-load placeholder and must not be PUT onto
+ * the diagram that received the component.
  */
 export function resolvePlaceComponentGraphWrite<N extends Node, E extends Edge>(options: {
   placedDiagramId: string;
   currentDiagramId: string | null | undefined;
+  /** False when a diagram remount/reload intervened while place was in flight. */
+  liveCanvasTrusted: boolean;
   liveNodes: N[];
   liveEdges: E[];
   serverNodes: N[];
@@ -80,7 +83,8 @@ export function resolvePlaceComponentGraphWrite<N extends Node, E extends Edge>(
   nodeId: string;
   tag: string;
 }): { nodes: N[]; edges: E[]; source: "live" | "server" } {
-  const useLive = options.currentDiagramId === options.placedDiagramId;
+  const useLive =
+    options.liveCanvasTrusted && options.currentDiagramId === options.placedDiagramId;
   const nodes = applyComponentTagToNodes(
     useLive ? options.liveNodes : options.serverNodes,
     options.nodeId,

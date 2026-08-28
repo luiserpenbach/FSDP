@@ -115,10 +115,11 @@ describe("resolvePlaceComponentGraphWrite", () => {
   ];
   const diagramBEdges = [edge({ id: "b-line", source: "valve-b", target: "valve-b" })];
 
-  it("uses the live canvas while still viewing the placed diagram", () => {
+  it("uses the live canvas while still viewing the placed diagram on a trusted load", () => {
     const result = resolvePlaceComponentGraphWrite({
       placedDiagramId: "d1",
       currentDiagramId: "d1",
+      liveCanvasTrusted: true,
       liveNodes: diagramANodes,
       liveEdges: diagramAEdges,
       serverNodes: [],
@@ -135,6 +136,7 @@ describe("resolvePlaceComponentGraphWrite", () => {
     const result = resolvePlaceComponentGraphWrite({
       placedDiagramId: "d1",
       currentDiagramId: "d2",
+      liveCanvasTrusted: false,
       liveNodes: diagramBNodes,
       liveEdges: diagramBEdges,
       serverNodes: diagramANodes,
@@ -147,6 +149,28 @@ describe("resolvePlaceComponentGraphWrite", () => {
     expect(result.nodes.map((entry) => entry.id)).toEqual(["valve-a"]);
     expect(result.nodes.map((entry) => entry.id)).not.toContain("valve-b");
     expect(result.nodes[0]?.data).toMatchObject({ label: "Valve A", tag: "V-1" });
+  });
+
+  it("writes the server graph after A→B→A remount even though the diagram id matches again", () => {
+    // Live refs hold the empty mid-load placeholder (or a stale reload); using
+    // them would PUT [] and wipe the placed diagram.
+    const emptyMidLoadNodes: typeof diagramANodes = [];
+    const emptyMidLoadEdges: typeof diagramAEdges = [];
+    const result = resolvePlaceComponentGraphWrite({
+      placedDiagramId: "d1",
+      currentDiagramId: "d1",
+      liveCanvasTrusted: false,
+      liveNodes: emptyMidLoadNodes,
+      liveEdges: emptyMidLoadEdges,
+      serverNodes: diagramANodes,
+      serverEdges: diagramAEdges,
+      nodeId: "valve-a",
+      tag: "V-1"
+    });
+    expect(result.source).toBe("server");
+    expect(result.nodes.map((entry) => entry.id)).toEqual(["valve-a"]);
+    expect(result.nodes[0]?.data).toMatchObject({ label: "Valve A", tag: "V-1" });
+    expect(result.edges).toBe(diagramAEdges);
   });
 });
 
