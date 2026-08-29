@@ -3,6 +3,7 @@ import type { Edge, Node } from "reactflow";
 import {
   applyComponentTagToNodes,
   attachToSectionAtAbsolutePosition,
+  isDiagramGraphReadyToSave,
   removeNodesKeepingSectionContents,
   resolvePlaceComponentGraphWrite,
   sectionContainingPoint
@@ -207,5 +208,16 @@ describe("removeNodesKeepingSectionContents", () => {
 
     expect(result.nodes.map((entry) => entry.id)).toEqual(["a", "c"]);
     expect(result.edges).toEqual([]);
+  });
+});
+
+describe("isDiagramGraphReadyToSave", () => {
+  it("is false until getDiagram marks the current load generation ready", () => {
+    expect(isDiagramGraphReadyToSave(3, -1)).toBe(false);
+    expect(isDiagramGraphReadyToSave(3, 2)).toBe(false);
+  });
+
+  it("is true only when ready generation matches the current load generation", () => {
+    expect(isDiagramGraphReadyToSave(3, 3)).toBe(true);
   });
 });

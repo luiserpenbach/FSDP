@@ -143,3 +143,16 @@ export function removeNodesKeepingSectionContents<N extends Node, E extends Edge
 
   return { nodes: nextNodes, edges: nextEdges };
 }
+
+/**
+ * Whether Save may PUT the live canvas for the current diagram selection.
+ * `readyGeneration` is set only after getDiagram installs the graph; a failed
+ * load leaves the empty placeholder bound to the diagram id and must not save.
+ */
+export function isDiagramGraphReadyToSave(
+  loadGeneration: number,
+  readyGeneration: number
+): boolean {
+  return readyGeneration === loadGeneration;
+}
+

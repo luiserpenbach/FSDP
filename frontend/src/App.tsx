@@ -53,6 +53,7 @@ import {
 import {
   applyComponentTagToNodes,
   attachToSectionAtAbsolutePosition,
+  isDiagramGraphReadyToSave,
   removeNodesKeepingSectionContents,
   resolvePlaceComponentGraphWrite,
   sectionContainingPoint
@@ -438,6 +439,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   // Invalidate in-flight diagram loads when the selection changes so a slower
   // response cannot overwrite the newly selected diagram's canvas/components.
   const diagramLoadGeneration = useRef(0);
+  // Set to the load generation only after getDiagram successfully installs the
+  // graph. A failed load leaves the empty placeholder bound to the diagram id;
+  // Save must not PUT that placeholder over the still-intact server graph.
+  const diagramGraphReadyGeneration = useRef(-1);
+  const [diagramGraphReady, setDiagramGraphReady] = useState(false);
   const selectedDiagramIdRef = useRef(selectedDiagramId);
   selectedDiagramIdRef.current = selectedDiagramId;
   const busyCountRef = useRef(0);
@@ -525,7 +531,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setHistoryVersion((version) => version + 1);
     const generation = ++diagramLoadGeneration.current;
     // Clear the previous canvas immediately so it cannot be edited into the
-    // incoming diagram's undo stack or saved over after the switch.
+    // incoming diagram's undo stack or saved over after the switch. Until
+    // getDiagram succeeds, this empty placeholder is not safe to save.
+    diagramGraphReadyGeneration.current = -1;
+    setDiagramGraphReady(false);
     setComponents([]);
     setBomSnapshots([]);
     setSelectedBomId("");
@@ -550,6 +559,8 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setHistoryVersion((version) => version + 1);
       const dirtyGenerationAfterGraph = graphDirtyGeneration.current;
       setGraphDirty(false);
+      diagramGraphReadyGeneration.current = generation;
+      setDiagramGraphReady(true);
       const nextComponents = await api.listComponents(diagram.id);
       if (generation !== diagramLoadGeneration.current) return;
       setComponents(nextComponents);
@@ -1425,6 +1436,13 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function saveGraph() {
     if (!selectedDiagram) return;
+    // Failed (or still-pending) loads leave an empty placeholder under the
+    // real diagram id. Refusing to save avoids wiping the server P&ID.
+    if (!isDiagramGraphReadyToSave(diagramLoadGeneration.current, diagramGraphReadyGeneration.current)) {
+      setError("Diagram has not loaded successfully — switch away and back to retry before saving.");
+      setMessage("Action failed.");
+      return;
+    }
     const diagramId = selectedDiagram.id;
     const systemId = selectedDiagram.system_id;
     const payload = graphPayload;
@@ -1829,7 +1847,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     <button disabled={!canUndo} onClick={undo} title="Undo (Ctrl+Z)">Undo</button>
                     <button disabled={!canRedo} onClick={redo} title="Redo (Ctrl+Shift+Z)">Redo</button>
                     <button disabled={busy || !selectedDiagram} onClick={() => void exportDiagramPng()}>Export PNG</button>
-                    <button className="primary" disabled={busy || !selectedDiagram || !graphDirty} onClick={saveGraph}>Save graph</button>
+                    <button className="primary" disabled={busy || !selectedDiagram || !graphDirty || !diagramGraphReady} onClick={saveGraph}>Save graph</button>
                     {selectedDiagram && <span className={graphDirty ? "dirtyBadge" : "cleanBadge"}>{graphDirty ? "Unsaved changes" : "Saved"}</span>}
                   </div>
                   <div className={placementTool ? "diagram placing" : "diagram"} ref={diagramContainerRef}>
