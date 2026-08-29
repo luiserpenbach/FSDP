@@ -739,4 +739,58 @@ describe("App", () => {
     expect(createdSystem).toBe(false);
     confirmSpy.mockRestore();
   });
+
+  it("does not let Save wipe the server graph after a failed diagram load", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      const path = new URL(url, "http://localhost").pathname;
+
+      if (path === "/auth/me") return jsonResponse(TEST_USER);
+      if (path === "/projects" && method === "GET") return jsonResponse([PROJECT]);
+      if (path === "/projects/p1/systems") return jsonResponse([SYSTEM]);
+      if (path === "/projects/p1/requirements") return jsonResponse([]);
+      if (path === "/projects/p1/bom") return jsonResponse([]);
+      if (path === "/parts" && method === "GET") return jsonResponse([]);
+      if (path === "/changes") return jsonResponse([]);
+      if (path === "/systems/s1/diagrams" && method === "GET") return jsonResponse([DIAGRAM]);
+      // Transient failure after selection: canvas was already cleared to [].
+      if (path === "/diagrams/d1" && method === "GET") {
+        return jsonResponse({ detail: "temporary upstream failure" }, 503);
+      }
+      if (path === "/diagrams/d1/components") return jsonResponse([]);
+      if (path === "/diagrams/d1/bom") return jsonResponse([]);
+      if (path === "/diagrams/d1/graph" && method === "PUT") {
+        return jsonResponse({ detail: "unexpected graph wipe" }, 500);
+      }
+      return jsonResponse({ detail: `unmocked ${method} ${path}` }, 500);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await waitForWorkspace();
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Open diagram")).toHaveValue("d1");
+    });
+    await waitFor(() => {
+      expect(screen.getByText("temporary upstream failure")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Valve A")).not.toBeInTheDocument();
+
+    // Empty placeholder is still bound to d1, but Save must stay locked until a
+    // successful getDiagram installs the authoritative graph.
+    expect(screen.getByRole("button", { name: "Save graph" })).toBeDisabled();
+
+    const graphWrites = fetchMock.mock.calls.filter(([input, init]) => {
+      const url = String(input);
+      const method = ((init as RequestInit | undefined)?.method ?? "GET").toUpperCase();
+      return url.includes("/diagrams/d1/graph") && method === "PUT";
+    });
+    expect(graphWrites).toHaveLength(0);
+  });
 });
