@@ -66,30 +66,50 @@ export function applyComponentTagToNodes<N extends Node>(
 
 /**
  * Choose which canvas to write after placeComponent's createComponent returns.
- * Live refs are correct only while still viewing the placed diagram; after a
- * mid-place diagram switch they belong to another canvas and must not be PUT
- * onto the diagram that received the component.
+ *
+ * Preference order while still on the placed diagram:
+ * 1. Live refs — preserve mid-place moves/rotates/adds (PR #20).
+ * 2. Click-time snapshot — if the live canvas dropped any node that existed at
+ *    Place click (Delete/undo gutting, or an empty A→B→A remount placeholder),
+ *    PUT the pre-delete canvas with the new tag instead of wiping the server.
+ * 3. Server graph — after a mid-place switch to another diagram, live refs
+ *    belong to that other canvas and must not be written onto the placed one.
  */
 export function resolvePlaceComponentGraphWrite<N extends Node, E extends Edge>(options: {
   placedDiagramId: string;
   currentDiagramId: string | null | undefined;
   liveNodes: N[];
   liveEdges: E[];
+  nodesAtClick: N[];
+  edgesAtClick: E[];
   serverNodes: N[];
   serverEdges: E[];
   nodeId: string;
   tag: string;
-}): { nodes: N[]; edges: E[]; source: "live" | "server" } {
-  const useLive = options.currentDiagramId === options.placedDiagramId;
-  const nodes = applyComponentTagToNodes(
-    useLive ? options.liveNodes : options.serverNodes,
-    options.nodeId,
-    options.tag
-  );
+}): { nodes: N[]; edges: E[]; source: "live" | "click" | "server" } {
+  const stillOnDiagram = options.currentDiagramId === options.placedDiagramId;
+  if (!stillOnDiagram) {
+    return {
+      nodes: applyComponentTagToNodes(options.serverNodes, options.nodeId, options.tag),
+      edges: options.serverEdges,
+      source: "server"
+    };
+  }
+
+  const liveIds = new Set(options.liveNodes.map((entry) => entry.id));
+  const liveRetainsClickNodes = options.nodesAtClick.every((entry) => liveIds.has(entry.id));
+  if (liveRetainsClickNodes) {
+    return {
+      nodes: applyComponentTagToNodes(options.liveNodes, options.nodeId, options.tag),
+      edges: options.liveEdges,
+      source: "live"
+    };
+  }
+
   return {
-    nodes,
-    edges: useLive ? options.liveEdges : options.serverEdges,
-    source: useLive ? "live" : "server"
+    nodes: applyComponentTagToNodes(options.nodesAtClick, options.nodeId, options.tag),
+    edges: options.edgesAtClick,
+    source: "click"
   };
 }
 

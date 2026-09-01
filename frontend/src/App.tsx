@@ -1533,6 +1533,12 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       if (graphDirty) {
         throw new Error("Save the diagram first — parts can only be placed on saved nodes.");
       }
+      // Freeze the clean canvas at Place click. Live refs are preferred after
+      // createComponent when they still contain these nodes (mid-place moves);
+      // if Delete/undo guts the canvas mid-flight, fall back to this snapshot
+      // so the follow-up PUT cannot wipe the saved P&ID.
+      const nodesAtClick = nodesRef.current;
+      const edgesAtClick = edgesRef.current;
       const component = await api.createComponent(diagramId, {
         tag,
         part_id: part.id,
@@ -1561,6 +1567,8 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         currentDiagramId: selectedDiagramIdRef.current,
         liveNodes: nodesRef.current,
         liveEdges: edgesRef.current,
+        nodesAtClick,
+        edgesAtClick,
         serverNodes,
         serverEdges,
         nodeId,
