@@ -91,3 +91,46 @@ def test_symbol_rejects_invalid_port_side(client: TestClient) -> None:
         },
     )
     assert response.status_code == 422
+
+
+def test_symbol_update_json_null_ports_do_not_brick_symbol_list(client: TestClient) -> None:
+    """Explicit JSON null on ports must not persist NULL or 500 the catalog."""
+    keep = client.post(
+        "/symbols",
+        json={
+            "name": "Keep",
+            "svg": VALVE_SVG,
+            "ports": [{"id": "in", "x": 2, "y": 20, "side": "left"}],
+        },
+    ).json()
+    symbol = client.post(
+        "/symbols",
+        json={
+            "name": "Null Ports",
+            "svg": VALVE_SVG,
+            "ports": [
+                {"id": "in", "x": 2, "y": 20, "side": "left"},
+                {"id": "out", "x": 62, "y": 20, "side": "right"},
+            ],
+        },
+    ).json()
+
+    updated = client.put(f"/symbols/{symbol['id']}", json={"ports": None})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["ports"] == []
+
+    listed = client.get("/symbols")
+    assert listed.status_code == 200, listed.text
+    by_id = {row["id"]: row for row in listed.json()}
+    assert by_id[symbol["id"]]["ports"] == []
+    assert by_id[keep["id"]]["ports"][0]["id"] == "in"
+
+    # Omitting ports must preserve an explicit empty or non-empty list.
+    restored = client.put(
+        f"/symbols/{symbol['id']}",
+        json={"ports": [{"id": "in", "x": 2, "y": 20, "side": "left"}]},
+    )
+    assert restored.status_code == 200
+    renamed = client.put(f"/symbols/{symbol['id']}", json={"name": "Null Ports Renamed"})
+    assert renamed.status_code == 200
+    assert renamed.json()["ports"][0]["id"] == "in"

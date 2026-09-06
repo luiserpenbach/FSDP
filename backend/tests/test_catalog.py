@@ -150,3 +150,50 @@ def test_document_upload_download_delete(client: TestClient, tmp_path: Path, mon
     deleted = client.delete(f"/parts/{part['id']}/documents/{document['id']}")
     assert deleted.status_code == 204
     assert client.get(f"/parts/{part['id']}/documents").json() == []
+
+
+def test_part_update_json_null_object_fields_do_not_brick_catalog(client: TestClient) -> None:
+    """Explicit JSON null on dimensions/metadata must not persist NULL.
+
+    Before the fix, apply_updates stored NULL, the PUT returned 500 (PartRead
+    requires objects), and GET /parts failed for the whole deployment.
+    """
+    keep = client.post(
+        "/parts",
+        json={"part_number": "KEEP-OK", "description": "Other", "part_type": "valve"},
+    ).json()
+    part = client.post(
+        "/parts",
+        json={
+            "part_number": "NULL-OBJ",
+            "description": "Valve",
+            "part_type": "valve",
+            "dimensions": {"od_mm": 12},
+            "metadata": {"source": "vendor"},
+        },
+    ).json()
+
+    for field in ("dimensions", "metadata"):
+        updated = client.put(f"/parts/{part['id']}", json={field: None})
+        assert updated.status_code == 200, updated.text
+        assert updated.json()[field] == {}
+
+        listed = client.get("/parts")
+        assert listed.status_code == 200, listed.text
+        by_id = {row["id"]: row for row in listed.json()}
+        assert by_id[part["id"]][field] == {}
+        assert keep["id"] in by_id
+
+        single = client.get(f"/parts/{part['id']}")
+        assert single.status_code == 200
+        assert single.json()[field] == {}
+
+    # Omitting the fields must not wipe previously stored objects.
+    client.put(
+        f"/parts/{part['id']}",
+        json={"dimensions": {"od_mm": 25}, "metadata": {"source": "internal"}},
+    )
+    renamed = client.put(f"/parts/{part['id']}", json={"description": "Valve body"})
+    assert renamed.status_code == 200
+    assert renamed.json()["dimensions"] == {"od_mm": 25}
+    assert renamed.json()["metadata"] == {"source": "internal"}
