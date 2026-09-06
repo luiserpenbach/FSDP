@@ -163,6 +163,13 @@ class PartCreate(BaseModel):
         default_factory=dict, validation_alias=AliasChoices("metadata", "metadata_")
     )
 
+    @field_validator("dimensions", "metadata", mode="before")
+    @classmethod
+    def _object_fields(cls, value: Any) -> Any:
+        # JSON null must not persist: PartRead requires objects, and one null row
+        # makes GET /parts (and single-part reads) fail response validation.
+        return {} if value is None else value
+
     @field_validator("part_number", "description", "part_type")
     @classmethod
     def _required_text(cls, value: str) -> str:
@@ -235,6 +242,13 @@ class PartUpdate(BaseModel):
     metadata: dict[str, Any] | None = Field(
         default=None, validation_alias=AliasChoices("metadata", "metadata_")
     )
+
+    @field_validator("dimensions", "metadata", mode="before")
+    @classmethod
+    def _object_fields(cls, value: Any) -> Any:
+        # Explicit JSON null is in fields_set; coerce to {} so apply_updates
+        # cannot store NULL and brick catalog reads. Omitted fields stay unset.
+        return {} if value is None else value
 
     @field_validator("part_number", "description", "part_type")
     @classmethod
@@ -446,6 +460,11 @@ class PidSymbolCreate(BaseModel):
     def _safe_svg(cls, value: str) -> str:
         return clean_symbol_svg(value)
 
+    @field_validator("ports", mode="before")
+    @classmethod
+    def _ports_list(cls, value: Any) -> Any:
+        return [] if value is None else value
+
 
 class PidSymbolUpdate(BaseModel):
     name: str | None = None
@@ -463,15 +482,27 @@ class PidSymbolUpdate(BaseModel):
     def _safe_svg(cls, value: str | None) -> str | None:
         return None if value is None else clean_symbol_svg(value)
 
+    @field_validator("ports", mode="before")
+    @classmethod
+    def _ports_list(cls, value: Any) -> Any:
+        # Explicit JSON null must not persist: PidSymbolRead requires a list, and
+        # one null ports row makes GET /symbols fail response validation.
+        return [] if value is None else value
+
 
 class PidSymbolRead(OrmModel):
     id: str
     name: str
     view_box: str
     svg: str
-    ports: list[SymbolPort]
+    ports: list[SymbolPort] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("ports", mode="before")
+    @classmethod
+    def _ports_list(cls, value: Any) -> Any:
+        return [] if value is None else value
 
 
 class DiagramCreate(BaseModel):

@@ -558,7 +558,8 @@ def update_symbol(
             raise HTTPException(status_code=409, detail="Symbol name already exists")
 
     updates = payload.model_dump(exclude_unset=True)
-    if "ports" in updates and updates["ports"] is not None:
+    if "ports" in updates:
+        # Schema coerces JSON null → []; always persist a list for PidSymbolRead.
         updates["ports"] = [port.model_dump() for port in payload.ports or []]
     for field, value in updates.items():
         setattr(symbol, field, value)
