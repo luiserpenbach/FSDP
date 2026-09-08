@@ -306,6 +306,50 @@ def test_non_positive_component_quantity_rejected(client: TestClient) -> None:
     assert negative.status_code == 422
 
 
+def test_component_update_json_null_properties_do_not_brick_reads(client: TestClient) -> None:
+    """Explicit JSON null on properties must not persist NULL.
+
+    Before the fix, apply_updates stored NULL, the PUT returned 500
+    (ComponentInstanceRead requires an object), and GET components / change
+    impact for that diagram failed until the row was repaired.
+    """
+    _, _, diagram = make_diagram(client)
+    _, _, other = make_diagram(client, name="Other")
+    other_comp = client.post(f"/diagrams/{other['id']}/components", json={"tag": "V-9"}).json()
+    component = client.post(
+        f"/diagrams/{diagram['id']}/components",
+        json={"tag": "V-1", "properties": {"source": "api"}},
+    ).json()
+
+    updated = client.put(f"/components/{component['id']}", json={"properties": None})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["properties"] == {}
+
+    listed = client.get(f"/diagrams/{diagram['id']}/components")
+    assert listed.status_code == 200, listed.text
+    assert listed.json()[0]["properties"] == {}
+
+    other_listed = client.get(f"/diagrams/{other['id']}/components")
+    assert other_listed.status_code == 200
+    assert other_listed.json()[0]["id"] == other_comp["id"]
+
+    impact = client.get(
+        "/changes/impact",
+        params={"object_type": "component", "object_id": component["id"]},
+    )
+    assert impact.status_code == 200, impact.text
+
+    # Omitting properties must not wipe a previously stored object.
+    client.put(
+        f"/components/{component['id']}",
+        json={"properties": {"source": "kept"}},
+    )
+    renamed = client.put(f"/components/{component['id']}", json={"tag": "V-1b"})
+    assert renamed.status_code == 200
+    assert renamed.json()["tag"] == "V-1b"
+    assert renamed.json()["properties"] == {"source": "kept"}
+
+
 # --- B9: CSV export carries a filename and engineering columns ---
 
 
