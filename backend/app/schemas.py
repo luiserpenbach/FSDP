@@ -544,6 +544,14 @@ class ComponentInstanceCreate(BaseModel):
     def _required_text(cls, value: str) -> str:
         return clean_required_text(value)
 
+    @field_validator("properties", mode="before")
+    @classmethod
+    def _object_fields(cls, value: Any) -> Any:
+        # JSON null must not persist: ComponentInstanceRead requires an object,
+        # and one null properties row makes GET /diagrams/{id}/components (and
+        # change-impact for that component) fail response validation.
+        return {} if value is None else value
+
 
 class ComponentInstanceUpdate(BaseModel):
     node_id: str | None = None
@@ -556,6 +564,13 @@ class ComponentInstanceUpdate(BaseModel):
     @classmethod
     def _required_text(cls, value: str | None) -> str | None:
         return clean_optional_text(value)
+
+    @field_validator("properties", mode="before")
+    @classmethod
+    def _object_fields(cls, value: Any) -> Any:
+        # Explicit JSON null is in fields_set; coerce to {} so apply_updates
+        # cannot store NULL and brick diagram component reads. Omitted stays unset.
+        return {} if value is None else value
 
 
 class ComponentInstanceRead(ComponentInstanceCreate, OrmModel):
