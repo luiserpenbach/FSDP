@@ -5,8 +5,9 @@
  * at paper size, so screen and print never drift.
  */
 import { computeConnectivity, type Connectivity } from "./connectivity";
+import { proprietaryText, resolveTemplate, titleBlockRect, wrapText, type DrawingContext } from "./frames";
 import { SYMBOL_STROKE_MM, type SymbolRegistry } from "./library";
-import { frameRect, sheetSize, zoneLabels } from "./sheet";
+import { SHEET_SIZES, frameRect, sheetSize, zoneLabels } from "./sheet";
 import { NOTE_SIZE_MM } from "./spatial";
 import type {
   EquipmentItem,
@@ -209,10 +210,11 @@ export function renderJunctions(connectivity: Connectivity, color = DEFAULT_INK)
   return `<g class="junctions" fill="${color}" stroke="none">${dots}</g>`;
 }
 
-/** Border and zone strip. */
-export function renderFrame(doc: SchematicDocument, color = DEFAULT_INK): string {
+/** Border, zone strip, and (per template) title block, revision table, notes, proprietary notice. */
+export function renderFrame(doc: SchematicDocument, ctx?: DrawingContext, color = DEFAULT_INK): string {
   const sheet = doc.sheet;
-  if (sheet.frame.kind === "none") return "";
+  const template = resolveTemplate(sheet);
+  if (template.id === "none" || sheet.frame.kind === "none") return "";
   const paper = sheetSize(sheet);
   const border = frameRect(sheet);
   const strip = Math.min(sheet.frame.margin, 6);
@@ -240,7 +242,106 @@ export function renderFrame(doc: SchematicDocument, color = DEFAULT_INK): string
     parts.push(text(label, border.x - strip / 2, centre + 1, { size: 3 }));
     parts.push(text(label, border.x + border.width + strip / 2, centre + 1, { size: 3 }));
   });
-  if (doc.meta.title) {
+
+  const context: DrawingContext = ctx ?? {
+    number: "",
+    title: doc.meta.title ?? "",
+    sheetNo: 1,
+    sheetCount: 1,
+    revisions: [],
+    notes: [],
+    sizeLabel: SHEET_SIZES[sheet.size]?.label.replace("ISO ", "").replace("ANSI ", "")
+  };
+  if (!context.sizeLabel) context.sizeLabel = SHEET_SIZES[sheet.size]?.label.replace("ISO ", "").replace("ANSI ", "");
+
+  const block = titleBlockRect(sheet);
+  if (template.titleBlock && block) {
+    parts.push(`<rect x="${n(block.x)}" y="${n(block.y)}" width="${n(block.width)}" height="${n(block.height)}" fill="#fff" stroke="currentColor" stroke-width="0.7"/>`);
+    for (const cell of template.titleBlock.cells) {
+      const x = block.x + cell.x;
+      const y = block.y + cell.y;
+      parts.push(`<rect x="${n(x)}" y="${n(y)}" width="${n(cell.w)}" height="${n(cell.h)}" fill="none" stroke="currentColor" stroke-width="0.35"/>`);
+      parts.push(text(cell.label, x + 1, y + 2.2, { size: 1.8, anchor: "start" }));
+      const value = cell.value(context);
+      if (!value) continue;
+      const size = cell.size ?? 2.5;
+      const weight = cell.bold ? "700" : undefined;
+      if (cell.multiline) {
+        const lines = value.split(/\r?\n/).filter((line) => line.trim()).slice(0, 3);
+        const lineHeight = size * 1.2;
+        const startY = y + cell.h / 2 - ((lines.length - 1) * lineHeight) / 2 + size * 0.35 + 0.8;
+        lines.forEach((line, index) => parts.push(text(line, x + cell.w / 2, startY + index * lineHeight, { size, weight })));
+      } else if (cell.align === "start") {
+        parts.push(text(value, x + 1.5, y + cell.h - 1.6, { size, weight, anchor: "start" }));
+      } else {
+        parts.push(text(value, x + cell.w / 2, y + cell.h / 2 + size * 0.35 + 0.9, { size, weight }));
+      }
+    }
+  }
+
+  if (template.revisionTable && block) {
+    const table = template.revisionTable;
+    const rows = context.revisions;
+    const total = (rows.length + 1) * table.rowHeight;
+    const top = block.y - total;
+    const left = block.x + block.width - table.width;
+    parts.push(`<rect x="${n(left)}" y="${n(top)}" width="${n(table.width)}" height="${n(total)}" fill="#fff" stroke="currentColor" stroke-width="0.7"/>`);
+    let cx = left;
+    for (const column of table.columns) {
+      parts.push(`<rect x="${n(cx)}" y="${n(top)}" width="${n(column.w)}" height="${n(table.rowHeight)}" fill="none" stroke="currentColor" stroke-width="0.35"/>`);
+      parts.push(text(column.label, cx + column.w / 2, top + table.rowHeight / 2 + 0.8, { size: 2.2, weight: "700" }));
+      cx += column.w;
+    }
+    parts.push(text("REVISIONS", left + table.width / 2, top - 1.2, { size: 2.2, weight: "700" }));
+    [...rows].reverse().forEach((row, index) => {
+      const y = top + (index + 1) * table.rowHeight;
+      let x = left;
+      parts.push(`<path d="M${n(left)},${n(y)} H${n(left + table.width)}" stroke="currentColor" stroke-width="0.25"/>`);
+      for (const column of table.columns) {
+        if (x > left) parts.push(`<path d="M${n(x)},${n(y)} V${n(y + table.rowHeight)}" stroke="currentColor" stroke-width="0.25"/>`);
+        const value = column.value(row);
+        if (value) {
+          parts.push(
+            column.align === "middle"
+              ? text(value, x + column.w / 2, y + table.rowHeight / 2 + 0.8, { size: 2.2 })
+              : text(value, x + 1.2, y + table.rowHeight / 2 + 0.8, { size: 2.2, anchor: "start" })
+          );
+        }
+        x += column.w;
+      }
+    });
+  }
+
+  if (template.notesBlock && context.notes.length) {
+    const notes = template.notesBlock;
+    const x = border.x + notes.x;
+    let y = border.y + notes.y + 3.5;
+    parts.push(text("GENERAL NOTES:", x, y, { size: 3, anchor: "start", weight: "700" }));
+    y += notes.lineHeight + 1;
+    let printed = 0;
+    context.notes.forEach((note, index) => {
+      const wrapped = wrapText(note, notes.width - 6, 2.5);
+      wrapped.forEach((line, lineIndex) => {
+        if (printed >= notes.maxLines) return;
+        parts.push(text(lineIndex === 0 ? `${index + 1}.` : "", x, y, { size: 2.5, anchor: "start" }));
+        parts.push(text(line, x + 6, y, { size: 2.5, anchor: "start" }));
+        y += notes.lineHeight;
+        printed += 1;
+      });
+    });
+  }
+
+  if (template.proprietary && ctx) {
+    const notice = template.proprietary;
+    const lines = wrapText(proprietaryText(context), notice.width, 2);
+    let y = border.y + border.height - 2 - (lines.length - 1) * notice.lineHeight;
+    for (const line of lines) {
+      parts.push(text(line, border.x + 3, y, { size: 2, anchor: "start" }));
+      y += notice.lineHeight;
+    }
+  }
+
+  if (!ctx && doc.meta.title && !template.titleBlock) {
     parts.push(text(doc.meta.title, border.x + border.width - 2, border.y + border.height - 2, { anchor: "end", size: 3.5, weight: "600" }));
   }
   return `<g class="frame" color="${color}" fill="none">${parts.join("")}</g>`;
@@ -248,6 +349,8 @@ export function renderFrame(doc: SchematicDocument, color = DEFAULT_INK): string
 
 export type DocumentRenderOptions = {
   frame?: boolean;
+  /** Drawing/revision data bound into the title block and revision table. */
+  context?: DrawingContext;
   notes?: boolean;
   background?: string;
   /** Add the XML declaration for a standalone file. */
@@ -265,7 +368,7 @@ export function renderDocumentSvg(doc: SchematicDocument, registry: SymbolRegist
     .map((item) => renderItem(item, ctx))
     .join("\n");
   const background = options.background ? `<rect width="100%" height="100%" fill="${escapeXml(options.background)}"/>` : "";
-  const frame = options.frame === false ? "" : renderFrame(doc);
+  const frame = options.frame === false ? "" : renderFrame(doc, options.context);
   const header = options.standalone ? '<?xml version="1.0" encoding="UTF-8"?>\n' : "";
   return `${header}<svg xmlns="http://www.w3.org/2000/svg" width="${n(paper.width)}mm" height="${n(paper.height)}mm" viewBox="0 0 ${n(paper.width)} ${n(paper.height)}" font-family="${FONT_FAMILY}">
 ${background}${frame}

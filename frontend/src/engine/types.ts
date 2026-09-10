@@ -47,6 +47,12 @@ export type Sheet = {
   frame: {
     /** "none" draws nothing; "basic" draws a border with zone ticks. */
     kind: "none" | "basic";
+    /**
+     * Frame template that adds the title block, revision table, notes, and
+     * proprietary blocks (`frames.ts`). Defaults to "basic" when `kind` is
+     * "basic" and "none" otherwise.
+     */
+    template?: "none" | "basic" | "fsdp-standard";
     /** Zone columns (numbered right-to-left) and rows (lettered bottom-to-top). */
     columns: number;
     rows: number;

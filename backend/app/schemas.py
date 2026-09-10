@@ -555,6 +555,225 @@ class SchematicRead(BaseModel):
     document: dict[str, Any] | None
 
 
+VALID_SHEET_SIZES = {"A4", "A3", "A2", "A1", "A0", "ANSI_A", "ANSI_B", "ANSI_C", "ANSI_D", "ANSI_E"}
+VALID_FRAME_TEMPLATES = {"none", "basic", "fsdp-standard"}
+
+
+def _clean_sheet_size(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value not in VALID_SHEET_SIZES:
+        raise ValueError(f"size must be one of {sorted(VALID_SHEET_SIZES)}")
+    return value
+
+
+def _clean_frame_template(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if value not in VALID_FRAME_TEMPLATES:
+        raise ValueError(f"frame_template must be one of {sorted(VALID_FRAME_TEMPLATES)}")
+    return value
+
+
+class DrawingRevisionCreate(BaseModel):
+    label: str = "-"
+    description: str = "Initial issue"
+    drawn_by: str | None = None
+    drawn_date: str | None = None
+    checked_by: str | None = None
+    checked_date: str | None = None
+    approved_by: str | None = None
+    approved_date: str | None = None
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, value: str) -> str:
+        return clean_required_text(value)
+
+
+class DrawingRevisionUpdate(BaseModel):
+    label: str | None = None
+    description: str | None = None
+    drawn_by: str | None = None
+    drawn_date: str | None = None
+    checked_by: str | None = None
+    checked_date: str | None = None
+    approved_by: str | None = None
+    approved_date: str | None = None
+
+
+class DrawingRevisionRead(OrmModel):
+    id: str
+    drawing_id: str
+    sequence: int
+    label: str
+    description: str
+    status: str
+    drawn_by: str | None
+    drawn_date: str | None
+    checked_by: str | None
+    checked_date: str | None
+    approved_by: str | None
+    approved_date: str | None
+    created_at: datetime
+
+
+class DrawingSheetCreate(BaseModel):
+    title: str | None = None
+    source_diagram_id: str | None = None
+    document: dict[str, Any] | None = None
+
+    @field_validator("document")
+    @classmethod
+    def _document(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return SchematicDocumentIn(document=value).document
+
+
+class DrawingSheetUpdate(BaseModel):
+    title: str | None = None
+    document: dict[str, Any] | None = None
+
+    @field_validator("document")
+    @classmethod
+    def _document(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return SchematicDocumentIn(document=value).document
+
+
+class DrawingSheetRead(OrmModel):
+    id: str
+    drawing_id: str
+    sheet_no: int
+    title: str | None
+    source_diagram_id: str | None
+    document: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class DrawingSheetSummary(OrmModel):
+    id: str
+    sheet_no: int
+    title: str | None
+    source_diagram_id: str | None
+
+
+class DrawingCreate(BaseModel):
+    title: str
+    number: str | None = None
+    system_id: str | None = None
+    size: str = "A3"
+    units: str = "mm"
+    discipline: str = "P&ID"
+    frame_template: str = "fsdp-standard"
+    fields: dict[str, Any] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
+    first_sheet: DrawingSheetCreate | None = None
+    revision: DrawingRevisionCreate | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("number")
+    @classmethod
+    def _number(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+    @field_validator("size")
+    @classmethod
+    def _size(cls, value: str) -> str:
+        return _clean_sheet_size(value) or "A3"
+
+    @field_validator("frame_template")
+    @classmethod
+    def _frame(cls, value: str) -> str:
+        return _clean_frame_template(value) or "fsdp-standard"
+
+
+class DrawingUpdate(BaseModel):
+    title: str | None = None
+    number: str | None = None
+    system_id: str | None = None
+    size: str | None = None
+    units: str | None = None
+    discipline: str | None = None
+    status: str | None = None
+    frame_template: str | None = None
+    fields: dict[str, Any] | None = None
+    notes: list[str] | None = None
+
+    @field_validator("title", "number")
+    @classmethod
+    def _text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+    @field_validator("size")
+    @classmethod
+    def _size(cls, value: str | None) -> str | None:
+        return _clean_sheet_size(value)
+
+    @field_validator("frame_template")
+    @classmethod
+    def _frame(cls, value: str | None) -> str | None:
+        return _clean_frame_template(value)
+
+
+class DrawingRead(OrmModel):
+    id: str
+    project_id: str
+    system_id: str | None
+    number: str
+    title: str
+    size: str
+    units: str
+    discipline: str
+    status: str
+    frame_template: str
+    fields: dict[str, Any]
+    notes: list[str]
+    sheets: list[DrawingSheetSummary]
+    revisions: list[DrawingRevisionRead]
+    created_at: datetime
+    updated_at: datetime
+
+
+class SheetExportIn(BaseModel):
+    """Rendered SVG of one sheet (from the shared renderer) to convert on the server."""
+
+    svg: str
+    format: str = "pdf"
+    dpi: int = 300
+
+    @field_validator("svg")
+    @classmethod
+    def _svg(cls, value: str) -> str:
+        text = value.strip()
+        if not text.startswith("<?xml") and not text.startswith("<svg"):
+            raise ValueError("svg must be an SVG document")
+        if len(text) > 20_000_000:
+            raise ValueError("svg is too large")
+        return text
+
+    @field_validator("format")
+    @classmethod
+    def _format(cls, value: str) -> str:
+        if value not in {"pdf", "png", "svg"}:
+            raise ValueError("format must be pdf, png, or svg")
+        return value
+
+    @field_validator("dpi")
+    @classmethod
+    def _dpi(cls, value: int) -> int:
+        if value < 50 or value > 1200:
+            raise ValueError("dpi must be between 50 and 1200")
+        return value
+
+
 class DiagramRead(OrmModel):
     id: str
     system_id: str

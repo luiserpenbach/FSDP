@@ -7,6 +7,9 @@ import type {
   CatalogDocument,
   CatalogSettings,
   Diagram,
+  Drawing,
+  DrawingRevision,
+  DrawingSheet,
   FluidSystem,
   Impact,
   Part,
@@ -120,6 +123,43 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ document })
     }),
+  listDrawings: (projectId: string) => request<Drawing[]>(`/projects/${projectId}/drawings`),
+  createDrawing: (
+    projectId: string,
+    body: {
+      title: string;
+      number?: string;
+      system_id?: string | null;
+      size?: string;
+      units?: string;
+      frame_template?: string;
+      fields?: Record<string, unknown>;
+      notes?: string[];
+      first_sheet?: { title?: string | null; source_diagram_id?: string | null; document?: unknown };
+      revision?: Partial<Omit<DrawingRevision, "id" | "drawing_id" | "sequence" | "status" | "created_at">>;
+    }
+  ) => request<Drawing>(`/projects/${projectId}/drawings`, { method: "POST", body: JSON.stringify(body) }),
+  getDrawing: (drawingId: string) => request<Drawing>(`/drawings/${drawingId}`),
+  updateDrawing: (drawingId: string, body: Partial<Omit<Drawing, "id" | "project_id" | "sheets" | "revisions" | "created_at" | "updated_at">>) =>
+    request<Drawing>(`/drawings/${drawingId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteDrawing: (drawingId: string) => requestNoContent(`/drawings/${drawingId}`, { method: "DELETE" }),
+  createSheet: (drawingId: string, body: { title?: string | null; source_diagram_id?: string | null; document?: unknown }) =>
+    request<DrawingSheet>(`/drawings/${drawingId}/sheets`, { method: "POST", body: JSON.stringify(body) }),
+  getSheet: (sheetId: string) => request<DrawingSheet>(`/sheets/${sheetId}`),
+  updateSheet: (sheetId: string, body: { title?: string | null; document?: unknown }) =>
+    request<DrawingSheet>(`/sheets/${sheetId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteSheet: (sheetId: string) => requestNoContent(`/sheets/${sheetId}`, { method: "DELETE" }),
+  createRevision: (drawingId: string, body: Partial<Omit<DrawingRevision, "id" | "drawing_id" | "sequence" | "status" | "created_at">>) =>
+    request<DrawingRevision>(`/drawings/${drawingId}/revisions`, { method: "POST", body: JSON.stringify(body) }),
+  updateRevision: (revisionId: string, body: Partial<Omit<DrawingRevision, "id" | "drawing_id" | "sequence" | "status" | "created_at">>) =>
+    request<DrawingRevision>(`/revisions/${revisionId}`, { method: "PUT", body: JSON.stringify(body) }),
+  /** Convert a rendered sheet SVG on the server; resolves to the file blob and its filename. */
+  exportSheet: async (sheetId: string, body: { svg: string; format: "pdf" | "png" | "svg"; dpi?: number }) => {
+    const response = await rawRequest(`/sheets/${sheetId}/export`, { method: "POST", body: JSON.stringify(body) });
+    const disposition = response.headers.get("content-disposition") ?? "";
+    const match = /filename="([^"]+)"/.exec(disposition);
+    return { blob: await response.blob(), filename: match?.[1] ?? `sheet.${body.format}` };
+  },
   listSymbols: () => request<PidSymbolDef[]>("/symbols"),
   createSymbol: (body: Omit<PidSymbolDef, "id" | "created_at" | "updated_at">) =>
     request<PidSymbolDef>("/symbols", { method: "POST", body: JSON.stringify(body) }),

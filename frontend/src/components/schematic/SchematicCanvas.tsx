@@ -16,6 +16,7 @@ import {
   forwardRef
 } from "react";
 import type { Editor, EditorSnapshot, Modifiers } from "../../engine/editor";
+import type { DrawingContext } from "../../engine/frames";
 import { symbolPorts, type SymbolRegistry } from "../../engine/library";
 import { renderFrame, renderItem, renderJunctions, pathFromPoints } from "../../engine/render";
 import { frameRect, sheetSize } from "../../engine/sheet";
@@ -50,11 +51,14 @@ function SchematicCanvasInner(
   {
     editor,
     showGrid,
+    context,
     onCursor,
     onViewport
   }: {
     editor: Editor;
     showGrid: boolean;
+    /** Drawing/revision data for the title block and revision table. */
+    context?: DrawingContext;
     onCursor?: (point: Point | null) => void;
     onViewport?: (viewport: Viewport) => void;
   },
@@ -259,7 +263,7 @@ function SchematicCanvasInner(
           {showGrid && (
             <rect x={frame.x} y={frame.y} width={frame.width} height={frame.height} fill="url(#schematicGrid)" pointerEvents="none" />
           )}
-          <g dangerouslySetInnerHTML={{ __html: renderFrame(doc) }} />
+          <g dangerouslySetInnerHTML={{ __html: renderFrame(doc, context) }} />
           <g className="items">
             {doc.items.map((item) =>
               hidden.has(item.layer) ? null : <ItemView key={item.id} item={item} registry={registry} notes />

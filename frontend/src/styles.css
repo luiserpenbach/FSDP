@@ -2777,3 +2777,103 @@ span.symbolListPendingName.untitled {
 .draftingStatus .statusTool {
   text-transform: capitalize;
 }
+
+.sheetTabs {
+  align-items: center;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  gap: 2px;
+  padding-left: 8px;
+}
+
+.sheetTab {
+  min-width: 30px;
+  padding: 4px 8px;
+}
+
+.sheetTab.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.draftingNewForm {
+  align-items: end;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-top: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 14px 10px;
+}
+
+.draftingNewForm strong {
+  flex-basis: 100%;
+}
+
+.draftingNewForm label {
+  margin: 0;
+  min-width: 140px;
+}
+
+.draftingSide {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 214px);
+  overflow-y: auto;
+}
+
+.draftingSide .draftingInspector {
+  max-height: none;
+}
+
+.drawingPanel .fieldRow {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.drawingPanel textarea {
+  min-height: 48px;
+}
+
+.linkButton {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+
+.revisionTable {
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 8px;
+  width: 100%;
+}
+
+.revisionTable th,
+.revisionTable td {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 3px 4px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.revisionTable input {
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.revisionForm {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 50px 1fr auto;
+}
+
+.revisionForm input {
+  font-size: 12px;
+}

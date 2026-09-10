@@ -1,6 +1,6 @@
 # P&ID Designer Upgrade Plan — From PFD Sketchpad to Professional Process Engineering Tool
 
-Status: approved 2026-09-10; Phase 0 delivered (see §12). Phases 1–6 not yet implemented.
+Status: approved 2026-09-10; Phases 0 and 1 delivered (see §12). Phases 2–6 not yet implemented.
 Audience: product, propulsion/test engineering, and whoever builds the editor.
 
 This plan describes how the FSDP Diagrams page grows from the current React Flow sketchpad into a professional P&ID authoring and export tool that combines the drafting rigor of AutoCAD / AutoCAD P&ID, the library-and-connectivity discipline of KiCad's schematic editor, and FSDP's existing hardware, BoM, and requirements thread.
@@ -421,6 +421,21 @@ Exit criteria checked:
 | Screen and export identical | `renderDocumentSvg` is deterministic and shared; browser export re-rendered standalone matches the canvas |
 
 Known limits carried into Phase 1: no title block or generated legends yet (frame and zones only), symbols are the Phase 0 starter set, auto-routing does not avoid symbol bodies, legacy diagrams are converted per open until saved from Drafting, and the classic Diagrams page remains the default editor.
+
+### Phase 1 — Sheets, frames, and vector export — ✅ delivered 2026-09-10
+
+Delivered:
+
+- **Controlled drawings** (`backend/app/api/drawing_routes.py`, migration `0008`): `drawings` (number unique per project, up to three title lines, size, units, discipline, status, frame template, title-block fields, general notes), `drawing_sheets` (numbered sheets each holding a schematic document, optional source diagram), `drawing_revisions` (letter, description, drawn/checked/approved with dates, working status). Drawing numbers generate from the project prefix (`AMB2-0001`). Deleting a sheet renumbers the rest; the last sheet cannot be deleted.
+- **Frame templates** (`frontend/src/engine/frames.ts`): `none`, `basic` (border and zones), and `fsdp-standard`, a 180 × 45 mm title block bound to drawing/revision data (company, status, three title lines, size, units, scale, drawing number, revision letter, drawn/checked/approved, sheet N of M, project, system, date, software), a revision table that grows above it, a general notes block (auto-numbered, wrapped), and a proprietary notice. The renderer draws whatever template the sheet names; values come from the drawing rows, so re-issuing a drawing never touches the document.
+- **Export service** (`backend/app/services/export.py`, `POST /sheets/{id}/export`): the browser renders the sheet with the shared renderer and posts the SVG; Cairo converts it to a vector PDF at paper size or a PNG at the requested DPI (SVG passes through). Scripts and external references are refused. Filenames follow `{number}-{sheet}-rev{rev}.{ext}`. The backend image installs `libcairo2`.
+- **Drafting page** reworked around drawings: drawing picker, New drawing, Convert diagram (uses the saved schematic document or converts the legacy graph, at the chosen paper size), sheet tabs with add/delete, a drawing panel (number, title, size, units, frame, system, company, scale, status, notes, revisions with add and approve), and PDF / PNG / SVG export buttons.
+
+Deviation from the plan text: no `frame_templates` table yet. Built-in templates live in code; the table arrives with custom frame upload (Phase 6 DXF import), so an unused table was not added.
+
+Exit criterion (frame-correct sheet with a vector PDF whose title block, zones, and notes match the reference layout): checked in the browser on a converted fill-test sheet at ANSI E, exported through Cairo; `test_drawings.py` asserts the PDF page size, and `frames.test.ts` the bound title block, revision rows, notes, and proprietary text.
+
+Known limits carried into Phase 2: the notes block can overlap content that was converted into the top-left corner (move the content or the equipment boundary); the export server uses the fonts installed on it (DejaVu in the image) rather than the browser font; the `/diagrams/{id}/schematic` endpoint from Phase 0 remains as the conversion source and is otherwise unused by the page.
 
 ## Appendix A — Built-in symbol library scope
 

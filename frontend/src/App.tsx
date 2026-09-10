@@ -129,7 +129,7 @@ const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
   { path: "/systems", label: "Systems", description: "Projects and fluid systems" },
   { path: "/diagrams", label: "Diagrams", description: "P&ID workspace" },
-  { path: "/drafting", label: "Drafting", description: "Paper-space P&ID editor (preview)" },
+  { path: "/drafting", label: "Drafting", description: "Paper-space P&ID drawings" },
   { path: "/parts", label: "Parts Catalog", description: "Internal and vendor parts" },
   { path: "/requirements", label: "Requirements", description: "Traceable requirements" },
   { path: "/bom", label: "BoM & Procurement", description: "Snapshots and exports" },
@@ -2211,8 +2211,11 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
           path="/drafting"
           element={
             <DraftingPage
+              projectId={selectedProjectId}
+              projectName={selectedProject?.name ?? ""}
+              systems={systems}
               diagrams={diagrams}
-              initialDiagramId={selectedDiagramId}
+              selectedSystemId={selectedSystemId}
               customSymbols={customSymbols}
               user={user}
               canWrite={user.role !== "viewer"}

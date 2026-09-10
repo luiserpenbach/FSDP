@@ -329,6 +329,10 @@ The Drafting page is the first slice of the [P&ID professional upgrade plan](pid
 - **Editor** (`editor.ts`): tool state machines for select/move, wire, place, label, equipment, and note, driven by pointer events in mm and a KiCad-style key map (W wire, R rotate, X mirror, Esc cancel, Ctrl+D duplicate, arrows nudge).
 - **Converter** (`convert.ts`): turns a legacy React Flow `graph` into a document on first open; item ids are preserved so component bindings keep lining up.
 
-Persistence: `GET/PUT /diagrams/{id}/schematic` stores the document in `diagrams.schematic` (migration `0007`). The classic Diagrams page keeps using `graph`; a diagram opened in Drafting is converted until it is saved there.
+**Drawings** (`backend/app/api/drawing_routes.py`, migration `0008`): a drawing (`/projects/{id}/drawings`) has a number, up to three title lines, size, units, status, frame template, title-block fields, and general notes; it owns numbered sheets (`/drawings/{id}/sheets`, each with a schematic document) and revisions (`/drawings/{id}/revisions`). Frame templates (`frontend/src/engine/frames.ts`) bind those rows into the title block, revision table, notes block, and proprietary notice when the sheet renders.
 
-Tests: `npx vitest run src/engine` covers geometry, library grid conformance, undo/redo (including a randomised inverse property), connectivity, routing, snapping, hit testing, conversion, rendering, and the editor tools; `src/pages/DraftingPage.test.tsx` covers open/convert/save and inspector editing; `backend/tests/test_schematic.py` covers the API.
+**Export** (`POST /sheets/{id}/export`): the browser renders the sheet SVG with the shared renderer and the server converts it with Cairo (`app/services/export.py`) to PDF at paper size or PNG at a DPI; the image installs `libcairo2`.
+
+Legacy persistence: `GET/PUT /diagrams/{id}/schematic` stores a schematic document on a classic diagram (`diagrams.schematic`, migration `0007`); "Convert diagram" on the Drafting page uses it as the source when present, else converts the React Flow `graph`.
+
+Tests: `npx vitest run src/engine` covers geometry, library grid conformance, undo/redo (including a randomised inverse property), connectivity, routing, snapping, hit testing, conversion, rendering, frame templates, and the editor tools; `src/pages/DraftingPage.test.tsx` covers opening a sheet with a bound title block, saving, converting a diagram, and exporting; `backend/tests/test_schematic.py` and `test_drawings.py` cover the API including PDF/PNG export.

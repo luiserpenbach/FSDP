@@ -106,6 +106,55 @@ export type Diagram = {
   };
 };
 
+export type DrawingRevision = {
+  id: string;
+  drawing_id: string;
+  sequence: number;
+  label: string;
+  description: string;
+  status: string;
+  drawn_by: string | null;
+  drawn_date: string | null;
+  checked_by: string | null;
+  checked_date: string | null;
+  approved_by: string | null;
+  approved_date: string | null;
+  created_at: string;
+};
+
+export type DrawingSheetSummary = {
+  id: string;
+  sheet_no: number;
+  title: string | null;
+  source_diagram_id: string | null;
+};
+
+export type DrawingSheet = DrawingSheetSummary & {
+  drawing_id: string;
+  document: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Drawing = {
+  id: string;
+  project_id: string;
+  system_id: string | null;
+  number: string;
+  title: string;
+  size: string;
+  units: string;
+  discipline: string;
+  status: string;
+  frame_template: string;
+  fields: Record<string, unknown>;
+  notes: string[];
+  sheets: DrawingSheetSummary[];
+  revisions: DrawingRevision[];
+  created_at: string;
+  updated_at: string;
+};
+
 export type SchematicRead = {
   diagram_id: string;
   revision: number;
