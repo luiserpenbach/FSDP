@@ -136,6 +136,8 @@ Includes:
 - Diagram export.
 - Operating modes such as fill, drain, purge, chilldown, pressurization, flight, and safe mode.
 
+A proposed plan to bring P&ID authoring and export to professional drafting level (sheets, title blocks, ISA symbol library, line numbers and specs, tag schemes, vector/DXF export, generated instrument index and line list, design rule checks, revision control) is in [pid-professional-upgrade-plan.md](pid-professional-upgrade-plan.md). It is not implemented.
+
 ### Epic 2: Engineering Data Model
 
 Goal: create a single source of truth.

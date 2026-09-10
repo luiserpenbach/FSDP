@@ -63,6 +63,8 @@ from app.schemas import (
     RequirementCreate,
     RequirementRead,
     RequirementUpdate,
+    SchematicDocumentIn,
+    SchematicRead,
     TraceLinkCreate,
     TraceLinkRead,
 )
@@ -505,6 +507,36 @@ def update_diagram_graph(
     db.commit()
     db.refresh(diagram)
     return diagram
+
+
+@router.get("/diagrams/{diagram_id}/schematic", response_model=SchematicRead)
+def get_diagram_schematic(diagram_id: str, db: Session = Depends(get_db)) -> dict:
+    diagram = require_model(db, Diagram, diagram_id)
+    return {"diagram_id": diagram.id, "revision": diagram.revision, "document": diagram.schematic}
+
+
+@router.put("/diagrams/{diagram_id}/schematic", response_model=SchematicRead)
+def update_diagram_schematic(
+    diagram_id: str,
+    payload: SchematicDocumentIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> dict:
+    diagram = require_model(db, Diagram, diagram_id)
+    diagram.schematic = payload.document
+    diagram.revision += 1
+    item_count = len(payload.document.get("items", []))
+    record_change(
+        db,
+        "diagram",
+        diagram.id,
+        "updated",
+        f"Saved schematic for {diagram.name} ({item_count} items)",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(diagram)
+    return {"diagram_id": diagram.id, "revision": diagram.revision, "document": diagram.schematic}
 
 
 @router.post("/symbols", response_model=PidSymbolRead, status_code=201)

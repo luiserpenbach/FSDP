@@ -68,6 +68,8 @@ import { LoginPage } from "./pages/LoginPage";
 import { CatalogSettingsPanel } from "./pages/CatalogSettingsPanel";
 import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout";
 import { PartsCatalog } from "./pages/PartsCatalog";
+import { DraftingPage } from "./pages/DraftingPage";
+import { TagSchemePanel } from "./pages/TagSchemePanel";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
@@ -128,6 +130,7 @@ const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
   { path: "/systems", label: "Systems", description: "Projects and fluid systems" },
   { path: "/diagrams", label: "Diagrams", description: "P&ID workspace" },
+  { path: "/drafting", label: "Drafting", description: "Paper-space P&ID drawings" },
   { path: "/parts", label: "Parts Catalog", description: "Internal and vendor parts" },
   { path: "/requirements", label: "Requirements", description: "Traceable requirements" },
   { path: "/bom", label: "BoM & Procurement", description: "Snapshots and exports" },
@@ -395,6 +398,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Ready");
   const [error, setError] = useState("");
+  const notifyFromDrafting = useCallback((text: string, isError = false) => {
+    if (isError) {
+      setError(text);
+      setMessage("Action failed.");
+    } else {
+      setError("");
+      setMessage(text);
+    }
+  }, []);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [graphDirty, setGraphDirty] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<CanvasNodeData>([]);
@@ -2196,6 +2208,23 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
             </PageLayout>
           }
         />
+        <Route
+          path="/drafting"
+          element={
+            <DraftingPage
+              projectId={selectedProjectId}
+              projectName={selectedProject?.name ?? ""}
+              systems={systems}
+              diagrams={diagrams}
+              selectedSystemId={selectedSystemId}
+              customSymbols={customSymbols}
+              refreshSymbols={() => void api.listSymbols().then((list) => setCustomSymbols(Array.isArray(list) ? list : []))}
+              user={user}
+              canWrite={user.role !== "viewer"}
+              notify={notifyFromDrafting}
+            />
+          }
+        />
         <Route path="/safety" element={<PlaceholderPage title="Safety" body="Hazards, trapped-volume checks, relief scenarios, and FMEA/FHA workflows will be added after the navigation foundation." />} />
         <Route path="/certification" element={<PlaceholderPage title="Certification" body="Compliance packages, evidence status, and generated certification artifacts will live here." />} />
         <Route
@@ -2254,6 +2283,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     setProjects((current) => current.map((item) => (item.id === updated.id ? updated : item)));
                   }}
                 />
+                <TagSchemePanel project={selectedProject} canWrite={user.role !== "viewer"} />
               </section>
             </PageLayout>
           }

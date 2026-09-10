@@ -2635,3 +2635,370 @@ span.symbolListPendingName.untitled {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* ---------- Drafting (schematic engine preview) ---------- */
+
+.draftingPage .pageHeader {
+  margin-bottom: 8px;
+}
+
+.draftingLayout {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.draftingTop {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.draftingTop .toolGroup {
+  align-items: center;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-left: 8px;
+}
+
+.draftingTop .toolButton.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.draftingTop .checkRow,
+.draftingInspector .checkRow {
+  align-items: center;
+  display: inline-flex;
+  flex-direction: row;
+  gap: 6px;
+  margin: 0;
+}
+
+.draftingTop .checkRow input,
+.draftingInspector .checkRow input {
+  width: auto;
+}
+
+.draftingNotice {
+  background: var(--amber-soft);
+  border: 1px solid var(--line);
+  border-top: none;
+  color: var(--amber-deep);
+  font-size: 12.5px;
+  margin: 0;
+  padding: 6px 14px;
+}
+
+.draftingBody {
+  display: grid;
+  flex: 1;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  min-height: 0;
+}
+
+.schematicCanvas {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 0 0 var(--radius) var(--radius);
+  border-top: none;
+  height: calc(100vh - 214px);
+  min-height: 460px;
+  outline: none;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+}
+
+.schematicCanvas:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+
+.schematicCanvas.canvasCrosshair {
+  cursor: crosshair;
+}
+
+.schematicCanvas.canvasHover {
+  cursor: move;
+}
+
+.schematicEmpty {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+.schematicSvg {
+  display: block;
+}
+
+.schematicSvg .item-note {
+  cursor: pointer;
+}
+
+.draftingInspector {
+  max-height: calc(100vh - 214px);
+}
+
+.draftingInspector textarea {
+  min-height: 72px;
+}
+
+.portList {
+  font-size: 12px;
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.portList li {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.draftingStatus {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 0 0 var(--radius) var(--radius);
+  border-top: none;
+  color: var(--text-2);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 16px;
+  padding: 4px 14px;
+}
+
+.draftingStatus .statusTool {
+  text-transform: capitalize;
+}
+
+.sheetTabs {
+  align-items: center;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  gap: 2px;
+  padding-left: 8px;
+}
+
+.sheetTab {
+  min-width: 30px;
+  padding: 4px 8px;
+}
+
+.sheetTab.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.draftingNewForm {
+  align-items: end;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-top: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 14px 10px;
+}
+
+.draftingNewForm strong {
+  flex-basis: 100%;
+}
+
+.draftingNewForm label {
+  margin: 0;
+  min-width: 140px;
+}
+
+.draftingSide {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: calc(100vh - 214px);
+  overflow-y: auto;
+}
+
+.draftingSide .draftingInspector {
+  max-height: none;
+}
+
+.drawingPanel .fieldRow {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.drawingPanel textarea {
+  min-height: 48px;
+}
+
+.linkButton {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+
+.revisionTable {
+  border-collapse: collapse;
+  font-size: 12px;
+  margin-bottom: 8px;
+  width: 100%;
+}
+
+.revisionTable th,
+.revisionTable td {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 3px 4px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.revisionTable input {
+  font-size: 12px;
+  padding: 2px 4px;
+}
+
+.revisionForm {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 50px 1fr auto;
+}
+
+.revisionForm input {
+  font-size: 12px;
+}
+
+/* ---------- Library panel and tag checks (Phase 2) ---------- */
+
+.draftingBody.withLibrary {
+  grid-template-columns: 230px minmax(0, 1fr) 300px;
+}
+
+.libraryPanel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0 0 var(--radius) var(--radius);
+  border-top: none;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 214px);
+  min-height: 0;
+}
+
+.libraryHead {
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 8px;
+}
+
+.libraryHead input {
+  font-size: 12.5px;
+  padding: 5px 8px;
+}
+
+.libraryGroups {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px 8px;
+}
+
+.libraryGroupHead {
+  background: none;
+  border: none;
+  color: var(--text-2);
+  display: flex;
+  font-size: 11px;
+  font-weight: 600;
+  justify-content: space-between;
+  letter-spacing: 0.04em;
+  padding: 8px 4px 4px;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.libraryGroupHead:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+.libraryGrid {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.librarySymbol {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font-size: 10.5px;
+  gap: 2px;
+  line-height: 1.2;
+  padding: 4px 3px;
+  text-align: center;
+}
+
+.librarySymbol span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.librarySymbol.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.symbolPreview {
+  color: var(--ink-800);
+  display: block;
+}
+
+.libraryDetail {
+  border-top: 1px solid var(--line-soft);
+  font-size: 12px;
+  padding: 8px 10px 10px;
+}
+
+.libraryDetail p {
+  color: var(--text-2);
+  margin: 4px 0;
+}
+
+.libraryMetaForm label {
+  margin-bottom: 6px;
+}
+
+.tagIssues ul {
+  font-size: 12px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.tagIssues li {
+  margin: 2px 0;
+}
+
+.draftingTop .toolGroup select {
+  margin: 4px 0;
+  min-width: 150px;
+  width: auto;
+}

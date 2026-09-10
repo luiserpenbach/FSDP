@@ -126,6 +126,10 @@ class Diagram(TimestampMixin, Base):
     diagram_type: Mapped[str] = mapped_column(String(40), nullable=False, default="pid")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     graph: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Schematic document (mm paper space) authored by the drafting editor.
+    # NULL until a diagram has been opened and saved there; the legacy React
+    # Flow `graph` stays the source for the classic editor until conversion.
+    schematic: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     system: Mapped[FluidSystem] = relationship(back_populates="diagrams")
     nodes: Mapped[list[DiagramNode]] = relationship(
@@ -199,6 +203,78 @@ class ComponentInstance(TimestampMixin, Base):
     part: Mapped[Part | None] = relationship()
 
 
+class Drawing(TimestampMixin, Base):
+    """Controlled drawing: a numbered, titled document made of sheets."""
+
+    __tablename__ = "drawings"
+    __table_args__ = (UniqueConstraint("project_id", "number", name="uq_drawing_number"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    system_id: Mapped[str | None] = mapped_column(
+        ForeignKey("fluid_systems.id", ondelete="SET NULL")
+    )
+    number: Mapped[str] = mapped_column(String(80), nullable=False)
+    # Up to three title lines separated by newlines, as printed in the title block.
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    size: Mapped[str] = mapped_column(String(16), nullable=False, default="A3")
+    units: Mapped[str] = mapped_column(String(16), nullable=False, default="mm")
+    discipline: Mapped[str] = mapped_column(String(40), nullable=False, default="P&ID")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="working")
+    frame_template: Mapped[str] = mapped_column(String(40), nullable=False, default="fsdp-standard")
+    # Title-block extras (company, bldg/sys, area, scale) and general notes.
+    fields: Mapped[dict] = mapped_column(JSON, default=dict)
+    notes: Mapped[list] = mapped_column(JSON, default=list)
+
+    sheets: Mapped[list[DrawingSheet]] = relationship(
+        back_populates="drawing",
+        cascade="all, delete-orphan",
+        order_by="DrawingSheet.sheet_no",
+    )
+    revisions: Mapped[list[DrawingRevision]] = relationship(
+        back_populates="drawing",
+        cascade="all, delete-orphan",
+        order_by="DrawingRevision.sequence",
+    )
+
+
+class DrawingSheet(TimestampMixin, Base):
+    __tablename__ = "drawing_sheets"
+    __table_args__ = (UniqueConstraint("drawing_id", "sheet_no", name="uq_drawing_sheet_no"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    drawing_id: Mapped[str] = mapped_column(ForeignKey("drawings.id", ondelete="CASCADE"))
+    sheet_no: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    title: Mapped[str | None] = mapped_column(String(160))
+    # Legacy diagram this sheet was converted from, if any.
+    source_diagram_id: Mapped[str | None] = mapped_column(
+        ForeignKey("diagrams.id", ondelete="SET NULL")
+    )
+    document: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    drawing: Mapped[Drawing] = relationship(back_populates="sheets")
+
+
+class DrawingRevision(TimestampMixin, Base):
+    __tablename__ = "drawing_revisions"
+    __table_args__ = (UniqueConstraint("drawing_id", "sequence", name="uq_drawing_revision_seq"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    drawing_id: Mapped[str] = mapped_column(ForeignKey("drawings.id", ondelete="CASCADE"))
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    label: Mapped[str] = mapped_column(String(16), nullable=False, default="-")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="Initial issue")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="working")
+    drawn_by: Mapped[str | None] = mapped_column(String(160))
+    drawn_date: Mapped[str | None] = mapped_column(String(32))
+    checked_by: Mapped[str | None] = mapped_column(String(160))
+    checked_date: Mapped[str | None] = mapped_column(String(32))
+    approved_by: Mapped[str | None] = mapped_column(String(160))
+    approved_date: Mapped[str | None] = mapped_column(String(32))
+
+    drawing: Mapped[Drawing] = relationship(back_populates="revisions")
+
+
 class PidSymbolDef(TimestampMixin, Base):
     """User-defined P&ID symbol: sanitized SVG markup plus connection ports.
 
@@ -213,6 +289,22 @@ class PidSymbolDef(TimestampMixin, Base):
     view_box: Mapped[str] = mapped_column(String(80), nullable=False, default="0 0 64 40")
     svg: Mapped[str] = mapped_column(Text, nullable=False)
     ports: Mapped[list] = mapped_column(JSON, default=list)
+    # Library metadata: palette category, legend text, default tag letters.
+    category: Mapped[str | None] = mapped_column(String(40))
+    legend: Mapped[str | None] = mapped_column(String(200))
+    tag_prefix: Mapped[str | None] = mapped_column(String(16))
+
+
+class TagScheme(TimestampMixin, Base):
+    """Per-project tag scheme (function letters, separator, id structure)."""
+
+    __tablename__ = "tag_schemes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    scheme: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class Requirement(TimestampMixin, Base):

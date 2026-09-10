@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.auth_routes import auth_router
+from app.api.drawing_routes import drawing_router
 from app.api.routes import router
 from app.core.bootstrap import ensure_bootstrap_admin, warn_if_insecure_defaults
 from app.core.config import settings
@@ -48,6 +49,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(router, dependencies=[Depends(get_current_user)])
+app.include_router(drawing_router, dependencies=[Depends(get_current_user)])
 
 
 @app.get("/health")

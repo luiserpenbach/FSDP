@@ -21,6 +21,9 @@ FSDP/
       api.ts                 Frontend API client
       types.ts               Frontend domain types
       styles.css             Application styles
+      engine/                Schematic engine (paper-space P&ID document model, tools, renderer)
+      components/schematic/  React host for the engine (SVG viewport)
+      pages/DraftingPage.tsx Drafting page (preview editor built on the engine)
   docs/
     architecture.md          Architecture overview
     implementation.md        Current implementation guide
@@ -315,3 +318,25 @@ Current backend tests cover:
 4. Add relief valve sizing with stored assumptions and calculation reports.
 5. Add verification matrix views from requirements and trace links.
 6. Add release/baseline snapshots for diagrams, BoMs, requirements, and analyses.
+
+## Schematic Engine (Drafting page)
+
+The Drafting page is the first slice of the [P&ID professional upgrade plan](pid-professional-upgrade-plan.md). It is built on a framework-free TypeScript engine in `frontend/src/engine/`:
+
+- **Document** (`types.ts`): JSON schema v1 in paper-space millimetres. Items are symbols (library references pinned to a version), lines (orthogonal polylines), equipment boundaries, labels, and review notes. Connectivity is derived from geometry: a line end on a port or on another line is connected (`connectivity.ts`), and junction dots are computed, never drawn.
+- **Commands** (`commands.ts`, `store.ts`): every edit is a serialisable command with an exact inverse; the store keeps undo/redo and dirtiness. Drags coalesce into one undo step.
+- **Renderer** (`render.ts`): one renderer produces SVG markup for the canvas and for export at paper size (`renderDocumentSvg`), so the screen and the file never drift.
+- **Editor** (`editor.ts`): tool state machines for select/move, wire, place, label, equipment, and note, driven by pointer events in mm and a KiCad-style key map (W wire, R rotate, X mirror, Esc cancel, Ctrl+D duplicate, arrows nudge).
+- **Converter** (`convert.ts`): turns a legacy React Flow `graph` into a document on first open; item ids are preserved so component bindings keep lining up.
+
+**Drawings** (`backend/app/api/drawing_routes.py`, migration `0008`): a drawing (`/projects/{id}/drawings`) has a number, up to three title lines, size, units, status, frame template, title-block fields, and general notes; it owns numbered sheets (`/drawings/{id}/sheets`, each with a schematic document) and revisions (`/drawings/{id}/revisions`). Frame templates (`frontend/src/engine/frames.ts`) bind those rows into the title block, revision table, notes block, and proprietary notice when the sheet renders.
+
+**Symbol library** (`frontend/src/engine/builtinSymbols.ts`, `library.ts`): 104 built-in ISA/ISO symbols with typed ports, legend text, and tag letters; valve bodies accept a composed actuator (`SymbolItem.actuator`) whose signal port joins the body's ports through `registry.portsOf`. Custom symbols from `/symbols` carry `category`, `legend`, and `tag_prefix` (migration `0009`). The Drafting page's library panel browses, searches, previews, and places symbols.
+
+**Tag schemes** (`frontend/src/engine/tags.ts`, `GET/PUT /projects/{id}/tag-scheme`): per-project simple (`HV-12`) or structured (`PT 3222`) tags; the editor suggests, validates, and renumbers tags; the Settings page edits the scheme. The frame renderer can print a symbol legend and the ISA letter table when the drawing enables them.
+
+**Export** (`POST /sheets/{id}/export`): the browser renders the sheet SVG with the shared renderer and the server converts it with Cairo (`app/services/export.py`) to PDF at paper size or PNG at a DPI; the image installs `libcairo2`.
+
+Legacy persistence: `GET/PUT /diagrams/{id}/schematic` stores a schematic document on a classic diagram (`diagrams.schematic`, migration `0007`); "Convert diagram" on the Drafting page uses it as the source when present, else converts the React Flow `graph`.
+
+Tests: `npx vitest run src/engine` covers geometry, library grid conformance, undo/redo (including a randomised inverse property), connectivity, routing, snapping, hit testing, conversion, rendering, frame templates, and the editor tools; `src/pages/DraftingPage.test.tsx` covers opening a sheet with a bound title block, saving, converting a diagram, and exporting; `backend/tests/test_schematic.py` and `test_drawings.py` cover the API including PDF/PNG export.
