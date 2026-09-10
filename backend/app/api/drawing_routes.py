@@ -16,6 +16,7 @@ from app.models import (
     DrawingSheet,
     FluidSystem,
     Project,
+    TagScheme,
     User,
 )
 from app.schemas import (
@@ -29,6 +30,8 @@ from app.schemas import (
     DrawingSheetUpdate,
     DrawingUpdate,
     SheetExportIn,
+    TagSchemeIn,
+    TagSchemeRead,
 )
 from app.services.export import export_filename, svg_to_pdf, svg_to_png
 
@@ -400,3 +403,36 @@ def export_sheet(
         media_type=MEDIA_TYPES[payload.format],
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@drawing_router.get("/projects/{project_id}/tag-scheme", response_model=TagSchemeRead)
+def get_tag_scheme(project_id: str, db: Session = Depends(get_db)) -> dict:
+    require_model(db, Project, project_id)
+    row = db.scalar(select(TagScheme).where(TagScheme.project_id == project_id))
+    return {"project_id": project_id, "scheme": row.scheme if row else None}
+
+
+@drawing_router.put("/projects/{project_id}/tag-scheme", response_model=TagSchemeRead)
+def update_tag_scheme(
+    project_id: str,
+    payload: TagSchemeIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> dict:
+    require_model(db, Project, project_id)
+    row = db.scalar(select(TagScheme).where(TagScheme.project_id == project_id))
+    if row is None:
+        row = TagScheme(project_id=project_id, scheme=payload.scheme)
+        db.add(row)
+    else:
+        row.scheme = payload.scheme
+    record_change(
+        db,
+        "project",
+        project_id,
+        "updated",
+        f"Updated tag scheme ({payload.scheme.get('kind', 'simple')})",
+        actor=user.email,
+    )
+    db.commit()
+    return {"project_id": project_id, "scheme": row.scheme}

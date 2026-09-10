@@ -104,6 +104,8 @@ export type SymbolItem = ItemBase & {
   color?: string;
   /** Link into the digital thread (ComponentInstance.id). */
   componentId?: string;
+  /** Actuator symbol composed onto a valve body (drawn at the body's actuatorMount). */
+  actuator?: SymbolRef;
   fields: Record<string, FieldValue>;
 };
 
@@ -224,6 +226,8 @@ export type SymbolDef = {
   /** Default tag function letters, e.g. "PT". */
   tagPrefix?: string;
   fields?: FieldDef[];
+  /** Stem base (unrotated, mm) where an actuator symbol is composed onto this body. */
+  actuatorMount?: Point;
 };
 
 export function createEmptyDocument(sheet?: Partial<Sheet>): SchematicDocument {

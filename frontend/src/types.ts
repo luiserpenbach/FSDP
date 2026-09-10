@@ -155,6 +155,11 @@ export type Drawing = {
   updated_at: string;
 };
 
+export type TagSchemeRead = {
+  project_id: string;
+  scheme: Record<string, unknown> | null;
+};
+
 export type SchematicRead = {
   diagram_id: string;
   revision: number;
@@ -253,6 +258,10 @@ export type PidSymbolDef = {
   view_box: string;
   svg: string;
   ports: SymbolPort[];
+  /** Library metadata (Phase 2): palette category, legend text, default tag letters. */
+  category?: string | null;
+  legend?: string | null;
+  tag_prefix?: string | null;
   created_at?: string;
   updated_at?: string;
 };

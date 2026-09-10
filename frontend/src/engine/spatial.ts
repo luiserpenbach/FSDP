@@ -10,7 +10,7 @@ import {
   rectContainsRect,
   rectsIntersect
 } from "./geometry";
-import { symbolBounds, symbolPorts, type SymbolRegistry } from "./library";
+import { type SymbolRegistry } from "./library";
 import type { Item, LabelItem, Point, Rect, SchematicDocument } from "./types";
 
 /** Rough text extent: average glyph advance ≈ 0.6 em for the bundled sans font. */
@@ -35,7 +35,7 @@ export const NOTE_SIZE_MM = 6;
 export function itemBounds(item: Item, registry: SymbolRegistry): Rect {
   switch (item.kind) {
     case "symbol":
-      return symbolBounds(item, registry.resolve(item.symbol));
+      return registry.boundsOf(item);
     case "line":
       return expandRect(polylineBounds(item.points), (item.strokeWidth ?? 0.5) / 2);
     case "equipment":
@@ -134,7 +134,7 @@ export function hitTest(index: SpatialIndex, point: Point, tolerance: number): H
     const base = KIND_PRIORITY[item.kind] * 1e6;
     switch (item.kind) {
       case "symbol": {
-        for (const port of symbolPorts(item, index.registry.resolve(item.symbol))) {
+        for (const port of index.registry.portsOf(item)) {
           if (distance(port.position, point) <= tolerance) {
             consider({ item, part: { type: "port", portId: port.id, position: port.position } }, -1 + distance(port.position, point));
           }

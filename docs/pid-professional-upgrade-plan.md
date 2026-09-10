@@ -1,6 +1,6 @@
 # P&ID Designer Upgrade Plan — From PFD Sketchpad to Professional Process Engineering Tool
 
-Status: approved 2026-09-10; Phases 0 and 1 delivered (see §12). Phases 2–6 not yet implemented.
+Status: approved 2026-09-10; Phases 0–2 delivered (see §12). Phases 3–6 not yet implemented.
 Audience: product, propulsion/test engineering, and whoever builds the editor.
 
 This plan describes how the FSDP Diagrams page grows from the current React Flow sketchpad into a professional P&ID authoring and export tool that combines the drafting rigor of AutoCAD / AutoCAD P&ID, the library-and-connectivity discipline of KiCad's schematic editor, and FSDP's existing hardware, BoM, and requirements thread.
@@ -436,6 +436,23 @@ Deviation from the plan text: no `frame_templates` table yet. Built-in templates
 Exit criterion (frame-correct sheet with a vector PDF whose title block, zones, and notes match the reference layout): checked in the browser on a converted fill-test sheet at ANSI E, exported through Cairo; `test_drawings.py` asserts the PDF page size, and `frames.test.ts` the bound title block, revision rows, notes, and proprietary text.
 
 Known limits carried into Phase 2: the notes block can overlap content that was converted into the top-left corner (move the content or the equipment boundary); the export server uses the fonts installed on it (DejaVu in the image) rather than the browser font; the `/diagrams/{id}/schematic` endpoint from Phase 0 remains as the conversion source and is otherwise unused by the page.
+
+### Phase 2 — Symbol library, instruments, and tag schemes — ✅ delivered 2026-09-10
+
+Delivered:
+
+- **Built-in library** (`frontend/src/engine/builtinSymbols.ts`): 104 symbols authored in mm on the 2.5 mm module with legend text, standard reference, default tag letters, and typed ports: 22 valve bodies, 4 regulators, 8 actuators, 33 inline components and fittings, 15 instrument styles (field, control room, local panel, DCS, PLC, computer, interlock, hardwired shutdown, data collector, laptop controller, PRM, boxed primary element, gauge, thermocouple), 7 terminators and connectors, and 15 equipment shapes. A test proves every port sits on grid and that the reference legend's families are present.
+- **Actuator composition**: valve bodies declare a stem mount; an instance can carry an actuator symbol (hand, lever, diaphragm, piston, solenoid, motor, rotary motor, spring) that renders on the body and contributes its signal port at a grid-aligned position. Ports and bounds of a placed symbol resolve through the registry (`portsOf`, `boundsOf`), so wiring, hit testing, and rubber-band moves see the composed shape.
+- **Instrument bubbles** render ISA tags as letters over number; boxed primary elements print the letters inside and the number below.
+- **Tag schemes** (`frontend/src/engine/tags.ts`, `tag_schemes` table, `GET/PUT /projects/{id}/tag-scheme`): simple `HV-12` or structured `PT 3222` (letters, separator, system digit, class digit, sequence) with ISA first/succeeding letter tables and a project function-letter list. The editor suggests the next free number per letter group and system/class, validates tags in the inspector, lists invalid and duplicate tags in the checks panel, and renumbers a selection in reading order. The Settings page has a scheme editor with a one-click reference scheme (0 vacuum, 3 helium, 4 nitrogen, 7 water; 1 facility, 2 test).
+- **Generated legends**: a symbol legend (every family used on the sheet, with glyph and legend text) and the instrument letter table, switched on per drawing and printed by the frame renderer on canvas and in exports.
+- **Library panel** on the Drafting page: searchable, categorised palette with rendered previews and symbol details; custom symbols expose editable category, legend text, and tag letters (new `pid_symbols` columns, migration `0009`).
+
+Deviations: symbol versioning is in place (instances pin `{library, key, version}`; the registry falls back to the latest version) but no library-upgrade UI or where-used view exists yet; those need the sheet index tables planned for Phase 4. The classic symbol editor is unchanged; library metadata is edited from the Drafting library panel.
+
+Exit criteria: every symbol family on the AMB2-9003 legend is in the library (asserted by test); `PT 3222` and `HV 4201` validate under the reference scheme, `HV-4201` and `HV 5201` are rejected with reasons (asserted by test); checked in the browser on an E-size sheet with composed actuators, instrument styles, structured tags, renumbering, and both legends exported.
+
+Known limits carried into Phase 3: the symbol legend and letter table have fixed positions (bottom-left and top-right) and can overlap content placed there; actuator glyphs are drawn upright relative to the body and rotate with it; terminator captions (`VENT`) are tags and get flagged under strict schemes, so use the label field for them until Phase 3 makes terminators first-class connectors.
 
 ## Appendix A — Built-in symbol library scope
 

@@ -8,7 +8,7 @@
  * drawing is revised without touching the document.
  */
 import { frameRect } from "./sheet";
-import type { Rect, Sheet } from "./types";
+import type { Rect, Sheet, SymbolDef } from "./types";
 
 export type FrameTemplateId = "none" | "basic" | "fsdp-standard";
 
@@ -48,6 +48,11 @@ export type DrawingContext = {
   /** ISO date printed in the DATE cell. */
   exportDate?: string;
   fields?: Record<string, string>;
+  /** Generated legend blocks (symbols used on the sheet, ISA letter table). */
+  legends?: {
+    symbols?: Array<{ definition: SymbolDef; count: number }>;
+    letters?: { first: Array<{ letter: string; meaning: string }>; succeeding: Array<{ letter: string; meaning: string }> };
+  };
 };
 
 export type TitleCell = {

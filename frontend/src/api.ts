@@ -19,6 +19,7 @@ import type {
   ProjectBom,
   Requirement,
   SchematicRead,
+  TagSchemeRead,
   TraceLink,
   User
 } from "./types";
@@ -160,6 +161,9 @@ export const api = {
     const match = /filename="([^"]+)"/.exec(disposition);
     return { blob: await response.blob(), filename: match?.[1] ?? `sheet.${body.format}` };
   },
+  getTagScheme: (projectId: string) => request<TagSchemeRead>(`/projects/${projectId}/tag-scheme`),
+  updateTagScheme: (projectId: string, scheme: unknown) =>
+    request<TagSchemeRead>(`/projects/${projectId}/tag-scheme`, { method: "PUT", body: JSON.stringify({ scheme }) }),
   listSymbols: () => request<PidSymbolDef[]>("/symbols"),
   createSymbol: (body: Omit<PidSymbolDef, "id" | "created_at" | "updated_at">) =>
     request<PidSymbolDef>("/symbols", { method: "POST", body: JSON.stringify(body) }),

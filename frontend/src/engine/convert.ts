@@ -8,7 +8,7 @@
 import type { Edge, Node } from "reactflow";
 import { customSymbolId } from "../components/PidSymbols";
 import { normalizeRotation, orthogonalize, rectUnion, simplifyPolyline, snapPoint, snapValue } from "./geometry";
-import { BUILTIN_LIBRARY, CUSTOM_LIBRARY, symbolPorts, type SymbolRegistry } from "./library";
+import { BUILTIN_LIBRARY, CUSTOM_LIBRARY, type SymbolRegistry } from "./library";
 import { routeBetween } from "./routing";
 import { SHEET_SIZES, frameRect, makeSheet } from "./sheet";
 import { itemBounds } from "./spatial";
@@ -221,7 +221,7 @@ export function convertLegacyGraph(graph: LegacyGraph, registry: SymbolRegistry,
     if (junction) return { point: junction, side: null };
     const symbol = symbolById.get(nodeId);
     if (!symbol) return null;
-    const ports = symbolPorts(symbol, registry.resolve(symbol.symbol));
+    const ports = registry.portsOf(symbol);
     if (!ports.length) return { point: symbol.position, side: null };
     let port = ports.find((entry) => entry.id === handle);
     if (!port && toward) {

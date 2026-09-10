@@ -69,6 +69,7 @@ import { CatalogSettingsPanel } from "./pages/CatalogSettingsPanel";
 import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout";
 import { PartsCatalog } from "./pages/PartsCatalog";
 import { DraftingPage } from "./pages/DraftingPage";
+import { TagSchemePanel } from "./pages/TagSchemePanel";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
@@ -2217,6 +2218,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
               diagrams={diagrams}
               selectedSystemId={selectedSystemId}
               customSymbols={customSymbols}
+              refreshSymbols={() => void api.listSymbols().then((list) => setCustomSymbols(Array.isArray(list) ? list : []))}
               user={user}
               canWrite={user.role !== "viewer"}
               notify={notifyFromDrafting}
@@ -2281,6 +2283,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     setProjects((current) => current.map((item) => (item.id === updated.id ? updated : item)));
                   }}
                 />
+                <TagSchemePanel project={selectedProject} canWrite={user.role !== "viewer"} />
               </section>
             </PageLayout>
           }

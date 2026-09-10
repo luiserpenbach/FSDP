@@ -96,4 +96,24 @@ describe("frame templates", () => {
     expect(lines.join(" ")).toBe("THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG AGAIN AND AGAIN");
     expect(wrapText("one\ntwo", 100, 2.5)).toEqual(["one", "two"]);
   });
+
+  it("draws the generated symbol legend and instrument letter table", () => {
+    const doc = smallPanelDocument();
+    doc.sheet.frame.template = "fsdp-standard";
+    const svg = renderFrame(doc, context({
+      legends: {
+        symbols: [
+          { definition: registry.builtin("ball_valve"), count: 3 },
+          { definition: registry.builtin("relief_valve"), count: 1 }
+        ],
+        letters: { first: [{ letter: "P", meaning: "Pressure" }], succeeding: [{ letter: "T", meaning: "Transmit" }] }
+      }
+    }));
+    expect(svg).toContain("SYMBOL LEGEND");
+    expect(svg).toContain(">BALL VALVE<");
+    expect(svg).toContain(">RELIEF VALVE<");
+    expect(svg).toContain("INSTRUMENT LETTER DESIGNATIONS");
+    expect(svg).toContain(">Pressure<");
+    expect(svg).toContain(">Transmit<");
+  });
 });

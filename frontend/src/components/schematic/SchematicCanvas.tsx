@@ -17,7 +17,7 @@ import {
 } from "react";
 import type { Editor, EditorSnapshot, Modifiers } from "../../engine/editor";
 import type { DrawingContext } from "../../engine/frames";
-import { symbolPorts, type SymbolRegistry } from "../../engine/library";
+import { type SymbolRegistry } from "../../engine/library";
 import { renderFrame, renderItem, renderJunctions, pathFromPoints } from "../../engine/render";
 import { frameRect, sheetSize } from "../../engine/sheet";
 import { itemBounds } from "../../engine/spatial";
@@ -276,7 +276,7 @@ function SchematicCanvasInner(
             {showPorts &&
               doc.items.map((item) =>
                 item.kind === "symbol"
-                  ? symbolPorts(item, registry.resolve(item.symbol)).map((port) => (
+                  ? registry.portsOf(item).map((port) => (
                       <circle
                         key={`${item.id}:${port.id}`}
                         cx={port.position.x}
@@ -310,7 +310,7 @@ function SchematicCanvasInner(
                       <rect key={index} x={point.x - 1} y={point.y - 1} width={2} height={2} fill="#ffffff" stroke="#2257c4" strokeWidth={overlayStroke} />
                     ))}
                   {item.kind === "symbol" &&
-                    symbolPorts(item, registry.resolve(item.symbol)).map((port) => (
+                    registry.portsOf(item).map((port) => (
                       <circle key={port.id} cx={port.position.x} cy={port.position.y} r={0.9} fill="#ffffff" stroke="#2257c4" strokeWidth={overlayStroke} />
                     ))}
                 </g>

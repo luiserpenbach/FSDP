@@ -17,7 +17,9 @@ import type {
   LineType,
   NoteItem,
   Point,
+  Rect,
   SchematicDocument,
+  SymbolDef,
   SymbolItem
 } from "./types";
 
@@ -93,20 +95,29 @@ export function renderSymbol(item: SymbolItem, ctx: RenderContext): string {
   const scale = item.scale ?? 1;
   const color = item.color ?? DEFAULT_INK;
   const transform = `translate(${n(item.position.x)} ${n(item.position.y)}) rotate(${item.rotation}) scale(${n(item.mirror ? -scale : scale)} ${n(scale)})`;
+  const actuator = ctx.registry.actuatorOf(item);
+  const actuatorMarkup =
+    actuator && definition.actuatorMount
+      ? `<g transform="translate(${n(definition.actuatorMount.x)} ${n(definition.actuatorMount.y)})">${actuator.svg}</g>`
+      : "";
   const parts = [
-    `<g transform="${transform}" fill="none" stroke="currentColor" stroke-width="${n(SYMBOL_STROKE_MM / scale)}" stroke-linecap="round" stroke-linejoin="round">${definition.svg}</g>`
+    `<g transform="${transform}" fill="none" stroke="currentColor" stroke-width="${n(SYMBOL_STROKE_MM / scale)}" stroke-linecap="round" stroke-linejoin="round">${definition.svg}${actuatorMarkup}</g>`
   ];
   const caption = item.tag ?? item.label ?? "";
-  if (definition.category === "instrument") {
+  if (definition.category === "instrument" && definition.height <= 6) {
+    // Boxed primary element: letters inside, number below the box.
+    const { letters, number } = splitTag(caption);
+    if (letters) parts.push(text(letters, item.position.x, item.position.y + 0.9, { size: 2.4 }));
+    if (number) parts.push(text(number, item.position.x, item.position.y + (definition.height * scale) / 2 + 2.8, { size: 2.2 }));
+  } else if (definition.category === "instrument") {
     const { letters, number } = splitTag(caption);
     if (letters) parts.push(text(letters, item.position.x, item.position.y - 0.5, { size: 2.2 }));
     if (number) parts.push(text(number, item.position.x, item.position.y + 2.4, { size: 2.2 }));
   } else if (definition.category === "connector") {
     parts.push(text(caption, item.position.x - 2, item.position.y + 0.9, { size: 2.2 }));
   } else if (caption) {
-    const swap = item.rotation === 90 || item.rotation === 270;
-    const halfHeight = ((swap ? definition.width : definition.height) * scale) / 2;
-    parts.push(text(caption, item.position.x, item.position.y + halfHeight + 3.2, { size: TEXT_MM }));
+    const bounds = ctx.registry.boundsOf(item);
+    parts.push(text(caption, item.position.x, bounds.y + bounds.height + 3.2, { size: TEXT_MM }));
   }
   return `<g class="item item-symbol" data-id="${escapeXml(item.id)}" color="${escapeXml(color)}">${parts.join("")}</g>`;
 }
@@ -341,10 +352,79 @@ export function renderFrame(doc: SchematicDocument, ctx?: DrawingContext, color 
     }
   }
 
+  if (ctx?.legends?.symbols?.length && block) {
+    parts.push(renderSymbolLegend(ctx.legends.symbols, border, block));
+  }
+  if (ctx?.legends?.letters) {
+    parts.push(renderLetterTable(ctx.legends.letters, border));
+  }
+
   if (!ctx && doc.meta.title && !template.titleBlock) {
     parts.push(text(doc.meta.title, border.x + border.width - 2, border.y + border.height - 2, { anchor: "end", size: 3.5, weight: "600" }));
   }
   return `<g class="frame" color="${color}" fill="none">${parts.join("")}</g>`;
+}
+
+const LEGEND_ENTRY_W = 46;
+const LEGEND_ENTRY_H = 8;
+
+/** Symbol legend: entries for every symbol family used on the sheet, bottom-left of the frame. */
+function renderSymbolLegend(entries: Array<{ definition: SymbolDef; count: number }>, border: Rect, titleBlock: Rect): string {
+  const left = border.x + 4;
+  const right = titleBlock.x - 6;
+  const columns = Math.max(1, Math.floor((right - left) / LEGEND_ENTRY_W));
+  const rows = Math.ceil(entries.length / columns);
+  const height = rows * LEGEND_ENTRY_H + 5;
+  const top = border.y + border.height - 12 - height;
+  const width = Math.min(right - left, columns * LEGEND_ENTRY_W);
+  const parts = [
+    `<rect x="${n(left)}" y="${n(top)}" width="${n(width)}" height="${n(height)}" fill="#fff" stroke="currentColor" stroke-width="0.35"/>`,
+    `<path d="M${n(left)},${n(top + 5)} H${n(left + width)}" stroke="currentColor" stroke-width="0.25"/>`,
+    text("SYMBOL LEGEND", left + width / 2, top + 3.6, { size: 2.4, weight: "700" })
+  ];
+  entries.forEach((entry, index) => {
+    const column = index % columns;
+    const row = Math.floor(index / columns);
+    const x = left + column * LEGEND_ENTRY_W;
+    const y = top + 5 + row * LEGEND_ENTRY_H;
+    const scale = Math.min(0.5, 6 / Math.max(entry.definition.height, 1), 14 / Math.max(entry.definition.width, 1));
+    parts.push(
+      `<g transform="translate(${n(x + 9)} ${n(y + LEGEND_ENTRY_H / 2)}) scale(${n(scale)})" fill="none" stroke="currentColor" stroke-width="${n(SYMBOL_STROKE_MM / scale)}" stroke-linecap="round" stroke-linejoin="round">${entry.definition.svg}</g>`
+    );
+    parts.push(text(entry.definition.legend ?? entry.definition.name.toUpperCase(), x + 18, y + LEGEND_ENTRY_H / 2 + 0.8, { size: 2, anchor: "start" }));
+  });
+  return `<g class="legend-symbols">${parts.join("")}</g>`;
+}
+
+/** ISA instrument letter table, top-right inside the border. */
+function renderLetterTable(
+  letters: { first: Array<{ letter: string; meaning: string }>; succeeding: Array<{ letter: string; meaning: string }> },
+  border: Rect
+): string {
+  const rowHeight = 3.2;
+  const columnWidth = 52;
+  const rows = Math.max(letters.first.length, letters.succeeding.length);
+  const width = columnWidth * 2;
+  const height = 8 + rows * rowHeight + 1;
+  const left = border.x + border.width - 4 - width;
+  const top = border.y + 4;
+  const parts = [
+    `<rect x="${n(left)}" y="${n(top)}" width="${n(width)}" height="${n(height)}" fill="#fff" stroke="currentColor" stroke-width="0.35"/>`,
+    text("INSTRUMENT LETTER DESIGNATIONS", left + width / 2, top + 3.4, { size: 2.4, weight: "700" }),
+    `<path d="M${n(left)},${n(top + 4.5)} H${n(left + width)} M${n(left)},${n(top + 8)} H${n(left + width)} M${n(left + columnWidth)},${n(top + 4.5)} V${n(top + height)}" stroke="currentColor" stroke-width="0.25"/>`,
+    text("FIRST LETTER", left + columnWidth / 2, top + 7.2, { size: 2, weight: "700" }),
+    text("SUCCEEDING LETTERS", left + columnWidth * 1.5, top + 7.2, { size: 2, weight: "700" })
+  ];
+  const column = (entries: Array<{ letter: string; meaning: string }>, x: number) => {
+    entries.forEach((entry, index) => {
+      const y = top + 8 + (index + 1) * rowHeight - 0.8;
+      parts.push(text(entry.letter, x + 4, y, { size: 2, weight: "700" }));
+      parts.push(text(entry.meaning, x + 8, y, { size: 2, anchor: "start" }));
+    });
+  };
+  column(letters.first, left);
+  column(letters.succeeding, left + columnWidth);
+  return `<g class="legend-letters">${parts.join("")}</g>`;
 }
 
 export type DocumentRenderOptions = {

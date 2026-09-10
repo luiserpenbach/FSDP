@@ -14,7 +14,7 @@ import {
   simplifyPolyline
 } from "./geometry";
 import { locateOnLine } from "./connectivity";
-import { symbolPorts, type SymbolRegistry } from "./library";
+import { type SymbolRegistry } from "./library";
 import { itemBounds } from "./spatial";
 import type { Item, LineItem, Point, Rotation, SchematicDocument, SymbolItem } from "./types";
 
@@ -106,9 +106,8 @@ function followTees(
 }
 
 function portMovesFor(doc: SchematicDocument, registry: SymbolRegistry, before: SymbolItem, after: SymbolItem): Map<string, Point> {
-  const definition = registry.resolve(before.symbol);
-  const oldPorts = symbolPorts(before, definition);
-  const newPorts = symbolPorts(after, definition);
+  const oldPorts = registry.portsOf(before);
+  const newPorts = registry.portsOf(after);
   const moves = new Map<string, Point>();
   oldPorts.forEach((port, index) => moves.set(pointKey(port.position), newPorts[index].position));
   void doc;

@@ -435,6 +435,14 @@ class PidSymbolCreate(BaseModel):
     view_box: str = "0 0 64 40"
     svg: str
     ports: list[SymbolPort] = Field(default_factory=list)
+    category: str | None = None
+    legend: str | None = None
+    tag_prefix: str | None = None
+
+    @field_validator("category", "legend", "tag_prefix")
+    @classmethod
+    def _optional_meta(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
 
     @field_validator("name", "view_box")
     @classmethod
@@ -452,6 +460,9 @@ class PidSymbolUpdate(BaseModel):
     view_box: str | None = None
     svg: str | None = None
     ports: list[SymbolPort] | None = None
+    category: str | None = None
+    legend: str | None = None
+    tag_prefix: str | None = None
 
     @field_validator("name", "view_box")
     @classmethod
@@ -470,8 +481,40 @@ class PidSymbolRead(OrmModel):
     view_box: str
     svg: str
     ports: list[SymbolPort]
+    category: str | None = None
+    legend: str | None = None
+    tag_prefix: str | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class TagSchemeIn(BaseModel):
+    scheme: dict[str, Any]
+
+    @field_validator("scheme")
+    @classmethod
+    def _validate_scheme(cls, value: dict[str, Any]) -> dict[str, Any]:
+        kind = value.get("kind", "simple")
+        if kind not in {"simple", "structured"}:
+            raise ValueError("kind must be simple or structured")
+        separator = value.get("separator", "-")
+        if not isinstance(separator, str) or len(separator) > 2:
+            raise ValueError("separator must be a string of at most two characters")
+        for key in ("functionLetters", "firstLetters", "succeedingLetters", "systems", "classes"):
+            entries = value.get(key, [])
+            if not isinstance(entries, list) or any(
+                not isinstance(entry, dict) for entry in entries
+            ):
+                raise ValueError(f"{key} must be a list of objects")
+        length = value.get("sequenceLength", 1)
+        if not isinstance(length, int) or length < 1 or length > 6:
+            raise ValueError("sequenceLength must be between 1 and 6")
+        return value
+
+
+class TagSchemeRead(BaseModel):
+    project_id: str
+    scheme: dict[str, Any] | None
 
 
 class DiagramCreate(BaseModel):

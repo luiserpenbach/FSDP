@@ -11,11 +11,11 @@ import {
   expandSelectionForEquipment,
   mirrorItemsCommand,
   moveItemsCommand,
-  rotateItemsCommand,
-  suggestTag
+  rotateItemsCommand
 } from "./edit";
+import { DEFAULT_TAG_SCHEME, nextTag, renumberCommand, type TagContext, type TagScheme } from "./tags";
 import { normalizeRotation, rectFromPoints, simplifyPolyline, snapPoint, subtract } from "./geometry";
-import { symbolPorts, type SymbolRegistry } from "./library";
+import { type SymbolRegistry } from "./library";
 import { previewSegment } from "./routing";
 import { snapCursor, type SnapResult } from "./snap";
 import { SpatialIndex, hitTest, type Hit } from "./spatial";
@@ -61,6 +61,8 @@ export type EditorState = {
   equipmentDraft: Rect | null;
   lineType: LineType;
   grid: number;
+  /** System / class digits used when suggesting structured tags. */
+  tagContext: TagContext;
 };
 
 export type EditorSnapshot = {
@@ -70,7 +72,7 @@ export type EditorSnapshot = {
   version: number;
 };
 
-export type EditorOptions = { author?: string; makeId?: () => string };
+export type EditorOptions = { author?: string; makeId?: () => string; tagScheme?: TagScheme };
 
 function defaultId(): string {
   const cryptoApi = (globalThis as { crypto?: Crypto }).crypto;
@@ -88,6 +90,7 @@ export class Editor {
   private unsubscribeStore: () => void;
   /** Hit tolerance in mm; the host sets it from the zoom level. */
   tolerance = 1.5;
+  tagScheme: TagScheme;
 
   setTolerance(mm: number): void {
     this.tolerance = mm;
@@ -100,6 +103,7 @@ export class Editor {
     readonly options: EditorOptions = {}
   ) {
     this.makeId = options.makeId ?? defaultId;
+    this.tagScheme = options.tagScheme ?? DEFAULT_TAG_SCHEME;
     this.stateValue = {
       tool: "select",
       selection: [],
@@ -111,7 +115,8 @@ export class Editor {
       place: null,
       equipmentDraft: null,
       lineType: "process",
-      grid: store.doc.meta.grid ?? DEFAULT_GRID_MM
+      grid: store.doc.meta.grid ?? DEFAULT_GRID_MM,
+      tagContext: {}
     };
     this.index = new SpatialIndex(store.doc, registry);
     this.ports = indexPorts(store.doc, registry);
@@ -239,6 +244,27 @@ export class Editor {
 
   setGrid(grid: number): void {
     this.setState({ grid });
+  }
+
+  setTagScheme(scheme: TagScheme): void {
+    this.tagScheme = scheme;
+    this.emit();
+  }
+
+  setTagContext(context: TagContext): void {
+    this.setState({ tagContext: { ...this.stateValue.tagContext, ...context } });
+  }
+
+  /** Suggested tag for a symbol definition under the project scheme. */
+  suggestTagFor(tagPrefix: string | undefined): string | undefined {
+    if (!tagPrefix) return undefined;
+    return nextTag(this.store.doc, this.tagScheme, tagPrefix, this.stateValue.tagContext);
+  }
+
+  /** Re-sequence the selected symbols' tags per letter group in reading order. */
+  renumberSelection(startAt = 1): void {
+    if (!this.stateValue.selection.length) return;
+    this.store.dispatch(renumberCommand(this.store.doc, this.tagScheme, this.stateValue.selection, this.stateValue.tagContext, startAt));
   }
 
   /** Escape: cancel the in-progress action, else drop back to select. */
@@ -545,7 +571,7 @@ export class Editor {
   private portKind(itemId: string, portId: string): "process" | "signal" | "nozzle" | null {
     const item = this.itemById(itemId);
     if (!item || item.kind !== "symbol") return null;
-    const port = symbolPorts(item, this.registry.resolve(item.symbol)).find((entry) => entry.id === portId);
+    const port = this.registry.portsOf(item).find((entry) => entry.id === portId);
     return port?.kind ?? null;
   }
 
@@ -564,7 +590,7 @@ export class Editor {
       position,
       rotation: state.place.rotation,
       mirror: state.place.mirror || undefined,
-      tag: definition.tagPrefix ? suggestTag(this.store.doc, definition.tagPrefix) : undefined,
+      tag: this.suggestTagFor(definition.tagPrefix),
       fields: {}
     };
     this.store.dispatch({ type: "add", items: [item] });
@@ -580,7 +606,7 @@ export class Editor {
       symbol,
       position: snapPoint(position, this.stateValue.grid),
       rotation: 0,
-      tag: definition.tagPrefix ? suggestTag(this.store.doc, definition.tagPrefix) : undefined,
+      tag: this.suggestTagFor(definition.tagPrefix),
       fields: {}
     };
     this.store.dispatch({ type: "add", items: [item] });

@@ -8,16 +8,18 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
 import { convertLegacyGraph } from "../engine/convert";
 import { Editor, type ToolId } from "../engine/editor";
 import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
 import { polylineLength } from "../engine/geometry";
-import { SymbolRegistry, refFor, symbolPorts } from "../engine/library";
+import { SymbolRegistry } from "../engine/library";
 import { LINE_TYPE_LABELS, renderDocumentSvg } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
-import type { Item, LineType, Point, Rotation, SchematicDocument, SheetSizeId } from "../engine/types";
+import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, validateTag, type TagScheme } from "../engine/tags";
+import type { Item, LineType, Point, Rotation, SchematicDocument, SheetSizeId, SymbolDef } from "../engine/types";
 import type { Diagram, Drawing, DrawingRevision, FluidSystem, PidSymbolDef, User } from "../types";
 import { PageLayout } from "./PageLayout";
 
@@ -29,6 +31,8 @@ type Props = {
   diagrams: Diagram[];
   selectedSystemId: string;
   customSymbols: PidSymbolDef[];
+  /** Reload custom symbols after their library metadata changes. */
+  refreshSymbols?: () => void;
   user: User;
   canWrite: boolean;
   notify: (message: string, error?: boolean) => void;
@@ -108,7 +112,74 @@ function withFrameTemplate(document: SchematicDocument, template: string): Schem
   return { ...document, sheet: { ...document.sheet, frame: { ...document.sheet.frame, kind, template: frameTemplate } } };
 }
 
-export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, user, canWrite, notify }: Props) {
+/** Symbol families used on the sheet, for the generated legend. */
+export function usedSymbols(document: SchematicDocument, registry: SymbolRegistry): Array<{ definition: SymbolDef; count: number }> {
+  const counts = new Map<string, { definition: SymbolDef; count: number }>();
+  for (const item of document.items) {
+    if (item.kind !== "symbol") continue;
+    const definition = registry.resolve(item.symbol);
+    const key = `${definition.library}/${definition.key}`;
+    const entry = counts.get(key) ?? { definition, count: 0 };
+    entry.count += 1;
+    counts.set(key, entry);
+    const actuator = registry.actuatorOf(item);
+    if (actuator) {
+      const actuatorKey = `${actuator.library}/${actuator.key}`;
+      const actuatorEntry = counts.get(actuatorKey) ?? { definition: actuator, count: 0 };
+      actuatorEntry.count += 1;
+      counts.set(actuatorKey, actuatorEntry);
+    }
+  }
+  return [...counts.values()].sort((a, b) => a.definition.category.localeCompare(b.definition.category) || a.definition.name.localeCompare(b.definition.name));
+}
+
+export function legendFlags(drawing: Drawing | null): { symbols: boolean; letters: boolean } {
+  const raw = stringField(drawing?.fields, "legends") ?? "";
+  return { symbols: raw.includes("symbols"), letters: raw.includes("letters") };
+}
+
+/** Add the generated legend blocks the drawing asks for. */
+export function withLegends(base: DrawingContext, document: SchematicDocument, registry: SymbolRegistry, scheme: TagScheme, flags: { symbols: boolean; letters: boolean }): DrawingContext {
+  if (!flags.symbols && !flags.letters) return base;
+  return {
+    ...base,
+    legends: {
+      symbols: flags.symbols ? usedSymbols(document, registry) : undefined,
+      letters: flags.letters ? { first: scheme.firstLetters, succeeding: scheme.succeedingLetters } : undefined
+    }
+  };
+}
+
+function DrawingCanvas({
+  editor,
+  registry,
+  showGrid,
+  baseContext,
+  scheme,
+  flags,
+  canvasRef,
+  onCursor,
+  onViewport
+}: {
+  editor: Editor;
+  registry: SymbolRegistry;
+  showGrid: boolean;
+  baseContext: DrawingContext | undefined;
+  scheme: TagScheme;
+  flags: { symbols: boolean; letters: boolean };
+  canvasRef: React.RefObject<SchematicCanvasHandle | null>;
+  onCursor: (point: Point | null) => void;
+  onViewport: (viewport: Viewport) => void;
+}) {
+  const { doc } = useEditorSnapshot(editor);
+  const context = useMemo(
+    () => (baseContext ? withLegends(baseContext, doc, registry, scheme, flags) : undefined),
+    [baseContext, doc, registry, scheme, flags]
+  );
+  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} onCursor={onCursor} onViewport={onViewport} />;
+}
+
+export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, user, canWrite, notify }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
@@ -120,8 +191,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [creating, setCreating] = useState<null | { mode: "new" | "convert" }>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
+  const [tagScheme, setTagScheme] = useState<TagScheme>(DEFAULT_TAG_SCHEME);
+  const [showLibrary, setShowLibrary] = useState(true);
   const canvasRef = useRef<SchematicCanvasHandle>(null);
   const registry = useMemo(() => SymbolRegistry.withBuiltins(customSymbols), [customSymbols]);
+  const flags = useMemo(() => legendFlags(drawings.find((entry) => entry.id === drawingId) ?? null), [drawings, drawingId]);
   const drawing = drawings.find((entry) => entry.id === drawingId) ?? null;
   const sheetSummary = drawing?.sheets.find((entry) => entry.id === sheetId) ?? null;
   const systemName = systems.find((system) => system.id === drawing?.system_id)?.name;
@@ -166,6 +240,30 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // Project tag scheme (defaults when none is stored).
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId) {
+      setTagScheme(DEFAULT_TAG_SCHEME);
+      return;
+    }
+    api
+      .getTagScheme(projectId)
+      .then((read) => {
+        if (!cancelled) setTagScheme(normalizeScheme(read.scheme));
+      })
+      .catch(() => {
+        if (!cancelled) setTagScheme(DEFAULT_TAG_SCHEME);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  useEffect(() => {
+    editor?.setTagScheme(tagScheme);
+  }, [editor, tagScheme]);
+
   // Select the first sheet of the current drawing.
   useEffect(() => {
     if (!drawing) {
@@ -193,7 +291,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
         const store = new DocumentStore(document);
         setEditor((previous) => {
           previous?.dispose();
-          return new Editor(store, registry, { author: user.name });
+          return new Editor(store, registry, { author: user.name, tagScheme });
         });
       })
       .catch((error) => {
@@ -245,7 +343,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     if (!editor || !sheetId || !context) return;
     setExporting(true);
     try {
-      const svg = renderDocumentSvg(editor.store.doc, registry, { standalone: true, background: "#ffffff", context });
+      const svg = renderDocumentSvg(editor.store.doc, registry, {
+        standalone: true,
+        background: "#ffffff",
+        context: withLegends(context, editor.store.doc, registry, tagScheme, flags)
+      });
       const { blob, filename } = await api.exportSheet(sheetId, { svg, format, dpi: 300 });
       downloadBlob(filename, blob);
       notify(`Exported ${filename}.`);
@@ -344,6 +446,16 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     }
   }
 
+  async function updateCustomSymbol(symbolId: string, patch: { category?: string; legend?: string; tag_prefix?: string }) {
+    try {
+      await api.updateSymbol(symbolId, patch);
+      refreshSymbols?.();
+      notify("Saved symbol metadata.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not update the symbol.", true);
+    }
+  }
+
   async function updateDrawing(patch: Parameters<typeof api.updateDrawing>[1]) {
     if (!drawing) return;
     try {
@@ -430,6 +542,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
               onSave={() => void save()}
               onExport={(format) => void exportSheet(format)}
               exporting={exporting}
+              showLibrary={showLibrary}
+              onToggleLibrary={() => setShowLibrary((current) => !current)}
             />
           )}
         </div>
@@ -444,9 +558,22 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
             onCancel={() => setCreating(null)}
           />
         )}
-        <div className="draftingBody">
+        <div className={showLibrary && editor ? "draftingBody withLibrary" : "draftingBody"}>
+          {editor && showLibrary && (
+            <LibraryPanelHost editor={editor} registry={registry} canWrite={canWrite} onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)} />
+          )}
           {editor ? (
-            <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} onCursor={setCursor} onViewport={setViewport} />
+            <DrawingCanvas
+              editor={editor}
+              registry={registry}
+              showGrid={showGrid}
+              baseContext={context}
+              scheme={tagScheme}
+              flags={flags}
+              canvasRef={canvasRef}
+              onCursor={setCursor}
+              onViewport={setViewport}
+            />
           ) : (
             <div className="schematicCanvas schematicEmpty">
               <p className="hint">
@@ -483,6 +610,22 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       </div>
     </PageLayout>
   );
+}
+
+function LibraryPanelHost({
+  editor,
+  registry,
+  canWrite,
+  onUpdateCustom
+}: {
+  editor: Editor;
+  registry: SymbolRegistry;
+  canWrite: boolean;
+  onUpdateCustom: (symbolId: string, patch: { category?: string; legend?: string; tag_prefix?: string }) => void;
+}) {
+  const { state } = useEditorSnapshot(editor);
+  const placing = state.tool === "place" && state.place ? state.place.symbol : null;
+  return <LibraryPanel registry={registry} placing={placing} canWrite={canWrite} onPlace={(ref) => editor.startPlacing(ref)} onUpdateCustom={onUpdateCustom} />;
 }
 
 type NewDrawingForm = {
@@ -635,7 +778,9 @@ function DrawingPanel({
     system_id: drawing.system_id ?? "",
     company: stringField(drawing.fields, "company") ?? "",
     scale: stringField(drawing.fields, "scale") ?? "NO SCALE",
-    notes: (drawing.notes ?? []).join("\n")
+    notes: (drawing.notes ?? []).join("\n"),
+    legendSymbols: legendFlags(drawing).symbols,
+    legendLetters: legendFlags(drawing).letters
   });
   const [revision, setRevision] = useState({ label: "", description: "", checked_by: "", approved_by: "" });
   useEffect(() => {
@@ -649,7 +794,9 @@ function DrawingPanel({
       system_id: drawing.system_id ?? "",
       company: stringField(drawing.fields, "company") ?? "",
       scale: stringField(drawing.fields, "scale") ?? "NO SCALE",
-      notes: (drawing.notes ?? []).join("\n")
+      notes: (drawing.notes ?? []).join("\n"),
+      legendSymbols: legendFlags(drawing).symbols,
+      legendLetters: legendFlags(drawing).letters
     });
   }, [drawing]);
   const update = (patch: Partial<typeof form>) => setForm((current) => ({ ...current, ...patch }));
@@ -663,7 +810,9 @@ function DrawingPanel({
     form.system_id !== (drawing.system_id ?? "") ||
     form.company !== (stringField(drawing.fields, "company") ?? "") ||
     form.scale !== (stringField(drawing.fields, "scale") ?? "NO SCALE") ||
-    form.notes !== (drawing.notes ?? []).join("\n");
+    form.notes !== (drawing.notes ?? []).join("\n") ||
+    form.legendSymbols !== legendFlags(drawing).symbols ||
+    form.legendLetters !== legendFlags(drawing).letters;
 
   function apply() {
     onUpdate({
@@ -674,7 +823,12 @@ function DrawingPanel({
       status: form.status,
       frame_template: form.frame_template,
       system_id: form.system_id || null,
-      fields: { ...drawing.fields, company: form.company, scale: form.scale },
+      fields: {
+        ...drawing.fields,
+        company: form.company,
+        scale: form.scale,
+        legends: [form.legendSymbols ? "symbols" : "", form.legendLetters ? "letters" : ""].filter(Boolean).join(",")
+      },
       notes: form.notes
         .split(/\r?\n/)
         .map((line) => line.trim())
@@ -762,6 +916,16 @@ function DrawingPanel({
             General notes (one per line)
             <textarea value={form.notes} onChange={(event) => update({ notes: event.target.value })} disabled={!canWrite} rows={4} />
           </label>
+          <div className="fieldRow">
+            <label className="checkRow">
+              <input type="checkbox" checked={form.legendSymbols} onChange={(event) => update({ legendSymbols: event.target.checked })} disabled={!canWrite} />
+              <span>Symbol legend</span>
+            </label>
+            <label className="checkRow">
+              <input type="checkbox" checked={form.legendLetters} onChange={(event) => update({ legendLetters: event.target.checked })} disabled={!canWrite} />
+              <span>Instrument letter table</span>
+            </label>
+          </div>
           <div className="toolGroup">
             <button type="button" className="primary" disabled={!canWrite || !dirty} onClick={apply}>
               Apply
@@ -844,7 +1008,9 @@ function EditorToolbar({
   onZoom,
   onSave,
   onExport,
-  exporting
+  exporting,
+  showLibrary,
+  onToggleLibrary
 }: {
   editor: Editor;
   registry: SymbolRegistry;
@@ -856,20 +1022,13 @@ function EditorToolbar({
   onSave: () => void;
   onExport: (format: "pdf" | "png" | "svg") => void;
   exporting: boolean;
+  showLibrary: boolean;
+  onToggleLibrary: () => void;
 }) {
   const { state, doc } = useEditorSnapshot(editor);
   const store = editor.store;
-  const grouped = useMemo(() => {
-    const groups = new Map<string, ReturnType<SymbolRegistry["list"]>>();
-    for (const definition of registry.list()) {
-      if (definition.key === "__missing__") continue;
-      const bucket = groups.get(definition.category) ?? [];
-      bucket.push(definition);
-      groups.set(definition.category, bucket);
-    }
-    return [...groups.entries()];
-  }, [registry]);
-  const placingKey = state.tool === "place" && state.place ? `${state.place.symbol.library}/${state.place.symbol.key}` : "";
+  const scheme = editor.tagScheme;
+  void registry;
 
   return (
     <>
@@ -886,28 +1045,42 @@ function EditorToolbar({
           </button>
         ))}
       </div>
-      <label>
-        Place symbol
-        <select
-          value={placingKey}
-          onChange={(event) => {
-            const [library, key] = event.target.value.split("/");
-            const definition = registry.list().find((entry) => entry.library === library && entry.key === key);
-            if (definition) editor.startPlacing(refFor(definition));
-          }}
-        >
-          <option value="">Choose…</option>
-          {grouped.map(([category, definitions]) => (
-            <optgroup key={category} label={category}>
-              {definitions.map((definition) => (
-                <option key={`${definition.library}/${definition.key}`} value={`${definition.library}/${definition.key}`}>
-                  {definition.name}
+      <div className="toolGroup">
+        <button type="button" className={showLibrary ? "toolButton active" : "toolButton"} onClick={onToggleLibrary} title="Show or hide the symbol library (P)">
+          Library
+        </button>
+        {scheme.kind === "structured" && (
+          <>
+            <select
+              value={state.tagContext.system ?? scheme.systems[0]?.digit ?? ""}
+              onChange={(event) => editor.setTagContext({ system: event.target.value })}
+              title="System digit for new tags"
+              aria-label="Tag system"
+            >
+              {scheme.systems.map((entry) => (
+                <option key={entry.digit} value={entry.digit}>
+                  {entry.digit} · {entry.name}
                 </option>
               ))}
-            </optgroup>
-          ))}
-        </select>
-      </label>
+            </select>
+            <select
+              value={state.tagContext.cls ?? scheme.classes[0]?.digit ?? ""}
+              onChange={(event) => editor.setTagContext({ cls: event.target.value })}
+              title="Class digit for new tags"
+              aria-label="Tag class"
+            >
+              {scheme.classes.map((entry) => (
+                <option key={entry.digit} value={entry.digit}>
+                  {entry.digit} · {entry.name}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+        <button type="button" disabled={!canWrite || !state.selection.length} onClick={() => editor.renumberSelection()} title="Re-sequence the selected tags in reading order">
+          Renumber
+        </button>
+      </div>
       <label>
         Line type
         <select value={state.lineType} onChange={(event) => editor.setLineType(event.target.value as LineType)}>
@@ -1018,6 +1191,30 @@ function Inspector({ editor, registry, canWrite }: { editor: Editor; registry: S
               Tag
               <input value={item.tag ?? ""} onChange={(event) => update({ tag: event.target.value || undefined })} disabled={!canWrite} />
             </label>
+            {item.tag && !validateTag(item.tag, editor.tagScheme).ok && (
+              <p className="formError">{validateTag(item.tag, editor.tagScheme).reason}</p>
+            )}
+            {registry.resolve(item.symbol).actuatorMount && (
+              <label>
+                Actuator
+                <select
+                  value={item.actuator ? `${item.actuator.library}/${item.actuator.key}` : ""}
+                  onChange={(event) => {
+                    const [library, key] = event.target.value.split("/");
+                    const definition = registry.listActuators().find((entry) => entry.library === library && entry.key === key);
+                    update({ actuator: definition ? { library: definition.library, key: definition.key, version: definition.version } : undefined });
+                  }}
+                  disabled={!canWrite}
+                >
+                  <option value="">None</option>
+                  {registry.listActuators().map((definition) => (
+                    <option key={definition.key} value={`${definition.library}/${definition.key}`}>
+                      {definition.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label>
               Label
               <input value={item.label ?? ""} onChange={(event) => update({ label: event.target.value || undefined })} disabled={!canWrite} />
@@ -1044,7 +1241,7 @@ function Inspector({ editor, registry, canWrite }: { editor: Editor; registry: S
               <strong>Ports</strong>
             </p>
             <ul className="portList">
-              {symbolPorts(item, registry.resolve(item.symbol)).map((port) => {
+              {registry.portsOf(item).map((port) => {
                 const net = connectivity.portNet.get(`${item.id}:${port.id}`);
                 return (
                   <li key={port.id}>
@@ -1177,12 +1374,42 @@ function Inspector({ editor, registry, canWrite }: { editor: Editor; registry: S
         <p>
           <span className="pill pill-muted">{connectivity.openPorts.length} open port(s)</span>
         </p>
+        <TagChecks editor={editor} />
         {state.tool === "wire" && (
           <p className="hint">Click a port or point to start, click to add corners, click a port or line to finish. Space flips the bend, Enter ends, Esc cancels.</p>
         )}
         {state.tool === "place" && <p className="hint">Click to place. R rotates, X mirrors, Esc stops placing.</p>}
       </article>
     </aside>
+  );
+}
+
+function TagChecks({ editor }: { editor: Editor }) {
+  const { doc } = useEditorSnapshot(editor);
+  const issues = useMemo(() => tagIssues(doc, editor.tagScheme), [doc, editor.tagScheme]);
+  if (!issues.length) {
+    return (
+      <p>
+        <span className="pill pill-good">tags follow the {editor.tagScheme.kind} scheme</span>
+      </p>
+    );
+  }
+  return (
+    <div className="tagIssues">
+      <p>
+        <span className="pill pill-warn">{issues.length} tag issue(s)</span>
+      </p>
+      <ul>
+        {issues.slice(0, 8).map((issue) => (
+          <li key={`${issue.itemId}-${issue.issue}`}>
+            <button type="button" className="linkButton" onClick={() => editor.select([issue.itemId])}>
+              {issue.tag}
+            </button>{" "}
+            {issue.message}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

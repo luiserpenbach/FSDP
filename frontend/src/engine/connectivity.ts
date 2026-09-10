@@ -7,7 +7,7 @@
  * where three or more line arms meet.
  */
 import { EPSILON, closestPointOnSegment, pointKey, pointsEqual } from "./geometry";
-import { symbolPorts, type SymbolRegistry, type WorldPort } from "./library";
+import { type SymbolRegistry, type WorldPort } from "./library";
 import type { LineItem, Point, SchematicDocument, SymbolItem } from "./types";
 
 export type PortRef = { itemId: string; portId: string };
@@ -55,8 +55,7 @@ export function indexPorts(doc: SchematicDocument, registry: SymbolRegistry): In
   const ports: IndexedPort[] = [];
   for (const item of doc.items) {
     if (item.kind !== "symbol") continue;
-    const definition = registry.resolve(item.symbol);
-    for (const port of symbolPorts(item as SymbolItem, definition)) ports.push({ ...port, itemId: item.id });
+    for (const port of registry.portsOf(item as SymbolItem)) ports.push({ ...port, itemId: item.id });
   }
   return ports;
 }

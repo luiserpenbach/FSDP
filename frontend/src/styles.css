@@ -2877,3 +2877,128 @@ span.symbolListPendingName.untitled {
 .revisionForm input {
   font-size: 12px;
 }
+
+/* ---------- Library panel and tag checks (Phase 2) ---------- */
+
+.draftingBody.withLibrary {
+  grid-template-columns: 230px minmax(0, 1fr) 300px;
+}
+
+.libraryPanel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 0 0 var(--radius) var(--radius);
+  border-top: none;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 214px);
+  min-height: 0;
+}
+
+.libraryHead {
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 10px 8px;
+}
+
+.libraryHead input {
+  font-size: 12.5px;
+  padding: 5px 8px;
+}
+
+.libraryGroups {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 6px 8px;
+}
+
+.libraryGroupHead {
+  background: none;
+  border: none;
+  color: var(--text-2);
+  display: flex;
+  font-size: 11px;
+  font-weight: 600;
+  justify-content: space-between;
+  letter-spacing: 0.04em;
+  padding: 8px 4px 4px;
+  text-transform: uppercase;
+  width: 100%;
+}
+
+.libraryGroupHead:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+.libraryGrid {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.librarySymbol {
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  color: var(--text);
+  display: flex;
+  flex-direction: column;
+  font-size: 10.5px;
+  gap: 2px;
+  line-height: 1.2;
+  padding: 4px 3px;
+  text-align: center;
+}
+
+.librarySymbol span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.librarySymbol.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.symbolPreview {
+  color: var(--ink-800);
+  display: block;
+}
+
+.libraryDetail {
+  border-top: 1px solid var(--line-soft);
+  font-size: 12px;
+  padding: 8px 10px 10px;
+}
+
+.libraryDetail p {
+  color: var(--text-2);
+  margin: 4px 0;
+}
+
+.libraryMetaForm label {
+  margin-bottom: 6px;
+}
+
+.tagIssues ul {
+  font-size: 12px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.tagIssues li {
+  margin: 2px 0;
+}
+
+.draftingTop .toolGroup select {
+  margin: 4px 0;
+  min-width: 150px;
+  width: auto;
+}

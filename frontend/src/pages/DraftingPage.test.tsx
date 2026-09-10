@@ -15,7 +15,10 @@ const apiMock = vi.hoisted(() => ({
   updateRevision: vi.fn(),
   exportSheet: vi.fn(),
   getSchematic: vi.fn(),
-  getDiagram: vi.fn()
+  getDiagram: vi.fn(),
+  getTagScheme: vi.fn(),
+  updateTagScheme: vi.fn(),
+  updateSymbol: vi.fn()
 }));
 
 vi.mock("../api", () => ({ api: apiMock }));
@@ -130,6 +133,7 @@ describe("DraftingPage", () => {
     localStorage.clear();
     apiMock.listDrawings.mockResolvedValue([drawing]);
     apiMock.getSheet.mockResolvedValue(sheet);
+    apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.updateSheet.mockImplementation(async (_id: string, body: { document: unknown }) => ({ ...sheet, document: body.document }));
   });
 
@@ -204,5 +208,59 @@ describe("DraftingPage", () => {
     expect(body.svg).toContain("PROPRIETARY");
     await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
     expect(notify).toHaveBeenCalledWith("Exported AMB2-9003-01-rev0.pdf.");
+  });
+
+  it("validates tags against a structured project scheme and assigns actuators from the inspector", async () => {
+    apiMock.getTagScheme.mockResolvedValue({
+      project_id: "p1",
+      scheme: {
+        kind: "structured",
+        separator: " ",
+        systems: [{ digit: "3", name: "Helium" }, { digit: "4", name: "Nitrogen" }],
+        classes: [{ digit: "2", name: "Test hardware" }],
+        sequenceLength: 2
+      }
+    });
+    apiMock.getSheet.mockResolvedValue({
+      ...sheet,
+      document: {
+        ...sheet.document,
+        items: [
+          { id: "hv", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "ball_valve", version: 1 }, position: { x: 100, y: 100 }, rotation: 0, tag: "HV-3201", fields: {} }
+        ]
+      }
+    });
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="hv"]')).not.toBeNull());
+    // The scheme's system/class pickers appear and the tag check flags the hyphenated tag.
+    await screen.findByLabelText("Tag system");
+    await waitFor(() => expect(screen.getByText(/1 tag issue/)).toBeInTheDocument());
+
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    const tagInput = (await screen.findByLabelText("Tag")) as HTMLInputElement;
+    expect(screen.getAllByText(/separator/).length).toBeGreaterThan(0);
+    fireEvent.change(tagInput, { target: { value: "HV 3201" } });
+    await waitFor(() => expect(screen.queryByText(/1 tag issue/)).toBeNull());
+
+    const actuatorSelect = screen.getByLabelText("Actuator") as HTMLSelectElement;
+    fireEvent.change(actuatorSelect, { target: { value: "fsdp/act_diaphragm" } });
+    await waitFor(() => expect(document.querySelector(".portList")?.textContent).toContain("signal"));
+  });
+
+  it("adds generated legends to the export when the drawing asks for them", async () => {
+    apiMock.listDrawings.mockResolvedValue([{ ...drawing, fields: { ...drawing.fields, legends: "symbols,letters" } }]);
+    apiMock.exportSheet.mockResolvedValue({ blob: new Blob(["<svg/>"], { type: "image/svg+xml" }), filename: "AMB2-9003-01-rev0.svg" });
+    Object.assign(URL, { createObjectURL: vi.fn(() => "blob:fake"), revokeObjectURL: vi.fn() });
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    expect(canvas.textContent).toContain("SYMBOL LEGEND");
+    expect(canvas.textContent).toContain("INSTRUMENT LETTER DESIGNATIONS");
+    fireEvent.click(screen.getByRole("button", { name: "SVG" }));
+    await waitFor(() => expect(apiMock.exportSheet).toHaveBeenCalledTimes(1));
+    const [, body] = apiMock.exportSheet.mock.calls[0] as [string, { svg: string }];
+    expect(body.svg).toContain("FIELD MOUNTED INSTRUMENT");
+    expect(body.svg).toContain("SUCCEEDING LETTERS");
   });
 });

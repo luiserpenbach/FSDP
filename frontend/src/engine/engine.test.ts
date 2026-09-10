@@ -290,3 +290,45 @@ describe("renderer", () => {
     expect(elapsed).toBeLessThan(2000);
   });
 });
+
+describe("actuator composition and instrument styles", () => {
+  it("adds the actuator's signal port at the body mount and grows the bounds", () => {
+    const plain = symbolAt("v", "ball_valve", { x: 100, y: 100 });
+    const composed = { ...plain, actuator: { library: "fsdp", key: "act_diaphragm", version: 1 } };
+    expect(registry.portsOf(plain).map((port) => port.id)).toEqual(["in", "out"]);
+    const ports = registry.portsOf(composed);
+    expect(ports.map((port) => port.id)).toEqual(["in", "out", "signal"]);
+    // Mount (0,-2.5) + actuator port (0,-7.5) = (0,-10): on the 2.5 mm grid.
+    expect(ports[2]).toMatchObject({ position: { x: 100, y: 90 }, side: "top", kind: "signal" });
+    expect(registry.boundsOf(composed).y).toBeLessThan(registry.boundsOf(plain).y);
+    const rotated = { ...composed, rotation: 90 as const };
+    expect(registry.portsOf(rotated)[2]).toMatchObject({ position: { x: 110, y: 100 }, side: "right" });
+    expect(renderDocumentSvg({ ...smallPanelDocument(), items: [composed] }, registry)).toContain("A5,3 0 0 1 5,-4.5");
+  });
+
+  it("ignores actuators on bodies without a mount", () => {
+    const disc = symbolAt("d", "rupture_disc", { x: 0, y: 0 }, { actuator: { library: "fsdp", key: "act_hand", version: 1 } });
+    expect(registry.portsOf(disc).map((port) => port.id)).toEqual(["in", "out"]);
+  });
+
+  it("renders boxed primary elements with letters inside and the number below", () => {
+    const element = symbolAt("te", "instrument_element", { x: 50, y: 50 }, { tag: "TE 3213" });
+    const svg = renderDocumentSvg({ ...smallPanelDocument(), items: [element] }, registry);
+    expect(svg).toContain(">TE<");
+    expect(svg).toContain(">3213<");
+  });
+
+  it("ships the reference legend's symbol families", () => {
+    const keys = new Set(BUILTIN_SYMBOLS.map((definition) => definition.key));
+    for (const key of [
+      "butterfly_valve", "check_valve", "valve", "relief_valve", "ball_valve", "globe_valve", "three_way_valve", "needle_valve",
+      "regulator", "strainer", "filter", "heat_exchanger", "reducer", "flange", "flex_hose", "rupture_disc", "pump", "motor",
+      "cross_over_valve", "union", "orifice", "water_separator", "silencer", "manifold", "sight_glass", "float_trap", "quick_disconnect",
+      "act_piston", "act_hand", "act_diaphragm", "act_rotary_motor", "act_solenoid",
+      "instrument", "instrument_panel", "instrument_laptop", "instrument_hardwired_shutdown", "instrument_data_collector", "instrument_prm", "instrument_interlock", "instrument_element"
+    ]) {
+      expect(keys.has(key), key).toBe(true);
+    }
+    expect(BUILTIN_SYMBOLS.filter((definition) => definition.category === "actuator").every((definition) => definition.ports.every((port) => port.y === -7.5 || port.kind !== "signal"))).toBe(true);
+  });
+});

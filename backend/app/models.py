@@ -289,6 +289,22 @@ class PidSymbolDef(TimestampMixin, Base):
     view_box: Mapped[str] = mapped_column(String(80), nullable=False, default="0 0 64 40")
     svg: Mapped[str] = mapped_column(Text, nullable=False)
     ports: Mapped[list] = mapped_column(JSON, default=list)
+    # Library metadata: palette category, legend text, default tag letters.
+    category: Mapped[str | None] = mapped_column(String(40))
+    legend: Mapped[str | None] = mapped_column(String(200))
+    tag_prefix: Mapped[str | None] = mapped_column(String(16))
+
+
+class TagScheme(TimestampMixin, Base):
+    """Per-project tag scheme (function letters, separator, id structure)."""
+
+    __tablename__ = "tag_schemes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    scheme: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class Requirement(TimestampMixin, Base):
