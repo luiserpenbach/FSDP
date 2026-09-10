@@ -6,7 +6,7 @@
 import { zoneAt } from "./sheet";
 import type { SchematicDocument, SymbolItem } from "./types";
 
-export type SheetDoc = { sheetNo: number; doc: SchematicDocument };
+export type SheetDoc = { sheetNo: number; doc: SchematicDocument; sheetId?: string };
 
 export function connectorRef(item: SymbolItem): string | null {
   const ref = item.fields?.ref;

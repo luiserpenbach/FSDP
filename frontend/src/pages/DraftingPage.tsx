@@ -7,22 +7,28 @@
  * renderer and lets the server turn the SVG into PDF or PNG.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api";
+import { AssignPartModal } from "../components/schematic/AssignPartModal";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
+import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
 import { convertLegacyGraph } from "../engine/convert";
 import { Editor, type AlignMode, type ToolId } from "../engine/editor";
 import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
 import { polylineLength } from "../engine/geometry";
+import { buildSheetIndex, lineLengthM } from "../engine/index";
+import type { ListKind } from "../engine/lists";
+import { partBadge, partWarnings } from "../engine/parts";
 import { SymbolRegistry } from "../engine/library";
-import { LINE_TYPE_LABELS, renderDocumentSvg } from "../engine/render";
+import { LINE_TYPE_LABELS, renderDocumentSvg, type PartBadge } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
 import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, validateTag, type TagScheme } from "../engine/tags";
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
-import type { Item, LineAnnotation, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef } from "../engine/types";
-import type { Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, PidSymbolDef, User } from "../types";
+import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
+import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, User } from "../types";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
@@ -35,6 +41,8 @@ type Props = {
   customSymbols: PidSymbolDef[];
   /** Reload custom symbols after their library metadata changes. */
   refreshSymbols?: () => void;
+  /** Catalog parts for assignment, badges, and list part numbers. */
+  parts?: Part[];
   user: User;
   canWrite: boolean;
   notify: (message: string, error?: boolean) => void;
@@ -108,6 +116,29 @@ export function buildDrawingContext(
 }
 
 /** Apply the drawing's frame template to a sheet document (no undo entry). */
+/** Point to centre the view on when locating an item. */
+function itemAnchor(item: Item): Point {
+  if (item.kind === "line") {
+    const middle = Math.floor(item.points.length / 2);
+    const a = item.points[Math.max(0, middle - 1)];
+    const b = item.points[middle] ?? a;
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+  if (item.kind === "equipment") return { x: item.position.x + item.size.width / 2, y: item.position.y + item.size.height / 2 };
+  return item.position;
+}
+
+/** Items the BoM counts that have no catalog part yet. */
+const BOM_CATEGORIES = new Set(["valve", "regulator", "inline", "instrument", "equipment", "custom"]);
+function unassignedItems(doc: SchematicDocument, registry: SymbolRegistry): Array<SymbolItem | EquipmentItem> {
+  const result: Array<SymbolItem | EquipmentItem> = [];
+  for (const item of doc.items) {
+    if (item.kind === "symbol" && !item.partId && !item.dnp && registry.has(item.symbol) && BOM_CATEGORIES.has(registry.resolve(item.symbol).category)) result.push(item);
+    if (item.kind === "equipment" && item.tag && !item.partId && !item.dnp) result.push(item);
+  }
+  return result;
+}
+
 function withFrameTemplate(document: SchematicDocument, template: string): SchematicDocument {
   const frameTemplate = (template as FrameTemplateId) ?? "basic";
   const kind = frameTemplate === "none" ? "none" : "basic";
@@ -173,6 +204,7 @@ function DrawingCanvas({
   flags,
   sheetNo,
   otherSheets,
+  parts,
   canvasRef,
   onCursor,
   onViewport
@@ -185,20 +217,32 @@ function DrawingCanvas({
   flags: LegendFlags;
   sheetNo: number;
   otherSheets: SheetDoc[];
+  parts: Part[];
   canvasRef: React.RefObject<SchematicCanvasHandle | null>;
   onCursor: (point: Point | null) => void;
   onViewport: (viewport: Viewport) => void;
 }) {
   const { doc } = useEditorSnapshot(editor);
   const connectorTargets = useMemo(() => resolveConnectorTargets({ sheetNo, doc }, otherSheets).targets, [doc, sheetNo, otherSheets]);
+  const partBadges = useMemo(() => {
+    const byId = new Map(parts.map((part) => [part.id, part]));
+    const badges: Record<string, PartBadge> = {};
+    for (const item of doc.items) {
+      if ((item.kind === "symbol" || item.kind === "equipment") && item.partId) {
+        const part = byId.get(item.partId);
+        badges[item.id] = part ? partBadge(part) : { text: "missing part", tone: "bad" };
+      }
+    }
+    return badges;
+  }, [doc, parts]);
   const context = useMemo(
     () => (baseContext ? withLegends(baseContext, doc, registry, scheme, flags, connectorTargets) : undefined),
     [baseContext, doc, registry, scheme, flags, connectorTargets]
   );
-  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} onCursor={onCursor} onViewport={onViewport} />;
+  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} onCursor={onCursor} onViewport={onViewport} />;
 }
 
-export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, user, canWrite, notify }: Props) {
+export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts = [], user, canWrite, notify }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
@@ -214,6 +258,12 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [lineClasses, setLineClasses] = useState<LineClass[]>([]);
   const [otherSheets, setOtherSheets] = useState<SheetDoc[]>([]);
   const [showLibrary, setShowLibrary] = useState(true);
+  const [showLists, setShowLists] = useState(false);
+  const [listTab, setListTab] = useState<DrawerTab>("instrument");
+  const [bom, setBom] = useState<BomSnapshot | null>(null);
+  const [bomReadiness, setBomReadiness] = useState<BomReadiness | null>(null);
+  const [listsBusy, setListsBusy] = useState(false);
+  const pendingLocate = useRef<LocateTarget | null>(null);
   const canvasRef = useRef<SchematicCanvasHandle>(null);
   const registry = useMemo(() => SymbolRegistry.withBuiltins(customSymbols), [customSymbols]);
   const flags = useMemo(() => legendFlags(drawings.find((entry) => entry.id === drawingId) ?? null), [drawings, drawingId]);
@@ -313,7 +363,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       setOtherSheets([]);
       return;
     }
-    Promise.all(others.map((entry) => api.getSheet(entry.id).then((sheet) => ({ sheetNo: sheet.sheet_no, doc: sheet.document as unknown as SchematicDocument }))))
+    Promise.all(others.map((entry) => api.getSheet(entry.id).then((sheet) => ({ sheetNo: sheet.sheet_no, sheetId: sheet.id, doc: sheet.document as unknown as SchematicDocument }))))
       .then((docs) => {
         if (!cancelled) setOtherSheets(docs);
       })
@@ -390,16 +440,107 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     [drawing, sheetSummary, projectName, systemName]
   );
 
-  const save = useCallback(async () => {
-    if (!editor || !sheetId || !drawing) return;
+  const save = useCallback(async (): Promise<boolean> => {
+    if (!editor || !sheetId || !drawing) return false;
     try {
-      await api.updateSheet(sheetId, { document: editor.store.doc });
+      const sheetNo = sheetSummary?.sheet_no ?? 1;
+      const connectorTargets = resolveConnectorTargets({ sheetNo, doc: editor.store.doc }, otherSheets).targets;
+      // The index rows travel with the document so lists, BoM, and where-used read the saved state.
+      const index = buildSheetIndex(editor.store.doc, registry, { connectivity: editor.connectivity, connectorTargets });
+      await api.updateSheet(sheetId, { document: editor.store.doc, index });
       editor.store.markSaved();
-      notify(`Saved ${drawing.number} sheet ${sheetSummary?.sheet_no ?? 1}.`);
+      notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed).`);
+      return true;
     } catch (error) {
       notify(error instanceof Error ? error.message : "Save failed.", true);
+      return false;
     }
-  }, [editor, sheetId, drawing, sheetSummary, notify]);
+  }, [editor, sheetId, drawing, sheetSummary, otherSheets, registry, notify]);
+
+  /** Exports and the BoM read the saved index, so save a dirty sheet first. */
+  async function ensureSaved(): Promise<boolean> {
+    if (!editor?.store.dirty) return true;
+    if (!canWrite) {
+      notify("Unsaved changes are not in the stored index; a writer must save the sheet first.", true);
+      return false;
+    }
+    return save();
+  }
+
+  async function exportList(scope: ListScope, kind: ListKind, format: "csv" | "xlsx") {
+    if (!(await ensureSaved())) return;
+    const id = scope === "drawing" ? drawing?.id : projectId;
+    if (!id) return;
+    setListsBusy(true);
+    try {
+      const { blob, filename } = await api.downloadList(scope, id, kind, format);
+      downloadBlob(filename, blob);
+      notify(`Exported ${filename}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "List export failed.", true);
+    } finally {
+      setListsBusy(false);
+    }
+  }
+
+  async function generateBom() {
+    if (!drawing || !(await ensureSaved())) return;
+    setListsBusy(true);
+    try {
+      const snapshot = await api.generateDrawingBom(drawing.id);
+      setBom(snapshot);
+      setBomReadiness(await api.getBomReadiness(snapshot.id));
+      notify(`Generated BoM rev ${snapshot.revision} for ${drawing.number} (${snapshot.rows.length} rows).`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "BoM generation failed.", true);
+    } finally {
+      setListsBusy(false);
+    }
+  }
+
+  // Forget the shown BoM when the drawing changes.
+  useEffect(() => {
+    setBom(null);
+    setBomReadiness(null);
+  }, [drawing?.id]);
+
+  const focusItem = useCallback(
+    (itemId: string) => {
+      if (!editor) return;
+      const item = editor.itemById(itemId);
+      if (!item) {
+        notify("That item is no longer on the sheet.", true);
+        return;
+      }
+      editor.setTool("select");
+      editor.select([itemId]);
+      canvasRef.current?.focusPoint(itemAnchor(item));
+    },
+    [editor, notify]
+  );
+
+  function locate(target: LocateTarget) {
+    const targetDrawing = target.drawingId ?? drawing?.id ?? null;
+    const targetSheet = target.sheetId ?? sheetId;
+    if (targetDrawing === (drawing?.id ?? null) && targetSheet === sheetId) {
+      focusItem(target.itemId);
+      return;
+    }
+    if (!confirmDiscard()) return;
+    pendingLocate.current = { drawingId: targetDrawing, sheetId: targetSheet, itemId: target.itemId };
+    if (targetDrawing && targetDrawing !== drawing?.id) setDrawingId(targetDrawing);
+    setSheetId(targetSheet);
+  }
+
+  // Complete a cross-sheet locate once the target sheet's editor is open.
+  useEffect(() => {
+    const pending = pendingLocate.current;
+    if (!editor || !pending || pending.sheetId !== sheetId) return;
+    pendingLocate.current = null;
+    // The canvas fits the sheet after mount; focus on the next frame so the fit does not undo it.
+    const handle = window.setTimeout(() => focusItem(pending.itemId), 50);
+    return () => window.clearTimeout(handle);
+  }, [editor, sheetId, focusItem]);
 
   async function exportSheet(format: "pdf" | "png" | "svg") {
     if (!editor || !sheetId || !context) return;
@@ -607,6 +748,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
               exporting={exporting}
               showLibrary={showLibrary}
               onToggleLibrary={() => setShowLibrary((current) => !current)}
+              showLists={showLists}
+              onToggleLists={() => setShowLists((current) => !current)}
             />
           )}
         </div>
@@ -621,7 +764,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
             onCancel={() => setCreating(null)}
           />
         )}
-        <div className={showLibrary && editor ? "draftingBody withLibrary" : "draftingBody"}>
+        <div className={`draftingBody${showLibrary && editor ? " withLibrary" : ""}${showLists && editor ? " withLists" : ""}`}>
           {editor && showLibrary && (
             <LibraryPanelHost editor={editor} registry={registry} canWrite={canWrite} onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)} />
           )}
@@ -635,6 +778,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
               flags={flags}
               sheetNo={sheetSummary?.sheet_no ?? 1}
               otherSheets={otherSheets}
+              parts={parts}
               canvasRef={canvasRef}
               onCursor={setCursor}
               onViewport={setViewport}
@@ -668,9 +812,30 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 onDeleteDrawing={() => void removeDrawing()}
               />
             )}
-            {editor && <Inspector editor={editor} registry={registry} canWrite={canWrite} lineClasses={lineClasses} otherSheets={otherSheets} sheetNo={sheetSummary?.sheet_no ?? 1} />}
+            {editor && <Inspector editor={editor} registry={registry} canWrite={canWrite} lineClasses={lineClasses} otherSheets={otherSheets} sheetNo={sheetSummary?.sheet_no ?? 1} parts={parts} />}
           </div>
         </div>
+        {editor && showLists && (
+          <ListsDrawer
+            editor={editor}
+            sheetId={sheetId}
+            sheetNo={sheetSummary?.sheet_no ?? 1}
+            otherSheets={otherSheets}
+            parts={parts}
+            projectId={projectId}
+            drawing={drawing}
+            canWrite={canWrite}
+            tab={listTab}
+            onTab={setListTab}
+            onLocate={locate}
+            onExport={(scope, kind, format) => void exportList(scope, kind, format)}
+            onGenerateBom={() => void generateBom()}
+            bom={bom}
+            readiness={bomReadiness}
+            busy={listsBusy}
+            onClose={() => setShowLists(false)}
+          />
+        )}
         {editor && <StatusBar editor={editor} cursor={cursor} viewport={viewport} />}
       </div>
     </PageLayout>
@@ -1082,7 +1247,9 @@ function EditorToolbar({
   onExport,
   exporting,
   showLibrary,
-  onToggleLibrary
+  onToggleLibrary,
+  showLists,
+  onToggleLists
 }: {
   editor: Editor;
   registry: SymbolRegistry;
@@ -1096,6 +1263,8 @@ function EditorToolbar({
   exporting: boolean;
   showLibrary: boolean;
   onToggleLibrary: () => void;
+  showLists: boolean;
+  onToggleLists: () => void;
 }) {
   const { state, doc } = useEditorSnapshot(editor);
   const store = editor.store;
@@ -1120,6 +1289,9 @@ function EditorToolbar({
       <div className="toolGroup">
         <button type="button" className={showLibrary ? "toolButton active" : "toolButton"} onClick={onToggleLibrary} title="Show or hide the symbol library (P)">
           Library
+        </button>
+        <button type="button" className={showLists ? "toolButton active" : "toolButton"} onClick={onToggleLists} title="Instrument index, line list, valve list, equipment list, tie-ins, and BoM">
+          Lists
         </button>
         {scheme.kind === "structured" && (
           <>
@@ -1270,7 +1442,8 @@ function Inspector({
   canWrite,
   lineClasses,
   otherSheets,
-  sheetNo
+  sheetNo,
+  parts
 }: {
   editor: Editor;
   registry: SymbolRegistry;
@@ -1278,9 +1451,11 @@ function Inspector({
   lineClasses: LineClass[];
   otherSheets: SheetDoc[];
   sheetNo: number;
+  parts: Part[];
 }) {
   const { state, connectivity, doc } = useEditorSnapshot(editor);
   const connectorResolution = useMemo(() => resolveConnectorTargets({ sheetNo, doc }, otherSheets), [doc, sheetNo, otherSheets]);
+  const unassigned = useMemo(() => unassignedItems(doc, registry), [doc, registry]);
   const [annotationDraft, setAnnotationDraft] = useState<{ kind: LineAnnotation["kind"]; at: number; text: string; side: 1 | -1 }>({ kind: "note", at: 0.5, text: "", side: -1 });
   const [nozzleDraft, setNozzleDraft] = useState<{ side: Side; offset: number; size: string }>({ side: "left", offset: 50, size: "" });
   const items = editor.selectedItems();
@@ -1394,6 +1569,7 @@ function Inspector({
                 );
               })}
             </ul>
+            <PartSection item={item} editor={editor} registry={registry} parts={parts} canWrite={canWrite} />
           </>
         )}
         {item?.kind === "line" && (
@@ -1474,6 +1650,33 @@ function Inspector({
                   const [pressure, temperature] = event.target.value.split("/").map((part) => part.trim());
                   update({ operatingPressure: pressure || undefined, operatingTemperature: temperature || undefined });
                 }} placeholder="2500 psig / 85 °F" disabled={!canWrite} />
+              </label>
+            </div>
+            <div className="fieldRow">
+              <label>
+                Physical length (m)
+                <input
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={item.physicalLength ?? ""}
+                  onChange={(event) => update({ physicalLength: event.target.value === "" ? undefined : Number(event.target.value) })}
+                  placeholder={String(lineLengthM(item))}
+                  title="Blank estimates from the drawn length × factor"
+                  disabled={!canWrite}
+                />
+              </label>
+              <label>
+                Length factor (m per drawn mm)
+                <input
+                  type="number"
+                  min={0}
+                  step={0.001}
+                  value={item.lengthFactor ?? ""}
+                  onChange={(event) => update({ lengthFactor: event.target.value === "" ? undefined : Number(event.target.value) })}
+                  placeholder="0.001"
+                  disabled={!canWrite}
+                />
               </label>
             </div>
             <div className="fieldRow">
@@ -1609,6 +1812,7 @@ function Inspector({
                 <button type="submit">Add nozzle</button>
               </form>
             )}
+            <PartSection item={item} editor={editor} registry={registry} parts={parts} canWrite={canWrite} />
           </>
         )}
         {item?.kind === "label" && (
@@ -1668,6 +1872,18 @@ function Inspector({
         </p>
         <TagChecks editor={editor} />
         <p>
+          {unassigned.length ? (
+            <>
+              <span className="pill pill-warn">{unassigned.length} item(s) without a part</span>{" "}
+              <button type="button" className="linkButton" onClick={() => editor.select(unassigned.map((entry) => entry.id))}>
+                select
+              </button>
+            </>
+          ) : (
+            <span className="pill pill-good">every counted item has a part</span>
+          )}
+        </p>
+        <p>
           {connectorResolution.unmatched.length ? (
             <span className="pill pill-warn">{connectorResolution.unmatched.length} unmatched connector(s)</span>
           ) : (
@@ -1681,6 +1897,91 @@ function Inspector({
         {state.tool === "place" && <p className="hint">Click to place. R rotates, X mirrors, Esc stops placing.</p>}
       </article>
     </aside>
+  );
+}
+
+/** Assigned part, DNP and spare flags for a symbol or equipment item. */
+function PartSection({ item, editor, registry, parts, canWrite }: { item: SymbolItem | EquipmentItem; editor: Editor; registry: SymbolRegistry; parts: Part[]; canWrite: boolean }) {
+  const [assigning, setAssigning] = useState(false);
+  const { connectivity, doc } = useEditorSnapshot(editor);
+  const part = item.partId ? (parts.find((entry) => entry.id === item.partId) ?? null) : null;
+  const category = item.kind === "symbol" ? (registry.has(item.symbol) ? registry.resolve(item.symbol).category : null) : "equipment";
+  const connectedLines = useMemo(() => {
+    const ids = new Set<string>();
+    for (const end of connectivity.lineEnds) if (end.attachments.some((attachment) => attachment.kind === "port" && attachment.itemId === item.id)) ids.add(end.lineId);
+    return doc.items.filter((entry): entry is LineItem => entry.kind === "line" && ids.has(entry.id));
+  }, [connectivity, doc, item.id]);
+  const warnings = part ? partWarnings(part, connectedLines) : [];
+  const caption = item.kind === "symbol" ? (item.tag ?? item.label ?? item.symbol.key) : (item.tag ?? item.name);
+  const update = (patch: Record<string, unknown>) => {
+    if (canWrite) editor.updateItem(item.id, patch);
+  };
+  return (
+    <div className="partSection">
+      <p>
+        <strong>Part</strong>
+      </p>
+      {part ? (
+        <p className="partCurrent">
+          <Link to={`/parts?part=${part.id}`} className="mono" title="Open in the parts catalog">
+            {part.part_number}
+          </Link>{" "}
+          {part.description}{" "}
+          <span className={`pill pill-${part.lifecycle_status === "obsolete" || part.lifecycle_status === "restricted" ? "bad" : warnings.length ? "warn" : "good"}`}>
+            {part.lifecycle_status === "active" ? part.qualification_status : part.lifecycle_status}
+          </span>
+        </p>
+      ) : item.partId ? (
+        <p>
+          <span className="pill pill-bad">part {item.partId} is not in the catalog</span>
+        </p>
+      ) : (
+        <p>
+          <span className="pill pill-muted">no part assigned</span>
+        </p>
+      )}
+      {warnings.length > 0 && (
+        <ul className="partWarnings">
+          {warnings.map((warning) => (
+            <li key={warning}>{warning}</li>
+          ))}
+        </ul>
+      )}
+      <div className="toolGroup">
+        <button type="button" disabled={!canWrite} onClick={() => setAssigning(true)}>
+          {part ? "Replace part…" : "Assign part…"}
+        </button>
+        {item.partId && (
+          <button type="button" disabled={!canWrite} onClick={() => update({ partId: null })}>
+            Remove
+          </button>
+        )}
+      </div>
+      <div className="fieldRow">
+        <label className="checkRow">
+          <input type="checkbox" checked={Boolean(item.dnp)} onChange={(event) => update({ dnp: event.target.checked || undefined })} disabled={!canWrite} />
+          <span>Do not populate (DNP)</span>
+        </label>
+        <label>
+          Spares
+          <input type="number" min={0} step={1} value={item.spare ?? 0} onChange={(event) => update({ spare: Math.max(0, Math.floor(Number(event.target.value))) || undefined })} disabled={!canWrite} />
+        </label>
+      </div>
+      {assigning && (
+        <AssignPartModal
+          parts={parts}
+          category={category}
+          currentPartId={item.partId}
+          connectedLines={connectedLines}
+          caption={caption}
+          onAssign={(partId) => {
+            update({ partId });
+            setAssigning(false);
+          }}
+          onClose={() => setAssigning(false)}
+        />
+      )}
+    </div>
   );
 }
 

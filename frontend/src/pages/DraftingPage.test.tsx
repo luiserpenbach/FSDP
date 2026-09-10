@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Diagram, Drawing, DrawingSheet, FluidSystem, User } from "../types";
+import type { Diagram, Drawing, DrawingSheet, FluidSystem, Part, User } from "../types";
 
 const apiMock = vi.hoisted(() => ({
   listDrawings: vi.fn(),
@@ -21,7 +22,11 @@ const apiMock = vi.hoisted(() => ({
   updateSymbol: vi.fn(),
   listLineClasses: vi.fn(),
   createLineClass: vi.fn(),
-  importLineClasses: vi.fn()
+  importLineClasses: vi.fn(),
+  getProjectList: vi.fn(),
+  downloadList: vi.fn(),
+  generateDrawingBom: vi.fn(),
+  getBomReadiness: vi.fn()
 }));
 
 vi.mock("../api", () => ({ api: apiMock }));
@@ -112,19 +117,28 @@ const sheet: DrawingSheet = {
   updated_at: "2026-09-10T10:00:00Z"
 };
 
+const parts: Part[] = [
+  { id: "part-1", part_number: "AMB2-001", description: "Ball valve 1/4 in", part_type: "valve", source_type: "vendor", material: "316L", pressure_rating_bar: 200, qualification_status: "qualified", certification_status: "certified", lifecycle_status: "active", preferred: true },
+  { id: "part-2", part_number: "AMB2-002", description: "Pressure transducer", part_type: "instrument", source_type: "vendor", material: null, pressure_rating_bar: 100, qualification_status: "unqualified", certification_status: "unreviewed", lifecycle_status: "draft", preferred: false },
+  { id: "part-3", part_number: "AMB2-003", description: "Old valve", part_type: "valve", source_type: "vendor", material: "brass", pressure_rating_bar: 50, qualification_status: "qualified", certification_status: "certified", lifecycle_status: "obsolete", preferred: false }
+];
+
 function renderPage(notify = vi.fn()) {
   return render(
-    <DraftingPage
-      projectId="p1"
-      projectName="AMB2"
-      systems={systems}
-      diagrams={[legacyDiagram]}
-      selectedSystemId="s1"
-      customSymbols={[]}
-      user={user}
-      canWrite
-      notify={notify}
-    />
+    <MemoryRouter>
+      <DraftingPage
+        projectId="p1"
+        projectName="AMB2"
+        systems={systems}
+        diagrams={[legacyDiagram]}
+        selectedSystemId="s1"
+        customSymbols={[]}
+        parts={parts}
+        user={user}
+        canWrite
+        notify={notify}
+      />
+    </MemoryRouter>
   );
 }
 
@@ -167,7 +181,13 @@ describe("DraftingPage", () => {
     expect(savedId).toBe("sh1");
     expect(body.document.items[0].tag).toBe("PT-3223");
     expect(body.document.sheet.frame.template).toBe("fsdp-standard");
-    expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1.");
+    // The engine's index rows travel with the document.
+    const index = (body as unknown as { index: { items: Array<{ item_id: string; tag: string | null; category: string | null; zone: string | null }>; lines: unknown[] } }).index;
+    expect(index.items).toHaveLength(1);
+    expect(index.items[0]).toMatchObject({ item_id: "pt", tag: "PT-3223", category: "instrument" });
+    expect(index.items[0].zone).toMatch(/^[A-Z]-\d$/);
+    expect(index.lines).toEqual([]);
+    expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1 (1 items, 0 lines indexed).");
   });
 
   it("converts a legacy diagram into a new drawing", async () => {
@@ -302,5 +322,107 @@ describe("DraftingPage", () => {
     expect((screen.getByLabelText("Insulation") as HTMLInputElement).value).toBe("foam");
     await waitFor(() => expect(canvas.textContent).toContain('1/4" 316L SS x .035" WALL'));
     expect(screen.getByText(/paired connector/)).toBeInTheDocument();
+  });
+
+  it("shows live engineering lists in the drawer and locates rows on the sheet", async () => {
+    const richSheet: DrawingSheet = {
+      ...sheet,
+      document: {
+        ...sheet.document,
+        items: [
+          ...(sheet.document as { items: unknown[] }).items,
+          { id: "hv", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 100 }, rotation: 0, tag: "HV-3201", partId: "part-1", dnp: true, fields: {} },
+          { id: "l1", kind: "line", layer: "process", lineType: "process", lineNumber: "3101", size: '1/4"', service: "GHe", points: [{ x: 70, y: 100 }, { x: 100, y: 100 }, { x: 100, y: 105 }], fields: {} }
+        ]
+      }
+    };
+    apiMock.getSheet.mockResolvedValue(richSheet);
+    apiMock.getProjectList.mockResolvedValue({
+      kind: "valve",
+      title: "Valve list",
+      scope: "project",
+      header: { project: "AMB2" },
+      columns: [{ key: "drawing_number", label: "Drawing" }, { key: "tag", label: "Tag" }, { key: "sheet_no", label: "Sheet" }, { key: "zone", label: "Zone" }],
+      rows: [{ drawing_id: "dw1", drawing_number: "AMB2-9003", sheet_id: "sh1", item_id: "hv", tag: "HV-3201", sheet_no: 1, zone: "C-3" }]
+    });
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="hv"]')).not.toBeNull());
+    // Canvas badge for the assigned part, DNP marker printed.
+    expect(canvas.querySelector('[data-id="hv"] .part-badge')?.textContent).toBe("AMB2-001");
+    expect(canvas.querySelector('[data-id="hv"]')?.textContent).toContain("DNP");
+
+    fireEvent.click(screen.getByRole("button", { name: "Lists" }));
+    const drawer = screen.getByRole("region", { name: "Engineering lists" });
+    expect(screen.getByRole("tab", { name: /Instruments/ })).toHaveAttribute("aria-selected", "true");
+    expect(drawer.textContent).toContain("PT-3222");
+    fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
+    expect(drawer.textContent).toContain("HV-3201");
+    expect(drawer.textContent).toContain("AMB2-001");
+    expect(drawer.textContent).toContain("DNP");
+    fireEvent.click(screen.getByRole("tab", { name: /Lines/ }));
+    expect(drawer.textContent).toContain("3101");
+    expect(drawer.textContent).toContain("PT-3222 (process)");
+
+    // Click-to-locate selects the row's item.
+    fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
+    fireEvent.click(within(drawer).getAllByText("HV-3201")[0]);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Symbol" })).toBeInTheDocument());
+    expect((screen.getByLabelText("Tag") as HTMLInputElement).value).toBe("HV-3201");
+
+    // Project scope reads the saved index through the API.
+    fireEvent.click(screen.getByLabelText("Project"));
+    await waitFor(() => expect(apiMock.getProjectList).toHaveBeenCalledWith("p1", "valve"));
+    await waitFor(() => expect(drawer.textContent).toContain("C-3"));
+  });
+
+  it("assigns a part from the modal with warnings and blocks obsolete parts", async () => {
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    await screen.findByLabelText("Tag");
+    expect(screen.getByText("no part assigned")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Assign part…" }));
+    const dialog = screen.getByRole("dialog", { name: "Assign part" });
+    // The instrument category suggests the instrument type chip, narrowing the list.
+    expect(within(dialog).getByRole("option", { name: /AMB2-002/ })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("option", { name: /AMB2-001/ })).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: /^instrument/ }));
+    expect(within(dialog).getByRole("option", { name: /AMB2-001/ })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-003/ }));
+    expect(within(dialog).getByRole("button", { name: "Assign part" })).toBeDisabled();
+    expect(dialog.textContent).toContain("Obsolete parts cannot be assigned");
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-002/ }));
+    expect(dialog.textContent).toContain("Part is still a draft.");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign part" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.getByRole("link", { name: "AMB2-002" })).toHaveAttribute("href", "/parts?part=part-2");
+    expect(screen.getByText("Part is not qualified or preferred.")).toBeInTheDocument();
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"] .part-badge')?.textContent).toBe("AMB2-002"));
+    fireEvent.click(screen.getByLabelText("Do not populate (DNP)"));
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')?.textContent).toContain("DNP"));
+  });
+
+  it("generates the drawing BoM from the saved index", async () => {
+    apiMock.generateDrawingBom.mockResolvedValue({ id: "bom1", drawing_id: "dw1", diagram_id: null, source_kind: "drawing", revision: 1, status: "draft", rows: [{ kind: "unassigned", part_number: null, description: "Field instrument", quantity: 1, unit: "ea", spare_quantity: 0, component_tags: ["PT-3222"], dnp_tags: [], sheets: [1] }], created_at: "2026-09-10T10:00:00Z" });
+    apiMock.getBomReadiness.mockResolvedValue({ snapshot_id: "bom1", row_count: 1, issue_count: 1, blocking_count: 1, warning_count: 0, ready: false, issues: [{ part_number: null, component_tags: ["PT-3222"], warnings: ["No catalog part is linked to this BoM row."], code: "no_part", severity: "blocking" }] });
+    const notify = vi.fn();
+    renderPage(notify);
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" }); // dirty the sheet
+    fireEvent.click(screen.getByRole("button", { name: "Lists" }));
+    fireEvent.click(screen.getByRole("tab", { name: "BoM" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate BoM from drawing" }));
+    // A dirty sheet is saved first so the BoM reads the current index.
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(apiMock.generateDrawingBom).toHaveBeenCalledWith("dw1"));
+    const drawer = screen.getByRole("region", { name: "Engineering lists" });
+    await waitFor(() => expect(drawer.textContent).toContain("Field instrument"));
+    expect(drawer.textContent).toContain("1 blocking");
+    expect(drawer.textContent).toContain("no_part");
+    expect(notify).toHaveBeenCalledWith("Generated BoM rev 1 for AMB2-9003 (1 rows).");
   });
 });

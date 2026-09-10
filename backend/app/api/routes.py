@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
@@ -18,11 +19,14 @@ from app.models import (
     Diagram,
     DiagramEdge,
     DiagramNode,
+    Drawing,
+    DrawingSheet,
     FluidSystem,
     Part,
     PidSymbolDef,
     Project,
     Requirement,
+    SheetItem,
     TraceLink,
     User,
 )
@@ -52,6 +56,7 @@ from app.schemas import (
     PartUpdate,
     PartUsageBomRead,
     PartUsageComponentRead,
+    PartUsageDrawingItemRead,
     PartUsageRead,
     PidSymbolCreate,
     PidSymbolRead,
@@ -723,6 +728,10 @@ def delete_part(
         .select_from(ComponentInstance)
         .where(ComponentInstance.part_id == part_id)
     )
+    usage_count = (usage_count or 0) + (
+        db.scalar(select(func.count()).select_from(SheetItem).where(SheetItem.part_id == part_id))
+        or 0
+    )
     if usage_count:
         raise HTTPException(
             status_code=409,
@@ -868,16 +877,47 @@ def get_part_usage(part_id: str, db: Session = Depends(get_db)) -> PartUsageRead
                 .order_by(BomSnapshot.created_at.desc())
             )
         )
+    drawing_rows = db.execute(
+        select(SheetItem, DrawingSheet, Drawing)
+        .join(DrawingSheet, SheetItem.sheet_id == DrawingSheet.id)
+        .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+        .where(SheetItem.part_id == part.id)
+        .order_by(Drawing.number, DrawingSheet.sheet_no, SheetItem.tag)
+    ).all()
+    drawing_ids = {drawing.id for _, _, drawing in drawing_rows}
+    if drawing_ids:
+        snapshots.extend(
+            db.scalars(
+                select(BomSnapshot)
+                .where(BomSnapshot.drawing_id.in_(drawing_ids))
+                .order_by(BomSnapshot.created_at.desc())
+            )
+        )
     return PartUsageRead(
         components=usage_components,
         bom_snapshots=[
             PartUsageBomRead(
                 id=snapshot.id,
-                diagram_id=snapshot.diagram_id,
+                diagram_id=snapshot.diagram_id or snapshot.drawing_id or "",
                 revision=snapshot.revision,
                 status=snapshot.status,
             )
             for snapshot in snapshots
+        ],
+        drawing_items=[
+            PartUsageDrawingItemRead(
+                sheet_id=item.sheet_id,
+                item_id=item.item_id,
+                tag=item.tag,
+                zone=item.zone,
+                dnp=item.dnp,
+                drawing_id=drawing.id,
+                drawing_number=drawing.number,
+                drawing_title=drawing.title.replace("\n", " "),
+                sheet_no=sheet.sheet_no,
+                project_id=drawing.project_id,
+            )
+            for item, sheet, drawing in drawing_rows
         ],
     )
 
@@ -902,9 +942,7 @@ def list_part_documents(part_id: str, db: Session = Depends(get_db)) -> list[Cat
     )
 
 
-@router.post(
-    "/parts/{part_id}/documents", response_model=CatalogDocumentRead, status_code=201
-)
+@router.post("/parts/{part_id}/documents", response_model=CatalogDocumentRead, status_code=201)
 def upload_part_document(
     part_id: str,
     db: Session = Depends(get_db),
@@ -1049,7 +1087,11 @@ def create_component(
     db.add(component)
     db.flush()
     record_change(
-        db, "component", component.id, "created", f"Placed component {component.tag}",
+        db,
+        "component",
+        component.id,
+        "created",
+        f"Placed component {component.tag}",
         actor=user.email,
     )
     db.commit()
@@ -1100,7 +1142,11 @@ def update_component(
 
     apply_updates(component, payload)
     record_change(
-        db, "component", component.id, "updated", f"Updated component {component.tag}",
+        db,
+        "component",
+        component.id,
+        "updated",
+        f"Updated component {component.tag}",
         actor=user.email,
     )
     db.commit()
@@ -1117,7 +1163,11 @@ def delete_component(
     component = require_model(db, ComponentInstance, component_id)
     delete_trace_links_for(db, "component", component.id)
     record_change(
-        db, "component", component.id, "deleted", f"Deleted component {component.tag}",
+        db,
+        "component",
+        component.id,
+        "deleted",
+        f"Deleted component {component.tag}",
         actor=user.email,
     )
     db.delete(component)
@@ -1145,7 +1195,11 @@ def create_requirement(
     db.add(requirement)
     db.flush()
     record_change(
-        db, "requirement", requirement.id, "created", f"Created requirement {requirement.key}",
+        db,
+        "requirement",
+        requirement.id,
+        "created",
+        f"Created requirement {requirement.key}",
         actor=user.email,
     )
     db.commit()
@@ -1180,7 +1234,11 @@ def update_requirement(
 
     apply_updates(requirement, payload)
     record_change(
-        db, "requirement", requirement.id, "updated", f"Updated requirement {requirement.key}",
+        db,
+        "requirement",
+        requirement.id,
+        "updated",
+        f"Updated requirement {requirement.key}",
         actor=user.email,
     )
     db.commit()
@@ -1197,7 +1255,11 @@ def delete_requirement(
     requirement = require_model(db, Requirement, requirement_id)
     delete_trace_links_for(db, "requirement", requirement.id)
     record_change(
-        db, "requirement", requirement.id, "deleted", f"Deleted requirement {requirement.key}",
+        db,
+        "requirement",
+        requirement.id,
+        "deleted",
+        f"Deleted requirement {requirement.key}",
         actor=user.email,
     )
     db.delete(requirement)
@@ -1252,7 +1314,11 @@ def create_trace_link(
     db.add(link)
     db.flush()
     record_change(
-        db, "trace_link", link.id, "created", f"Created {link.link_type} trace link",
+        db,
+        "trace_link",
+        link.id,
+        "created",
+        f"Created {link.link_type} trace link",
         actor=user.email,
     )
     db.commit()
@@ -1268,7 +1334,11 @@ def delete_trace_link(
 ) -> Response:
     link = require_model(db, TraceLink, link_id)
     record_change(
-        db, "trace_link", link.id, "deleted", f"Deleted {link.link_type} trace link",
+        db,
+        "trace_link",
+        link.id,
+        "deleted",
+        f"Deleted {link.link_type} trace link",
         actor=user.email,
     )
     db.delete(link)
@@ -1292,7 +1362,11 @@ def create_bom(
     diagram = require_model(db, Diagram, diagram_id)
     snapshot = generate_bom_snapshot(db, diagram)
     record_change(
-        db, "bom_snapshot", snapshot.id, "created", f"Generated BoM for {diagram.name}",
+        db,
+        "bom_snapshot",
+        snapshot.id,
+        "created",
+        f"Generated BoM for {diagram.name}",
         actor=user.email,
     )
     db.commit()
@@ -1315,14 +1389,21 @@ def list_diagram_bom_snapshots(diagram_id: str, db: Session = Depends(get_db)) -
 @router.get("/projects/{project_id}/bom", response_model=list[ProjectBomRead])
 def list_project_bom_snapshots(project_id: str, db: Session = Depends(get_db)) -> list[BomSnapshot]:
     require_model(db, Project, project_id)
-    return list(
-        db.scalars(
-            select(BomSnapshot)
-            .join(Diagram)
-            .join(FluidSystem)
-            .where(FluidSystem.project_id == project_id)
-            .order_by(BomSnapshot.created_at.desc())
-        )
+    diagram_snapshots = db.scalars(
+        select(BomSnapshot)
+        .join(Diagram, BomSnapshot.diagram_id == Diagram.id)
+        .join(FluidSystem)
+        .where(FluidSystem.project_id == project_id)
+    ).all()
+    drawing_snapshots = db.scalars(
+        select(BomSnapshot)
+        .join(Drawing, BomSnapshot.drawing_id == Drawing.id)
+        .where(Drawing.project_id == project_id)
+    ).all()
+    return sorted(
+        [*diagram_snapshots, *drawing_snapshots],
+        key=lambda snapshot: snapshot.created_at or datetime.min.replace(tzinfo=UTC),
+        reverse=True,
     )
 
 
@@ -1336,7 +1417,10 @@ def update_bom_status(
     snapshot = require_model(db, BomSnapshot, snapshot_id)
     snapshot.status = payload.status
     record_change(
-        db, "bom_snapshot", snapshot.id, "updated",
+        db,
+        "bom_snapshot",
+        snapshot.id,
+        "updated",
         f"BoM revision {snapshot.revision} status set to {payload.status}",
         actor=user.email,
     )
@@ -1351,23 +1435,44 @@ def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
     issues = []
     for row in snapshot.rows:
         warnings: list[str] = []
-        part = db.get(Part, row.get("part_id")) if row.get("part_id") else None
-        if part is None:
-            warnings.append("No catalog part is linked to this BoM row.")
+        code = "part_incomplete"
+        severity = "warning"
+        if row.get("kind") == "bulk":
+            # Drawing-derived bulk items: tubing needs a size and a class/spec.
+            if not row.get("size"):
+                warnings.append("Line has no size; tubing and fittings cannot be quantified.")
+                code = "line_no_size"
+            elif not row.get("line_class") and not row.get("spec") and row.get("unit") == "m":
+                warnings.append("Line has no line class or spec.")
+                code = "line_no_class"
         else:
-            warnings.extend(qualification_warnings(part))
+            part = db.get(Part, row.get("part_id")) if row.get("part_id") else None
+            if part is None:
+                warnings.append("No catalog part is linked to this BoM row.")
+                code = "no_part"
+                severity = "blocking"
+            else:
+                warnings.extend(qualification_warnings(part))
+                if part.lifecycle_status in {"obsolete", "restricted"}:
+                    code = f"part_{part.lifecycle_status}"
+                    severity = "blocking"
         if warnings:
             issues.append(
                 {
                     "part_number": row.get("part_number"),
                     "component_tags": row.get("component_tags") or [],
                     "warnings": warnings,
+                    "code": code,
+                    "severity": severity,
                 }
             )
+    blocking = sum(1 for issue in issues if issue["severity"] == "blocking")
     return {
         "snapshot_id": snapshot.id,
         "row_count": len(snapshot.rows),
         "issue_count": len(issues),
+        "blocking_count": blocking,
+        "warning_count": len(issues) - blocking,
         "ready": not issues,
         "issues": issues,
     }
@@ -1425,6 +1530,11 @@ BOM_CSV_FIELDS = [
     "qualification_status",
     "certification_status",
     "component_tags",
+    "kind",
+    "unit",
+    "spare_quantity",
+    "dnp_tags",
+    "sheets",
 ]
 
 
@@ -1443,11 +1553,12 @@ def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
     writer.writeheader()
     for row in snapshot.rows:
         record = {key: row.get(key) for key in BOM_CSV_FIELDS}
-        if isinstance(record.get("component_tags"), list):
-            record["component_tags"] = "; ".join(str(tag) for tag in record["component_tags"])
+        for key in ("component_tags", "dnp_tags", "sheets"):
+            if isinstance(record.get(key), list):
+                record[key] = "; ".join(str(entry) for entry in record[key])
         writer.writerow({key: csv_safe(value) for key, value in record.items()})
 
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram.name).strip("-.").lower() or "diagram"
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram_name).strip("-.").lower() or "bom"
     filename = f"bom-{slug}-rev{snapshot.revision}.csv"
     return Response(
         buffer.getvalue(),

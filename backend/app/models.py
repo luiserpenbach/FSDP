@@ -275,6 +275,79 @@ class DrawingRevision(TimestampMixin, Base):
     drawing: Mapped[Drawing] = relationship(back_populates="revisions")
 
 
+class SheetItem(TimestampMixin, Base):
+    """Normalized index row for one symbol or equipment item on a sheet.
+
+    Rebuilt from the sheet document on every save (the document stays the
+    source of truth); lists, BoM roll-ups, and where-used queries read this.
+    """
+
+    __tablename__ = "sheet_items"
+    __table_args__ = (UniqueConstraint("sheet_id", "item_id", name="uq_sheet_item"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    sheet_id: Mapped[str] = mapped_column(
+        ForeignKey("drawing_sheets.id", ondelete="CASCADE"), nullable=False
+    )
+    item_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    category: Mapped[str | None] = mapped_column(String(40))
+    symbol_key: Mapped[str | None] = mapped_column(String(120))
+    symbol_name: Mapped[str | None] = mapped_column(String(160))
+    tag: Mapped[str | None] = mapped_column(String(80))
+    label: Mapped[str | None] = mapped_column(String(200))
+    zone: Mapped[str | None] = mapped_column(String(16))
+    x: Mapped[float | None] = mapped_column(Float)
+    y: Mapped[float | None] = mapped_column(Float)
+    part_id: Mapped[str | None] = mapped_column(ForeignKey("parts.id", ondelete="SET NULL"))
+    dnp: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    spare: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Connected line sizes / services, connector reference, and the item's fields.
+    fields: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    sheet: Mapped[DrawingSheet] = relationship()
+    part: Mapped[Part | None] = relationship()
+
+
+class SheetLine(TimestampMixin, Base):
+    """Normalized index row for one line on a sheet (see SheetItem)."""
+
+    __tablename__ = "sheet_lines"
+    __table_args__ = (UniqueConstraint("sheet_id", "line_id", name="uq_sheet_line"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    sheet_id: Mapped[str] = mapped_column(
+        ForeignKey("drawing_sheets.id", ondelete="CASCADE"), nullable=False
+    )
+    line_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    line_number: Mapped[str | None] = mapped_column(String(80))
+    line_type: Mapped[str] = mapped_column(String(40), nullable=False, default="process")
+    service: Mapped[str | None] = mapped_column(String(80))
+    size: Mapped[str | None] = mapped_column(String(40))
+    spec: Mapped[str | None] = mapped_column(String(160))
+    line_class: Mapped[str | None] = mapped_column(String(80))
+    from_item: Mapped[str | None] = mapped_column(String(80))
+    from_tag: Mapped[str | None] = mapped_column(String(160))
+    to_item: Mapped[str | None] = mapped_column(String(80))
+    to_tag: Mapped[str | None] = mapped_column(String(160))
+    zone: Mapped[str | None] = mapped_column(String(16))
+    # Drawn length on the sheet and the estimated physical length.
+    length_mm: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    length_m: Mapped[float | None] = mapped_column(Float)
+    # Line ends on ports (fittings) and tees found along the line.
+    connection_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tee_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    design_pressure: Mapped[str | None] = mapped_column(String(80))
+    design_temperature: Mapped[str | None] = mapped_column(String(80))
+    operating_pressure: Mapped[str | None] = mapped_column(String(80))
+    operating_temperature: Mapped[str | None] = mapped_column(String(80))
+    insulation: Mapped[str | None] = mapped_column(String(120))
+    tracing: Mapped[str | None] = mapped_column(String(120))
+    fields: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    sheet: Mapped[DrawingSheet] = relationship()
+
+
 class PidSymbolDef(TimestampMixin, Base):
     """User-defined P&ID symbol: sanitized SVG markup plus connection ports.
 
@@ -357,16 +430,31 @@ class BomSnapshot(TimestampMixin, Base):
     __tablename__ = "bom_snapshots"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
-    diagram_id: Mapped[str] = mapped_column(ForeignKey("diagrams.id", ondelete="CASCADE"))
+    # A snapshot belongs to either a legacy diagram or a controlled drawing.
+    diagram_id: Mapped[str | None] = mapped_column(
+        ForeignKey("diagrams.id", ondelete="CASCADE"), nullable=True
+    )
+    drawing_id: Mapped[str | None] = mapped_column(
+        ForeignKey("drawings.id", ondelete="CASCADE"), nullable=True
+    )
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(80), default="draft")
     rows: Mapped[list] = mapped_column(JSON, default=list)
 
-    diagram: Mapped[Diagram] = relationship(back_populates="bom_snapshots")
+    diagram: Mapped[Diagram | None] = relationship(back_populates="bom_snapshots")
+    drawing: Mapped[Drawing | None] = relationship()
 
     @property
     def diagram_name(self) -> str:
-        return self.diagram.name if self.diagram else ""
+        if self.diagram:
+            return self.diagram.name
+        if self.drawing:
+            return self.drawing.number
+        return ""
+
+    @property
+    def source_kind(self) -> str:
+        return "drawing" if self.drawing_id else "diagram"
 
 
 class ChangeEvent(TimestampMixin, Base):

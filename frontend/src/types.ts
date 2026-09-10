@@ -92,6 +92,18 @@ export type PartUsage = {
     revision: number;
     status: string;
   }>;
+  drawing_items: Array<{
+    sheet_id: string;
+    item_id: string;
+    tag: string | null;
+    zone: string | null;
+    dnp: boolean;
+    drawing_id: string;
+    drawing_number: string;
+    drawing_title: string;
+    sheet_no: number;
+    project_id: string;
+  }>;
 };
 
 export type Diagram = {
@@ -204,7 +216,9 @@ export type Requirement = {
 
 export type BomSnapshot = {
   id: string;
-  diagram_id: string;
+  diagram_id: string | null;
+  drawing_id?: string | null;
+  source_kind?: "diagram" | "drawing";
   revision: number;
   status: string;
   rows: Array<Record<string, unknown>>;
@@ -217,14 +231,30 @@ export type BomReadinessIssue = {
   part_number?: string | null;
   component_tags: string[];
   warnings: string[];
+  code?: string;
+  severity?: "blocking" | "warning";
 };
 
 export type BomReadiness = {
   snapshot_id: string;
   row_count: number;
   issue_count: number;
+  blocking_count?: number;
+  warning_count?: number;
   ready: boolean;
   issues: BomReadinessIssue[];
+};
+
+export type ListColumn = { key: string; label: string };
+
+/** Engineering list served from the saved sheet index. */
+export type ListRead = {
+  kind: string;
+  title: string;
+  scope: "drawing" | "project";
+  header: Record<string, string | number>;
+  columns: ListColumn[];
+  rows: Array<Record<string, string | number | boolean | null>>;
 };
 
 export type BomDiff = {
