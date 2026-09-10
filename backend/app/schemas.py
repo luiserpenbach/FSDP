@@ -521,6 +521,40 @@ class DiagramGraphUpdate(BaseModel):
     edges: list[GraphEdgeIn] = Field(default_factory=list)
 
 
+SCHEMATIC_SCHEMA_VERSION = 1
+
+
+class SchematicDocumentIn(BaseModel):
+    document: dict[str, Any]
+
+    @field_validator("document")
+    @classmethod
+    def _validate_document(cls, value: dict[str, Any]) -> dict[str, Any]:
+        if value.get("schemaVersion") != SCHEMATIC_SCHEMA_VERSION:
+            raise ValueError(f"schemaVersion must be {SCHEMATIC_SCHEMA_VERSION}")
+        if not isinstance(value.get("sheet"), dict):
+            raise ValueError("sheet is required")
+        items = value.get("items")
+        if not isinstance(items, list):
+            raise ValueError("items must be a list")
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
+                raise ValueError("every item needs a string id")
+            if item["id"] in seen:
+                raise ValueError(f"duplicate item id {item['id']}")
+            seen.add(item["id"])
+            if not isinstance(item.get("kind"), str):
+                raise ValueError(f"item {item['id']} has no kind")
+        return value
+
+
+class SchematicRead(BaseModel):
+    diagram_id: str
+    revision: int
+    document: dict[str, Any] | None
+
+
 class DiagramRead(OrmModel):
     id: str
     system_id: str

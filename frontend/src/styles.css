@@ -2635,3 +2635,145 @@ span.symbolListPendingName.untitled {
     grid-template-columns: 1fr !important;
   }
 }
+
+/* ---------- Drafting (schematic engine preview) ---------- */
+
+.draftingPage .pageHeader {
+  margin-bottom: 8px;
+}
+
+.draftingLayout {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.draftingTop {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.draftingTop .toolGroup {
+  align-items: center;
+  border-left: 1px solid var(--line-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-left: 8px;
+}
+
+.draftingTop .toolButton.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.draftingTop .checkRow,
+.draftingInspector .checkRow {
+  align-items: center;
+  display: inline-flex;
+  flex-direction: row;
+  gap: 6px;
+  margin: 0;
+}
+
+.draftingTop .checkRow input,
+.draftingInspector .checkRow input {
+  width: auto;
+}
+
+.draftingNotice {
+  background: var(--amber-soft);
+  border: 1px solid var(--line);
+  border-top: none;
+  color: var(--amber-deep);
+  font-size: 12.5px;
+  margin: 0;
+  padding: 6px 14px;
+}
+
+.draftingBody {
+  display: grid;
+  flex: 1;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  min-height: 0;
+}
+
+.schematicCanvas {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 0 0 var(--radius) var(--radius);
+  border-top: none;
+  height: calc(100vh - 214px);
+  min-height: 460px;
+  outline: none;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+}
+
+.schematicCanvas:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--focus-ring);
+}
+
+.schematicCanvas.canvasCrosshair {
+  cursor: crosshair;
+}
+
+.schematicCanvas.canvasHover {
+  cursor: move;
+}
+
+.schematicEmpty {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+}
+
+.schematicSvg {
+  display: block;
+}
+
+.schematicSvg .item-note {
+  cursor: pointer;
+}
+
+.draftingInspector {
+  max-height: calc(100vh - 214px);
+}
+
+.draftingInspector textarea {
+  min-height: 72px;
+}
+
+.portList {
+  font-size: 12px;
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+}
+
+.portList li {
+  display: flex;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.draftingStatus {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 0 0 var(--radius) var(--radius);
+  border-top: none;
+  color: var(--text-2);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 16px;
+  padding: 4px 14px;
+}
+
+.draftingStatus .statusTool {
+  text-transform: capitalize;
+}

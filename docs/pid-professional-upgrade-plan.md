@@ -1,6 +1,6 @@
 # P&ID Designer Upgrade Plan — From PFD Sketchpad to Professional Process Engineering Tool
 
-Status: proposal (2026-09-10). Not implemented.
+Status: approved 2026-09-10; Phase 0 delivered (see §12). Phases 1–6 not yet implemented.
 Audience: product, propulsion/test engineering, and whoever builds the editor.
 
 This plan describes how the FSDP Diagrams page grows from the current React Flow sketchpad into a professional P&ID authoring and export tool that combines the drafting rigor of AutoCAD / AutoCAD P&ID, the library-and-connectivity discipline of KiCad's schematic editor, and FSDP's existing hardware, BoM, and requirements thread.
@@ -385,6 +385,42 @@ Total for Phases 0–6: roughly **26–33 engineer-weeks**. With two engineers a
 7. **Legacy editor sunset**: removed one release after every production diagram is converted.
 
 ---
+
+## 12. Delivery log
+
+### Phase 0 — Engine spike and document model — ✅ delivered 2026-09-10
+
+Decision: option C (own schematic engine) confirmed; the spike met its exit criteria, so there is no fallback to `@xyflow/react`.
+
+Delivered in `frontend/src/engine/` (plain TypeScript, no React inside):
+
+- `types.ts` — schematic document schema v1 in mm: sheet, layers, items (symbol, line, equipment, label, note), symbol refs `{library, key, version}`, library definitions.
+- `geometry.ts`, `sheet.ts` — mm maths, orthogonalisation, sheet sizes (ISO A4–A0, ANSI A–E), zones (`D-4`).
+- `library.ts` — 28 built-in ISA-style symbols authored on the 2.5 mm module (ports on grid, verified by test), adapter that wraps the existing user-defined SVG symbols, registry with version resolution and a placeholder for missing symbols.
+- `commands.ts`, `store.ts` — serialisable commands with exact inverses (property-tested), undo/redo stack with drag coalescing and dirty tracking.
+- `connectivity.ts` — nets from geometry, derived junction dots, dangling ends, open ports.
+- `routing.ts`, `snap.ts`, `spatial.ts` — port-to-port orthogonal routing, port → segment → grid snapping, bucket spatial index, hit testing (ports before bodies, lines on segments, equipment on its border).
+- `edit.ts` — move/rotate/mirror with rubber-band line ends and tee following, segment sliding, duplicate, tag suggestion.
+- `render.ts` — the one renderer: item markup, junctions, frame with zone strip, full-sheet SVG at paper size. The React canvas and the export use the same functions.
+- `convert.ts` — legacy React Flow graph → document (ids preserved, px → mm, edges → lines, junction nodes → tees, sections → equipment, text → labels, comments → notes).
+- `editor.ts` — tool state machines (select/move/window/crossing/segment drag, wire with port and tee landing, place with rotate/mirror ghost, label, equipment, note) and the keyboard map.
+
+Host and persistence:
+
+- `frontend/src/components/schematic/SchematicCanvas.tsx` — SVG viewport in paper space (pan, wheel zoom, keyboard), overlays for selection, ports, snap target, wire preview, window selection.
+- `frontend/src/pages/DraftingPage.tsx` — the **Drafting** page (nav entry, `/drafting`): opens a diagram's schematic document or converts its legacy graph on first open, toolbar, symbol palette, inspector, checks panel (nets, junctions, dangling ends, open ports), status bar (cursor mm, zone, zoom), SVG export, save.
+- Backend: `diagrams.schematic` JSON column (migration `0007`), `GET/PUT /diagrams/{id}/schematic` with schema validation, change-log entry, viewer read-only.
+
+Exit criteria checked:
+
+| Criterion | Result |
+|---|---|
+| Converted copy of an existing diagram renders and stays connected | Converter tests: zero dangling ends, ids preserved; browser check on a sample fill-test sheet |
+| Wire tool with auto-junction, undo | Editor tests: port → tee wire creates a junction; drags undo as one step |
+| 500 symbols + 800 line segments | Full-sheet render of the benchmark fixture in well under 2 s in CI (typically ~100 ms); pan/zoom is a single transform, item re-render is per changed item |
+| Screen and export identical | `renderDocumentSvg` is deterministic and shared; browser export re-rendered standalone matches the canvas |
+
+Known limits carried into Phase 1: no title block or generated legends yet (frame and zones only), symbols are the Phase 0 starter set, auto-routing does not avoid symbol bodies, legacy diagrams are converted per open until saved from Drafting, and the classic Diagrams page remains the default editor.
 
 ## Appendix A — Built-in symbol library scope
 

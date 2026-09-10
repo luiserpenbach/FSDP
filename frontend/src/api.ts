@@ -15,6 +15,7 @@ import type {
   Project,
   ProjectBom,
   Requirement,
+  SchematicRead,
   TraceLink,
   User
 } from "./types";
@@ -113,6 +114,12 @@ export const api = {
     requestNoContent(`/diagrams/${diagramId}`, { method: "DELETE" }),
   updateDiagramGraph: (diagramId: string, body: unknown) =>
     request<Diagram>(`/diagrams/${diagramId}/graph`, { method: "PUT", body: JSON.stringify(body) }),
+  getSchematic: (diagramId: string) => request<SchematicRead>(`/diagrams/${diagramId}/schematic`),
+  saveSchematic: (diagramId: string, document: unknown) =>
+    request<SchematicRead>(`/diagrams/${diagramId}/schematic`, {
+      method: "PUT",
+      body: JSON.stringify({ document })
+    }),
   listSymbols: () => request<PidSymbolDef[]>("/symbols"),
   createSymbol: (body: Omit<PidSymbolDef, "id" | "created_at" | "updated_at">) =>
     request<PidSymbolDef>("/symbols", { method: "POST", body: JSON.stringify(body) }),

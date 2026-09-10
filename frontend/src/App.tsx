@@ -68,6 +68,7 @@ import { LoginPage } from "./pages/LoginPage";
 import { CatalogSettingsPanel } from "./pages/CatalogSettingsPanel";
 import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout";
 import { PartsCatalog } from "./pages/PartsCatalog";
+import { DraftingPage } from "./pages/DraftingPage";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
@@ -128,6 +129,7 @@ const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
   { path: "/systems", label: "Systems", description: "Projects and fluid systems" },
   { path: "/diagrams", label: "Diagrams", description: "P&ID workspace" },
+  { path: "/drafting", label: "Drafting", description: "Paper-space P&ID editor (preview)" },
   { path: "/parts", label: "Parts Catalog", description: "Internal and vendor parts" },
   { path: "/requirements", label: "Requirements", description: "Traceable requirements" },
   { path: "/bom", label: "BoM & Procurement", description: "Snapshots and exports" },
@@ -395,6 +397,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Ready");
   const [error, setError] = useState("");
+  const notifyFromDrafting = useCallback((text: string, isError = false) => {
+    if (isError) {
+      setError(text);
+      setMessage("Action failed.");
+    } else {
+      setError("");
+      setMessage(text);
+    }
+  }, []);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
   const [graphDirty, setGraphDirty] = useState(false);
   const [nodes, setNodes, onNodesChangeBase] = useNodesState<CanvasNodeData>([]);
@@ -2194,6 +2205,19 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                 <PlaceholderCard title="Review Workflows" body="Design review packages, comments, decisions, and approval routing will live here." />
               </section>
             </PageLayout>
+          }
+        />
+        <Route
+          path="/drafting"
+          element={
+            <DraftingPage
+              diagrams={diagrams}
+              initialDiagramId={selectedDiagramId}
+              customSymbols={customSymbols}
+              user={user}
+              canWrite={user.role !== "viewer"}
+              notify={notifyFromDrafting}
+            />
           }
         />
         <Route path="/safety" element={<PlaceholderPage title="Safety" body="Hazards, trapped-volume checks, relief scenarios, and FMEA/FHA workflows will be added after the navigation foundation." />} />

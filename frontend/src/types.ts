@@ -106,6 +106,12 @@ export type Diagram = {
   };
 };
 
+export type SchematicRead = {
+  diagram_id: string;
+  revision: number;
+  document: Record<string, unknown> | null;
+};
+
 export type ComponentInstance = {
   id: string;
   diagram_id: string;

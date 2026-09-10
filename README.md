@@ -9,7 +9,7 @@ FSDP is a greenfield web platform for connected fluid-system design data. The MV
 - [Implementation guide](docs/implementation.md): repository structure, backend API, data model, frontend workflow, and verification commands.
 - [Gap analysis](docs/gap-analysis.md): verified bugs, P&ID/BoM usability gaps, authentication and deployment readiness (Vercel demo, internal server + Tailscale), and prioritized roadmap.
 - [Part catalog concept](docs/part-catalog-concept.md): proposed fully featured Parts Catalog (object model, P&ID/BoM thread, UX, phases). Not yet implemented.
-- [P&ID professional upgrade plan](docs/pid-professional-upgrade-plan.md): plan to grow the Diagrams editor into an AutoCAD/KiCad-grade P&ID tool (schematic engine, sheets and title blocks, ISA symbol library, first-class lines, tag schemes, vector/DXF export, generated lists, DRC, revision control). Not yet implemented.
+- [P&ID professional upgrade plan](docs/pid-professional-upgrade-plan.md): plan to grow the Diagrams editor into an AutoCAD/KiCad-grade P&ID tool (schematic engine, sheets and title blocks, ISA symbol library, first-class lines, tag schemes, vector/DXF export, generated lists, DRC, revision control). Phase 0 (engine and Drafting page) is delivered; later phases are not.
 
 ## Stack
 
@@ -39,6 +39,10 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
 - Create, select, update, and delete projects and fluid systems.
 - Author P&ID diagrams with an ISA-style symbol library, snap-to-grid, minimap,
   undo/redo, node renaming, and PNG export.
+- Draft P&IDs in paper space on the Drafting page (preview): mm-based sheets with
+  frames and zones, library symbols with ports, wires that connect by geometry with
+  derived junctions, rubber-band moves, undo/redo, connectivity checks, and vector
+  SVG export. Legacy diagrams convert on first open.
 - Edit line engineering data (fluid, pressure, temperature, diameter, material) per
   edge, persisted to normalized diagram edges.
 - Create, select, update, and delete catalog parts with qualification/certification

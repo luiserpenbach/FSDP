@@ -126,6 +126,10 @@ class Diagram(TimestampMixin, Base):
     diagram_type: Mapped[str] = mapped_column(String(40), nullable=False, default="pid")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     graph: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Schematic document (mm paper space) authored by the drafting editor.
+    # NULL until a diagram has been opened and saved there; the legacy React
+    # Flow `graph` stays the source for the classic editor until conversion.
+    schematic: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     system: Mapped[FluidSystem] = relationship(back_populates="diagrams")
     nodes: Mapped[list[DiagramNode]] = relationship(

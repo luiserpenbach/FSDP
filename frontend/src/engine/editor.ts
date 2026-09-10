@@ -1,0 +1,722 @@
+/**
+ * Editor session: selection, active tool, and drag state on top of a
+ * DocumentStore. Framework-free; the React canvas feeds it pointer and key
+ * events in sheet millimetres and re-renders from `snapshot`.
+ */
+import { type Command } from "./commands";
+import { computeConnectivity, indexPorts, type Connectivity, type IndexedPort } from "./connectivity";
+import {
+  dragSegment,
+  duplicateItems,
+  expandSelectionForEquipment,
+  mirrorItemsCommand,
+  moveItemsCommand,
+  rotateItemsCommand,
+  suggestTag
+} from "./edit";
+import { normalizeRotation, rectFromPoints, simplifyPolyline, snapPoint, subtract } from "./geometry";
+import { symbolPorts, type SymbolRegistry } from "./library";
+import { previewSegment } from "./routing";
+import { snapCursor, type SnapResult } from "./snap";
+import { SpatialIndex, hitTest, type Hit } from "./spatial";
+import type { DocumentStore } from "./store";
+import {
+  DEFAULT_GRID_MM,
+  type EquipmentItem,
+  type Item,
+  type LabelItem,
+  type LineItem,
+  type LineType,
+  type NoteItem,
+  type Point,
+  type Rect,
+  type Rotation,
+  type SchematicDocument,
+  type SymbolItem,
+  type SymbolRef
+} from "./types";
+
+export type ToolId = "select" | "wire" | "place" | "label" | "equipment" | "note";
+
+export type Modifiers = { shift?: boolean; ctrl?: boolean; alt?: boolean };
+
+export type DragState =
+  | { kind: "move"; ids: string[]; origin: Point; applied: Point; moved: boolean; key: string }
+  | { kind: "window"; origin: Point; current: Point }
+  | { kind: "segment"; lineId: string; index: number; key: string };
+
+export type WireState = { points: Point[]; verticalFirst: boolean; startSnap: SnapResult | null };
+
+export type PlaceState = { symbol: SymbolRef; rotation: Rotation; mirror: boolean };
+
+export type EditorState = {
+  tool: ToolId;
+  selection: string[];
+  hover: string | null;
+  cursor: Point | null;
+  snap: SnapResult | null;
+  drag: DragState | null;
+  wire: WireState | null;
+  place: PlaceState | null;
+  equipmentDraft: Rect | null;
+  lineType: LineType;
+  grid: number;
+};
+
+export type EditorSnapshot = {
+  doc: SchematicDocument;
+  state: EditorState;
+  connectivity: Connectivity;
+  version: number;
+};
+
+export type EditorOptions = { author?: string; makeId?: () => string };
+
+function defaultId(): string {
+  const cryptoApi = (globalThis as { crypto?: Crypto }).crypto;
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export class Editor {
+  private stateValue: EditorState;
+  private index: SpatialIndex;
+  private ports: IndexedPort[];
+  private connectivityValue: Connectivity;
+  private snapshotValue: EditorSnapshot;
+  private listeners = new Set<() => void>();
+  private unsubscribeStore: () => void;
+  /** Hit tolerance in mm; the host sets it from the zoom level. */
+  tolerance = 1.5;
+
+  setTolerance(mm: number): void {
+    this.tolerance = mm;
+  }
+  readonly makeId: () => string;
+
+  constructor(
+    readonly store: DocumentStore,
+    readonly registry: SymbolRegistry,
+    readonly options: EditorOptions = {}
+  ) {
+    this.makeId = options.makeId ?? defaultId;
+    this.stateValue = {
+      tool: "select",
+      selection: [],
+      hover: null,
+      cursor: null,
+      snap: null,
+      drag: null,
+      wire: null,
+      place: null,
+      equipmentDraft: null,
+      lineType: "process",
+      grid: store.doc.meta.grid ?? DEFAULT_GRID_MM
+    };
+    this.index = new SpatialIndex(store.doc, registry);
+    this.ports = indexPorts(store.doc, registry);
+    this.connectivityValue = computeConnectivity(store.doc, registry);
+    this.snapshotValue = { doc: store.doc, state: this.stateValue, connectivity: this.connectivityValue, version: 0 };
+    this.unsubscribeStore = store.subscribe(() => this.onDocumentChanged());
+  }
+
+  dispose(): void {
+    this.unsubscribeStore();
+    this.listeners.clear();
+  }
+
+  get doc(): SchematicDocument {
+    return this.store.doc;
+  }
+
+  get state(): EditorState {
+    return this.stateValue;
+  }
+
+  get snapshot(): EditorSnapshot {
+    return this.snapshotValue;
+  }
+
+  get connectivity(): Connectivity {
+    return this.connectivityValue;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private onDocumentChanged(): void {
+    this.index = new SpatialIndex(this.store.doc, this.registry);
+    this.ports = indexPorts(this.store.doc, this.registry);
+    this.connectivityValue = computeConnectivity(this.store.doc, this.registry);
+    const present = new Set(this.store.doc.items.map((item) => item.id));
+    const selection = this.stateValue.selection.filter((id) => present.has(id));
+    this.stateValue = { ...this.stateValue, selection };
+    this.emit();
+  }
+
+  private setState(patch: Partial<EditorState>): void {
+    this.stateValue = { ...this.stateValue, ...patch };
+    this.emit();
+  }
+
+  private emit(): void {
+    this.snapshotValue = {
+      doc: this.store.doc,
+      state: this.stateValue,
+      connectivity: this.connectivityValue,
+      version: this.snapshotValue.version + 1
+    };
+    this.listeners.forEach((listener) => listener());
+  }
+
+  /* ---------- Queries ---------- */
+
+  selectedItems(): Item[] {
+    const ids = new Set(this.stateValue.selection);
+    return this.store.doc.items.filter((item) => ids.has(item.id));
+  }
+
+  itemById(id: string): Item | undefined {
+    return this.store.doc.items.find((item) => item.id === id);
+  }
+
+  hitAt(point: Point): Hit | null {
+    return hitTest(this.index, point, this.tolerance);
+  }
+
+  /** Ghost symbol for the place tool, or null. */
+  ghostSymbol(): SymbolItem | null {
+    const { place, cursor } = this.stateValue;
+    if (!place || !cursor || this.stateValue.tool !== "place") return null;
+    return {
+      id: "__ghost__",
+      kind: "symbol",
+      layer: "symbols",
+      symbol: place.symbol,
+      position: cursor,
+      rotation: place.rotation,
+      mirror: place.mirror,
+      fields: {}
+    };
+  }
+
+  /** Vertices of the line being drawn, including the live preview to the cursor. */
+  wirePreview(): Point[] {
+    const { wire, cursor } = this.stateValue;
+    if (!wire) return [];
+    if (!cursor) return wire.points;
+    const last = wire.points[wire.points.length - 1];
+    return [...wire.points.slice(0, -1), ...previewSegment(last, cursor, wire.verticalFirst)];
+  }
+
+  /* ---------- Tool switching ---------- */
+
+  setTool(tool: ToolId): void {
+    this.setState({ tool, wire: null, drag: null, equipmentDraft: null, place: tool === "place" ? this.stateValue.place : null });
+  }
+
+  startPlacing(symbol: SymbolRef): void {
+    this.setState({ tool: "place", place: { symbol, rotation: 0, mirror: false }, wire: null, drag: null, selection: [] });
+  }
+
+  setLineType(lineType: LineType): void {
+    const selectedLines = this.selectedItems().filter((item): item is LineItem => item.kind === "line");
+    if (selectedLines.length) {
+      this.store.dispatch({
+        type: "batch",
+        label: "Line type",
+        commands: selectedLines.map((line) => ({
+          type: "update",
+          id: line.id,
+          patch: { lineType, layer: lineType === "process" ? "process" : "signal" }
+        }))
+      });
+    }
+    this.setState({ lineType });
+  }
+
+  setGrid(grid: number): void {
+    this.setState({ grid });
+  }
+
+  /** Escape: cancel the in-progress action, else drop back to select. */
+  cancel(): void {
+    const { wire, drag, tool, place } = this.stateValue;
+    if (wire) {
+      this.setState({ wire: null });
+      return;
+    }
+    if (drag?.kind === "segment" || drag?.kind === "move") {
+      this.store.endCoalescing();
+      this.setState({ drag: null });
+      return;
+    }
+    if (tool !== "select" || place) {
+      this.setState({ tool: "select", place: null, drag: null, equipmentDraft: null });
+      return;
+    }
+    this.setState({ selection: [] });
+  }
+
+  /* ---------- Selection commands ---------- */
+
+  select(ids: string[]): void {
+    this.setState({ selection: ids });
+  }
+
+  selectAll(): void {
+    this.setState({ selection: this.store.doc.items.map((item) => item.id) });
+  }
+
+  deleteSelection(): void {
+    if (!this.stateValue.selection.length) return;
+    this.store.dispatch({ type: "remove", ids: this.stateValue.selection });
+  }
+
+  rotateSelection(by = 90): void {
+    if (this.stateValue.tool === "place" && this.stateValue.place) {
+      this.setState({ place: { ...this.stateValue.place, rotation: normalizeRotation(this.stateValue.place.rotation + by) } });
+      return;
+    }
+    if (!this.stateValue.selection.length) return;
+    this.store.dispatch(rotateItemsCommand(this.store.doc, this.registry, this.stateValue.selection, by));
+  }
+
+  mirrorSelection(): void {
+    if (this.stateValue.tool === "place" && this.stateValue.place) {
+      this.setState({ place: { ...this.stateValue.place, mirror: !this.stateValue.place.mirror } });
+      return;
+    }
+    if (!this.stateValue.selection.length) return;
+    this.store.dispatch(mirrorItemsCommand(this.store.doc, this.registry, this.stateValue.selection));
+  }
+
+  duplicateSelection(): void {
+    if (!this.stateValue.selection.length) return;
+    const grid = this.stateValue.grid;
+    const copies = duplicateItems(this.store.doc, this.stateValue.selection, { x: grid * 4, y: grid * 4 }, this.makeId);
+    this.store.dispatch({ type: "add", items: copies });
+    this.setState({ selection: copies.map((item) => item.id) });
+  }
+
+  nudgeSelection(delta: Point): void {
+    if (!this.stateValue.selection.length) return;
+    this.store.dispatch(moveItemsCommand(this.store.doc, this.registry, this.stateValue.selection, delta));
+  }
+
+  updateItem(id: string, patch: Record<string, unknown>): void {
+    this.store.dispatch({ type: "update", id, patch });
+  }
+
+  updateSelection(patch: Record<string, unknown>): void {
+    const commands: Command[] = this.stateValue.selection.map((id) => ({ type: "update", id, patch }));
+    this.store.dispatch({ type: "batch", commands, label: "Edit" });
+  }
+
+  /* ---------- Pointer events (sheet mm) ---------- */
+
+  pointerMove(raw: Point, modifiers: Modifiers = {}): void {
+    const grid = this.stateValue.grid;
+    const state = this.stateValue;
+    switch (state.tool) {
+      case "wire": {
+        const snap = snapCursor(this.store.doc, this.ports, raw, {
+          grid,
+          portRadius: this.tolerance * 1.5,
+          segmentRadius: this.tolerance
+        });
+        this.setState({ cursor: snap.point, snap });
+        return;
+      }
+      case "place":
+      case "label":
+      case "note": {
+        this.setState({ cursor: snapPoint(raw, grid), snap: null });
+        return;
+      }
+      case "equipment": {
+        const cursor = snapPoint(raw, grid);
+        if (state.drag?.kind === "window") {
+          this.setState({ cursor, drag: { ...state.drag, current: cursor }, equipmentDraft: rectFromPoints(state.drag.origin, cursor) });
+        } else {
+          this.setState({ cursor });
+        }
+        return;
+      }
+      default:
+        this.selectToolMove(raw, modifiers);
+    }
+  }
+
+  private selectToolMove(raw: Point, modifiers: Modifiers): void {
+    const state = this.stateValue;
+    const grid = state.grid;
+    const drag = state.drag;
+    if (!drag) {
+      const hit = this.hitAt(raw);
+      this.setState({ cursor: raw, hover: hit?.item.id ?? null });
+      return;
+    }
+    if (drag.kind === "window") {
+      this.setState({ cursor: raw, drag: { ...drag, current: raw } });
+      return;
+    }
+    if (drag.kind === "segment") {
+      const line = this.itemById(drag.lineId);
+      if (!line || line.kind !== "line") return;
+      const a = line.points[drag.index];
+      const b = line.points[drag.index + 1];
+      if (!a || !b) return;
+      const horizontal = a.y === b.y;
+      const coordinate = modifiers.alt ? (horizontal ? raw.y : raw.x) : (horizontal ? snapPoint(raw, grid).y : snapPoint(raw, grid).x);
+      const points = dragSegment(line.points, drag.index, coordinate);
+      this.store.dispatch({ type: "set-points", id: line.id, points }, { coalesceKey: drag.key });
+      // Re-resolve the segment index after simplification: pick the segment at the new coordinate.
+      const updated = this.itemById(drag.lineId);
+      if (updated && updated.kind === "line") {
+        const index = updated.points.findIndex((point, i) => {
+          const next = updated.points[i + 1];
+          return next && (horizontal ? point.y === coordinate && next.y === coordinate : point.x === coordinate && next.x === coordinate);
+        });
+        if (index >= 0 && index !== drag.index) this.setState({ drag: { ...drag, index }, cursor: raw });
+        else this.setState({ cursor: raw });
+      }
+      return;
+    }
+    // Move drag: apply grid-multiple deltas incrementally so lines follow.
+    const wanted = modifiers.alt ? subtract(raw, drag.origin) : snapPoint(subtract(raw, drag.origin), grid);
+    const step = subtract(wanted, drag.applied);
+    if (step.x === 0 && step.y === 0) {
+      this.setState({ cursor: raw });
+      return;
+    }
+    this.store.dispatch(moveItemsCommand(this.store.doc, this.registry, drag.ids, step), { coalesceKey: drag.key });
+    this.setState({ cursor: raw, drag: { ...drag, applied: wanted, moved: true } });
+  }
+
+  pointerDown(raw: Point, modifiers: Modifiers = {}): void {
+    const state = this.stateValue;
+    switch (state.tool) {
+      case "wire":
+        this.wireClick(raw);
+        return;
+      case "place":
+        this.placeClick(raw);
+        return;
+      case "label":
+        this.addLabel(snapPoint(raw, state.grid));
+        return;
+      case "note":
+        this.addNote(snapPoint(raw, state.grid));
+        return;
+      case "equipment": {
+        const origin = snapPoint(raw, state.grid);
+        this.setState({ drag: { kind: "window", origin, current: origin }, equipmentDraft: null });
+        return;
+      }
+      default:
+        this.selectToolDown(raw, modifiers);
+    }
+  }
+
+  private selectToolDown(raw: Point, modifiers: Modifiers): void {
+    const state = this.stateValue;
+    const hit = this.hitAt(raw);
+    if (!hit) {
+      if (!modifiers.shift) this.setState({ selection: [] });
+      this.setState({ drag: { kind: "window", origin: raw, current: raw } });
+      return;
+    }
+    const id = hit.item.id;
+    const alreadySelected = state.selection.includes(id);
+    let selection = state.selection;
+    if (modifiers.shift) {
+      selection = alreadySelected ? selection.filter((entry) => entry !== id) : [...selection, id];
+      this.setState({ selection });
+      return;
+    }
+    if (!alreadySelected) selection = [id];
+    // Dragging a segment of a single selected line slides that segment.
+    if (hit.item.kind === "line" && hit.part.type === "segment" && selection.length === 1 && selection[0] === id) {
+      this.setState({ selection, drag: { kind: "segment", lineId: id, index: hit.part.index, key: `segment-${Date.now()}` } });
+      return;
+    }
+    const ids = expandSelectionForEquipment(this.store.doc, this.registry, selection);
+    this.setState({
+      selection,
+      drag: { kind: "move", ids, origin: raw, applied: { x: 0, y: 0 }, moved: false, key: `move-${Date.now()}` }
+    });
+  }
+
+  pointerUp(raw: Point, modifiers: Modifiers = {}): void {
+    const state = this.stateValue;
+    const drag = state.drag;
+    if (!drag) return;
+    if (state.tool === "equipment" && drag.kind === "window") {
+      const rect = rectFromPoints(drag.origin, snapPoint(raw, state.grid));
+      this.setState({ drag: null, equipmentDraft: null });
+      if (rect.width >= state.grid * 2 && rect.height >= state.grid * 2) this.addEquipment(rect);
+      return;
+    }
+    if (drag.kind === "window") {
+      const rect = rectFromPoints(drag.origin, raw);
+      const crossing = raw.x < drag.origin.x;
+      const picked = rect.width < 0.5 && rect.height < 0.5
+        ? []
+        : (crossing ? this.index.query(rect) : this.index.queryContained(rect)).map((item) => item.id);
+      const selection = modifiers.shift ? [...new Set([...state.selection, ...picked])] : picked;
+      this.setState({ drag: null, selection });
+      return;
+    }
+    this.store.endCoalescing();
+    if (drag.kind === "move" && !drag.moved) {
+      // A plain click on an already-selected group narrows the selection to the clicked item.
+      const hit = this.hitAt(raw);
+      if (hit && state.selection.length > 1) this.setState({ drag: null, selection: [hit.item.id] });
+      else this.setState({ drag: null });
+      return;
+    }
+    this.setState({ drag: null });
+  }
+
+  doubleClick(raw: Point): void {
+    if (this.stateValue.tool === "wire" && this.stateValue.wire) {
+      this.finishWire(this.stateValue.wire.points.length >= 2 ? undefined : snapPoint(raw, this.stateValue.grid));
+    }
+  }
+
+  /* ---------- Wire tool ---------- */
+
+  private wireClick(raw: Point): void {
+    const state = this.stateValue;
+    const snap = snapCursor(this.store.doc, this.ports, raw, {
+      grid: state.grid,
+      portRadius: this.tolerance * 1.5,
+      segmentRadius: this.tolerance
+    });
+    if (!state.wire) {
+      this.setState({ cursor: snap.point, snap, wire: { points: [snap.point], verticalFirst: false, startSnap: snap } });
+      return;
+    }
+    const preview = this.wirePreview();
+    const points = simplifyPolyline(preview);
+    const landed = snap.kind !== "grid";
+    if (landed && points.length >= 2) {
+      this.finishWire(undefined, points);
+      return;
+    }
+    this.setState({ cursor: snap.point, snap, wire: { ...state.wire, points } });
+  }
+
+  toggleWireBend(): void {
+    const { wire } = this.stateValue;
+    if (wire) this.setState({ wire: { ...wire, verticalFirst: !wire.verticalFirst } });
+  }
+
+  /** Commit the wire in progress (Enter / double-click / landing on a port). */
+  finishWire(extraPoint?: Point, pointsOverride?: Point[]): void {
+    const state = this.stateValue;
+    if (!state.wire) return;
+    const raw = pointsOverride ?? (extraPoint ? [...state.wire.points, extraPoint] : state.wire.points);
+    const points = simplifyPolyline(raw);
+    if (points.length < 2) {
+      this.setState({ wire: null });
+      return;
+    }
+    const startPort = state.wire.startSnap?.kind === "port" ? this.portKind(state.wire.startSnap.itemId, state.wire.startSnap.portId) : null;
+    const endSnap = state.snap;
+    const endPort = endSnap?.kind === "port" ? this.portKind(endSnap.itemId, endSnap.portId) : null;
+    const lineType: LineType = state.lineType === "process" && (startPort === "signal" || endPort === "signal") ? "signal_electric" : state.lineType;
+    const line: LineItem = {
+      id: this.makeId(),
+      kind: "line",
+      layer: lineType === "process" ? "process" : "signal",
+      points,
+      lineType,
+      showArrow: false,
+      fields: {}
+    };
+    this.store.dispatch({ type: "add", items: [line] });
+    this.setState({ wire: null, selection: [line.id] });
+  }
+
+  private portKind(itemId: string, portId: string): "process" | "signal" | "nozzle" | null {
+    const item = this.itemById(itemId);
+    if (!item || item.kind !== "symbol") return null;
+    const port = symbolPorts(item, this.registry.resolve(item.symbol)).find((entry) => entry.id === portId);
+    return port?.kind ?? null;
+  }
+
+  /* ---------- Place / label / note / equipment ---------- */
+
+  private placeClick(raw: Point): void {
+    const state = this.stateValue;
+    if (!state.place) return;
+    const position = snapPoint(raw, state.grid);
+    const definition = this.registry.resolve(state.place.symbol);
+    const item: SymbolItem = {
+      id: this.makeId(),
+      kind: "symbol",
+      layer: "symbols",
+      symbol: state.place.symbol,
+      position,
+      rotation: state.place.rotation,
+      mirror: state.place.mirror || undefined,
+      tag: definition.tagPrefix ? suggestTag(this.store.doc, definition.tagPrefix) : undefined,
+      fields: {}
+    };
+    this.store.dispatch({ type: "add", items: [item] });
+    this.setState({ selection: [item.id], cursor: position });
+  }
+
+  addSymbolAt(symbol: SymbolRef, position: Point): SymbolItem {
+    const definition = this.registry.resolve(symbol);
+    const item: SymbolItem = {
+      id: this.makeId(),
+      kind: "symbol",
+      layer: "symbols",
+      symbol,
+      position: snapPoint(position, this.stateValue.grid),
+      rotation: 0,
+      tag: definition.tagPrefix ? suggestTag(this.store.doc, definition.tagPrefix) : undefined,
+      fields: {}
+    };
+    this.store.dispatch({ type: "add", items: [item] });
+    this.setState({ selection: [item.id] });
+    return item;
+  }
+
+  private addLabel(position: Point): void {
+    const item: LabelItem = {
+      id: this.makeId(),
+      kind: "label",
+      layer: "annotation",
+      position,
+      text: "TEXT",
+      fontSize: 2.5,
+      rotation: 0,
+      anchor: "start"
+    };
+    this.store.dispatch({ type: "add", items: [item] });
+    this.setState({ selection: [item.id], tool: "select" });
+  }
+
+  private addNote(position: Point): void {
+    const item: NoteItem = {
+      id: this.makeId(),
+      kind: "note",
+      layer: "notes",
+      position,
+      text: "",
+      author: this.options.author,
+      createdAt: new Date().toISOString()
+    };
+    this.store.dispatch({ type: "add", items: [item] });
+    this.setState({ selection: [item.id], tool: "select" });
+  }
+
+  private addEquipment(rect: Rect): void {
+    const item: EquipmentItem = {
+      id: this.makeId(),
+      kind: "equipment",
+      layer: "equipment",
+      position: { x: rect.x, y: rect.y },
+      size: { width: rect.width, height: rect.height },
+      name: "EQUIPMENT",
+      boundary: "dashed",
+      fields: {}
+    };
+    // Equipment goes to the back so its contents stay clickable and draw on top.
+    this.store.dispatch({ type: "add", items: [item], indices: [0] });
+    this.setState({ selection: [item.id], tool: "select" });
+  }
+
+  /* ---------- Keyboard ---------- */
+
+  /** Returns true when the key was consumed. */
+  key(key: string, modifiers: Modifiers = {}): boolean {
+    const grid = this.stateValue.grid;
+    switch (key) {
+      case "Escape":
+        this.cancel();
+        return true;
+      case "Delete":
+      case "Backspace":
+        this.deleteSelection();
+        return true;
+      case "r":
+      case "R":
+        this.rotateSelection(modifiers.shift ? -90 : 90);
+        return true;
+      case "x":
+      case "X":
+        this.mirrorSelection();
+        return true;
+      case "w":
+      case "W":
+        this.setTool("wire");
+        return true;
+      case "v":
+      case "V":
+      case "s":
+      case "S":
+        this.setTool("select");
+        return true;
+      case "t":
+      case "T":
+        this.setTool("label");
+        return true;
+      case "e":
+      case "E":
+        this.setTool("equipment");
+        return true;
+      case "n":
+      case "N":
+        this.setTool("note");
+        return true;
+      case " ":
+      case "Tab":
+        if (this.stateValue.wire) {
+          this.toggleWireBend();
+          return true;
+        }
+        return false;
+      case "Enter":
+        if (this.stateValue.wire) {
+          this.finishWire();
+          return true;
+        }
+        return false;
+      case "a":
+      case "A":
+        if (modifiers.ctrl) {
+          this.selectAll();
+          return true;
+        }
+        return false;
+      case "d":
+      case "D":
+        if (modifiers.ctrl) {
+          this.duplicateSelection();
+          return true;
+        }
+        return false;
+      case "ArrowLeft":
+        this.nudgeSelection({ x: -grid, y: 0 });
+        return true;
+      case "ArrowRight":
+        this.nudgeSelection({ x: grid, y: 0 });
+        return true;
+      case "ArrowUp":
+        this.nudgeSelection({ x: 0, y: -grid });
+        return true;
+      case "ArrowDown":
+        this.nudgeSelection({ x: 0, y: grid });
+        return true;
+      default:
+        return false;
+    }
+  }
+}

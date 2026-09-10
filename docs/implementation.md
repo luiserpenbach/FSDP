@@ -21,6 +21,9 @@ FSDP/
       api.ts                 Frontend API client
       types.ts               Frontend domain types
       styles.css             Application styles
+      engine/                Schematic engine (paper-space P&ID document model, tools, renderer)
+      components/schematic/  React host for the engine (SVG viewport)
+      pages/DraftingPage.tsx Drafting page (preview editor built on the engine)
   docs/
     architecture.md          Architecture overview
     implementation.md        Current implementation guide
@@ -315,3 +318,17 @@ Current backend tests cover:
 4. Add relief valve sizing with stored assumptions and calculation reports.
 5. Add verification matrix views from requirements and trace links.
 6. Add release/baseline snapshots for diagrams, BoMs, requirements, and analyses.
+
+## Schematic Engine (Drafting page)
+
+The Drafting page is the first slice of the [P&ID professional upgrade plan](pid-professional-upgrade-plan.md). It is built on a framework-free TypeScript engine in `frontend/src/engine/`:
+
+- **Document** (`types.ts`): JSON schema v1 in paper-space millimetres. Items are symbols (library references pinned to a version), lines (orthogonal polylines), equipment boundaries, labels, and review notes. Connectivity is derived from geometry: a line end on a port or on another line is connected (`connectivity.ts`), and junction dots are computed, never drawn.
+- **Commands** (`commands.ts`, `store.ts`): every edit is a serialisable command with an exact inverse; the store keeps undo/redo and dirtiness. Drags coalesce into one undo step.
+- **Renderer** (`render.ts`): one renderer produces SVG markup for the canvas and for export at paper size (`renderDocumentSvg`), so the screen and the file never drift.
+- **Editor** (`editor.ts`): tool state machines for select/move, wire, place, label, equipment, and note, driven by pointer events in mm and a KiCad-style key map (W wire, R rotate, X mirror, Esc cancel, Ctrl+D duplicate, arrows nudge).
+- **Converter** (`convert.ts`): turns a legacy React Flow `graph` into a document on first open; item ids are preserved so component bindings keep lining up.
+
+Persistence: `GET/PUT /diagrams/{id}/schematic` stores the document in `diagrams.schematic` (migration `0007`). The classic Diagrams page keeps using `graph`; a diagram opened in Drafting is converted until it is saved there.
+
+Tests: `npx vitest run src/engine` covers geometry, library grid conformance, undo/redo (including a randomised inverse property), connectivity, routing, snapping, hit testing, conversion, rendering, and the editor tools; `src/pages/DraftingPage.test.tsx` covers open/convert/save and inspector editing; `backend/tests/test_schematic.py` covers the API.
