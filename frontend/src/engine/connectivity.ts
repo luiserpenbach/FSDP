@@ -8,7 +8,8 @@
  */
 import { EPSILON, closestPointOnSegment, pointKey, pointsEqual } from "./geometry";
 import { type SymbolRegistry, type WorldPort } from "./library";
-import type { LineItem, Point, SchematicDocument, SymbolItem } from "./types";
+import { computeCrossings } from "./lines";
+import type { EquipmentItem, LineItem, Point, SchematicDocument, SymbolItem } from "./types";
 
 export type PortRef = { itemId: string; portId: string };
 
@@ -44,7 +45,20 @@ export type Connectivity = {
   danglingEnds: LineEnd[];
   /** Ports with no line attached. */
   openPorts: IndexedPort[];
+  /** Hop points per line id where it crosses an unconnected line. */
+  crossings: Map<string, Point[]>;
 };
+
+/** Nozzles of an equipment boundary as ports in sheet coordinates. */
+export function equipmentPorts(item: EquipmentItem): WorldPort[] {
+  return (item.nozzles ?? []).map((nozzle) => ({
+    id: nozzle.id,
+    position: { x: item.position.x + nozzle.x, y: item.position.y + nozzle.y },
+    side: nozzle.side,
+    kind: "nozzle" as const,
+    size: nozzle.size
+  }));
+}
 
 export function portMapKey(itemId: string, portId: string): string {
   return `${itemId}:${portId}`;
@@ -54,8 +68,11 @@ export function portMapKey(itemId: string, portId: string): string {
 export function indexPorts(doc: SchematicDocument, registry: SymbolRegistry): IndexedPort[] {
   const ports: IndexedPort[] = [];
   for (const item of doc.items) {
-    if (item.kind !== "symbol") continue;
-    for (const port of registry.portsOf(item as SymbolItem)) ports.push({ ...port, itemId: item.id });
+    if (item.kind === "symbol") {
+      for (const port of registry.portsOf(item as SymbolItem)) ports.push({ ...port, itemId: item.id });
+    } else if (item.kind === "equipment") {
+      for (const port of equipmentPorts(item)) ports.push({ ...port, itemId: item.id });
+    }
   }
   return ports;
 }
@@ -205,5 +222,7 @@ export function computeConnectivity(doc: SchematicDocument, registry: SymbolRegi
   const danglingEnds = lineEnds.filter((end) => end.attachments.length === 0);
   const openPorts = ports.filter((port) => !usedPorts.has(portMapKey(port.itemId, port.id)));
 
-  return { nets, junctions, lineNet, portNet, lineEnds, danglingEnds, openPorts };
+  const crossings = computeCrossings(lines);
+
+  return { nets, junctions, lineNet, portNet, lineEnds, danglingEnds, openPorts, crossings };
 }

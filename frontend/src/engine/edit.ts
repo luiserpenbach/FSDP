@@ -13,7 +13,7 @@ import {
   rectContainsRect,
   simplifyPolyline
 } from "./geometry";
-import { locateOnLine } from "./connectivity";
+import { equipmentPorts, locateOnLine } from "./connectivity";
 import { type SymbolRegistry } from "./library";
 import { itemBounds } from "./spatial";
 import type { Item, LineItem, Point, Rotation, SchematicDocument, SymbolItem } from "./types";
@@ -119,9 +119,15 @@ export function moveItemsCommand(doc: SchematicDocument, registry: SymbolRegistr
   const moved = new Set(ids);
   const portMoves = new Map<string, Point>();
   for (const item of doc.items) {
-    if (!moved.has(item.id) || item.kind !== "symbol") continue;
-    const after = translateItem(item, delta) as SymbolItem;
-    for (const [key, target] of portMovesFor(doc, registry, item, after)) portMoves.set(key, target);
+    if (!moved.has(item.id)) continue;
+    if (item.kind === "symbol") {
+      const after = translateItem(item, delta) as SymbolItem;
+      for (const [key, target] of portMovesFor(doc, registry, item, after)) portMoves.set(key, target);
+    } else if (item.kind === "equipment") {
+      for (const port of equipmentPorts(item)) {
+        portMoves.set(pointKey(port.position), { x: port.position.x + delta.x, y: port.position.y + delta.y });
+      }
+    }
   }
   const commands: Command[] = [{ type: "move", ids, delta }];
   commands.push(...retargetAttachedLines(doc, portMoves, moved));

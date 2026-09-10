@@ -12,6 +12,7 @@ import type {
   DrawingSheet,
   FluidSystem,
   Impact,
+  LineClass,
   Part,
   PartUsage,
   PidSymbolDef,
@@ -161,6 +162,17 @@ export const api = {
     const match = /filename="([^"]+)"/.exec(disposition);
     return { blob: await response.blob(), filename: match?.[1] ?? `sheet.${body.format}` };
   },
+  listLineClasses: (projectId: string) => request<LineClass[]>(`/projects/${projectId}/line-classes`),
+  createLineClass: (projectId: string, body: Partial<Omit<LineClass, "id" | "project_id" | "created_at" | "updated_at">> & { name: string }) =>
+    request<LineClass>(`/projects/${projectId}/line-classes`, { method: "POST", body: JSON.stringify(body) }),
+  updateLineClass: (lineClassId: string, body: Partial<Omit<LineClass, "id" | "project_id" | "created_at" | "updated_at">>) =>
+    request<LineClass>(`/line-classes/${lineClassId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteLineClass: (lineClassId: string) => requestNoContent(`/line-classes/${lineClassId}`, { method: "DELETE" }),
+  importLineClasses: (projectId: string, csv: string, replace = false) =>
+    request<{ created: number; updated: number; errors: string[] }>(`/projects/${projectId}/line-classes/import`, {
+      method: "POST",
+      body: JSON.stringify({ csv, replace })
+    }),
   getTagScheme: (projectId: string) => request<TagSchemeRead>(`/projects/${projectId}/tag-scheme`),
   updateTagScheme: (projectId: string, scheme: unknown) =>
     request<TagSchemeRead>(`/projects/${projectId}/tag-scheme`, { method: "PUT", body: JSON.stringify({ scheme }) }),

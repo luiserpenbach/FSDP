@@ -488,6 +488,76 @@ class PidSymbolRead(OrmModel):
     updated_at: datetime
 
 
+class LineClassCreate(BaseModel):
+    name: str
+    description: str | None = None
+    material: str | None = None
+    rating: str | None = None
+    wall: str | None = None
+    sizes: list[str] = Field(default_factory=list)
+    insulation: str | None = None
+    notes: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("sizes")
+    @classmethod
+    def _sizes(cls, value: list[str]) -> list[str]:
+        cleaned = [str(entry).strip() for entry in value if str(entry).strip()]
+        return list(dict.fromkeys(cleaned))
+
+
+class LineClassUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    material: str | None = None
+    rating: str | None = None
+    wall: str | None = None
+    sizes: list[str] | None = None
+    insulation: str | None = None
+    notes: str | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+
+class LineClassRead(OrmModel):
+    id: str
+    project_id: str
+    name: str
+    description: str | None
+    material: str | None
+    rating: str | None
+    wall: str | None
+    sizes: list[str]
+    insulation: str | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class LineClassImportIn(BaseModel):
+    """CSV text with a header row.
+
+    Columns: name, material, rating, wall, sizes (semicolon separated), insulation,
+    description, notes.
+    """
+
+    csv: str
+    replace: bool = False
+
+
+class LineClassImportRead(BaseModel):
+    created: int
+    updated: int
+    errors: list[str]
+
+
 class TagSchemeIn(BaseModel):
     scheme: dict[str, Any]
 

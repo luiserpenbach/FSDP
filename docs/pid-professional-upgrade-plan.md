@@ -1,6 +1,6 @@
 # P&ID Designer Upgrade Plan — From PFD Sketchpad to Professional Process Engineering Tool
 
-Status: approved 2026-09-10; Phases 0–2 delivered (see §12). Phases 3–6 not yet implemented.
+Status: approved 2026-09-10; Phases 0–3 delivered (see §12). Phases 4–6 not yet implemented.
 Audience: product, propulsion/test engineering, and whoever builds the editor.
 
 This plan describes how the FSDP Diagrams page grows from the current React Flow sketchpad into a professional P&ID authoring and export tool that combines the drafting rigor of AutoCAD / AutoCAD P&ID, the library-and-connectivity discipline of KiCad's schematic editor, and FSDP's existing hardware, BoM, and requirements thread.
@@ -453,6 +453,24 @@ Deviations: symbol versioning is in place (instances pin `{library, key, version
 Exit criteria: every symbol family on the AMB2-9003 legend is in the library (asserted by test); `PT 3222` and `HV 4201` validate under the reference scheme, `HV-4201` and `HV 5201` are rejected with reasons (asserted by test); checked in the browser on an E-size sheet with composed actuators, instrument styles, structured tags, renumbering, and both legends exported.
 
 Known limits carried into Phase 3: the symbol legend and letter table have fixed positions (bottom-left and top-right) and can overlap content placed there; actuator glyphs are drawn upright relative to the body and rotate with it; terminator captions (`VENT`) are tags and get flagged under strict schemes, so use the label field for them until Phase 3 makes terminators first-class connectors.
+
+### Phase 3 — Lines, equipment, connectors — ✅ delivered 2026-09-10
+
+Delivered:
+
+- **Lines as engineering objects** (`frontend/src/engine/lines.ts`, `types.ts`): line class, insulation, tracing, design and operating pressure/temperature, and from/to derived from what the ends touch (symbol tag and port, equipment nozzle, or tee). The renderer prints the line number above and `size spec` below the longest segment, and draws **inline annotations that follow the line**: spec labels, size-change markers, spec breaks, mid-line flow arrows, and notes, positioned at a fraction of the line's length.
+- **Crossings**: unconnected lines that cross are detected in connectivity and drawn with a hop on the horizontal line, so crossings never read as tees.
+- **Line classes** (`line_classes` table, migration `0010`, `/projects/{id}/line-classes` CRUD and CSV import): project pipe/tube specs with material, rating, wall, and the sizes they come in. Picking a class in the inspector fills spec, insulation, and size; a Settings panel manages classes and imports CSV.
+- **Line legend**: one sample stroke per (line type, service) used on the sheet, switched on per drawing with the other legends.
+- **Equipment nozzles**: equipment boundaries carry nozzles (side, position, size) that act as ports for wiring, move with the boundary, show in the checks as open/connected, and print as stubs with size labels.
+- **Off-page connectors** (`frontend/src/engine/connectors.ts`): connectors carry a pair reference; the page loads the drawing's other sheets and resolves each connector to `SHT n / zone` of its pair, printed inside the flag on canvas and in exports; unmatched connectors are counted in the checks.
+- **Drafting ergonomics**: align (edges and centres) and distribute (horizontal/vertical) with attached lines following, copy/paste (Ctrl+C/V) with new ids and re-suggested tags, find by tag/line number/name, and a measure tool (M) with distance and deltas.
+
+Deviations: groups are not a separate item kind (equipment boundaries carry their contents on move, and multi-select covers the rest); vacuum-jacketed lines are a symbol and a spec rather than a dedicated line type. Auto-routing still does not avoid symbol bodies.
+
+Exit criteria: the reference slice (helium fill line with specs and annotations, vacuum chamber boundary with the storage tank nested inside and nozzled, PSV/PT tee, signal loop crossing a process line, off-page vent connector paired to sheet 2) was drawn and exported in the browser; `lines.test.ts` covers positions along lines, crossings versus tees, endpoint descriptions, legend entries, annotation rendering, nozzle connectivity and moves, connector resolution across sheets, align/distribute, clipboard, find, and measure.
+
+Known limits carried into Phase 4: annotations are placed by a fraction along the line in the inspector rather than by clicking on the line; the from/to description is computed on the fly and not yet stored for the line list; connector resolution reads other sheets when the drawing opens and after a sheet switch, so a connector added on another sheet in the same session shows after reopening.
 
 ## Appendix A — Built-in symbol library scope
 

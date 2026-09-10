@@ -11,7 +11,7 @@ import { api } from "../api";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
 import { convertLegacyGraph } from "../engine/convert";
-import { Editor, type ToolId } from "../engine/editor";
+import { Editor, type AlignMode, type ToolId } from "../engine/editor";
 import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
 import { polylineLength } from "../engine/geometry";
 import { SymbolRegistry } from "../engine/library";
@@ -19,8 +19,10 @@ import { LINE_TYPE_LABELS, renderDocumentSvg } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
 import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, validateTag, type TagScheme } from "../engine/tags";
-import type { Item, LineType, Point, Rotation, SchematicDocument, SheetSizeId, SymbolDef } from "../engine/types";
-import type { Diagram, Drawing, DrawingRevision, FluidSystem, PidSymbolDef, User } from "../types";
+import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
+import { lineEndpoints, lineLegendEntries } from "../engine/lines";
+import type { Item, LineAnnotation, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef } from "../engine/types";
+import type { Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, PidSymbolDef, User } from "../types";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
@@ -43,7 +45,8 @@ const TOOLS: Array<{ id: ToolId; label: string; key: string }> = [
   { id: "wire", label: "Wire", key: "W" },
   { id: "label", label: "Text", key: "T" },
   { id: "equipment", label: "Equipment", key: "E" },
-  { id: "note", label: "Note", key: "N" }
+  { id: "note", label: "Note", key: "N" },
+  { id: "measure", label: "Measure", key: "M" }
 ];
 
 const ROTATIONS: Rotation[] = [0, 90, 180, 270];
@@ -133,19 +136,30 @@ export function usedSymbols(document: SchematicDocument, registry: SymbolRegistr
   return [...counts.values()].sort((a, b) => a.definition.category.localeCompare(b.definition.category) || a.definition.name.localeCompare(b.definition.name));
 }
 
-export function legendFlags(drawing: Drawing | null): { symbols: boolean; letters: boolean } {
+export type LegendFlags = { symbols: boolean; letters: boolean; lines: boolean };
+
+export function legendFlags(drawing: Drawing | null): LegendFlags {
   const raw = stringField(drawing?.fields, "legends") ?? "";
-  return { symbols: raw.includes("symbols"), letters: raw.includes("letters") };
+  return { symbols: raw.includes("symbols"), letters: raw.includes("letters"), lines: raw.includes("lines") };
 }
 
 /** Add the generated legend blocks the drawing asks for. */
-export function withLegends(base: DrawingContext, document: SchematicDocument, registry: SymbolRegistry, scheme: TagScheme, flags: { symbols: boolean; letters: boolean }): DrawingContext {
-  if (!flags.symbols && !flags.letters) return base;
+export function withLegends(
+  base: DrawingContext,
+  document: SchematicDocument,
+  registry: SymbolRegistry,
+  scheme: TagScheme,
+  flags: LegendFlags,
+  connectorTargets?: Record<string, string>
+): DrawingContext {
+  const withTargets = connectorTargets ? { ...base, connectorTargets } : base;
+  if (!flags.symbols && !flags.letters && !flags.lines) return withTargets;
   return {
-    ...base,
+    ...withTargets,
     legends: {
       symbols: flags.symbols ? usedSymbols(document, registry) : undefined,
-      letters: flags.letters ? { first: scheme.firstLetters, succeeding: scheme.succeedingLetters } : undefined
+      letters: flags.letters ? { first: scheme.firstLetters, succeeding: scheme.succeedingLetters } : undefined,
+      lines: flags.lines ? lineLegendEntries(document) : undefined
     }
   };
 }
@@ -157,6 +171,8 @@ function DrawingCanvas({
   baseContext,
   scheme,
   flags,
+  sheetNo,
+  otherSheets,
   canvasRef,
   onCursor,
   onViewport
@@ -166,17 +182,20 @@ function DrawingCanvas({
   showGrid: boolean;
   baseContext: DrawingContext | undefined;
   scheme: TagScheme;
-  flags: { symbols: boolean; letters: boolean };
+  flags: LegendFlags;
+  sheetNo: number;
+  otherSheets: SheetDoc[];
   canvasRef: React.RefObject<SchematicCanvasHandle | null>;
   onCursor: (point: Point | null) => void;
   onViewport: (viewport: Viewport) => void;
 }) {
   const { doc } = useEditorSnapshot(editor);
+  const connectorTargets = useMemo(() => resolveConnectorTargets({ sheetNo, doc }, otherSheets).targets, [doc, sheetNo, otherSheets]);
   const context = useMemo(
-    () => (baseContext ? withLegends(baseContext, doc, registry, scheme, flags) : undefined),
-    [baseContext, doc, registry, scheme, flags]
+    () => (baseContext ? withLegends(baseContext, doc, registry, scheme, flags, connectorTargets) : undefined),
+    [baseContext, doc, registry, scheme, flags, connectorTargets]
   );
-  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} onCursor={onCursor} onViewport={onViewport} />;
+  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} onCursor={onCursor} onViewport={onViewport} />;
 }
 
 export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, user, canWrite, notify }: Props) {
@@ -192,6 +211,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [cursor, setCursor] = useState<Point | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [tagScheme, setTagScheme] = useState<TagScheme>(DEFAULT_TAG_SCHEME);
+  const [lineClasses, setLineClasses] = useState<LineClass[]>([]);
+  const [otherSheets, setOtherSheets] = useState<SheetDoc[]>([]);
   const [showLibrary, setShowLibrary] = useState(true);
   const canvasRef = useRef<SchematicCanvasHandle>(null);
   const registry = useMemo(() => SymbolRegistry.withBuiltins(customSymbols), [customSymbols]);
@@ -263,6 +284,47 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   useEffect(() => {
     editor?.setTagScheme(tagScheme);
   }, [editor, tagScheme]);
+
+  // Project line classes for the line inspector.
+  useEffect(() => {
+    let cancelled = false;
+    if (!projectId) {
+      setLineClasses([]);
+      return;
+    }
+    api
+      .listLineClasses(projectId)
+      .then((list) => {
+        if (!cancelled) setLineClasses(list);
+      })
+      .catch(() => {
+        if (!cancelled) setLineClasses([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // Other sheets of the drawing, for off-page connector references.
+  useEffect(() => {
+    let cancelled = false;
+    const others = drawing?.sheets.filter((entry) => entry.id !== sheetId) ?? [];
+    if (!others.length) {
+      setOtherSheets([]);
+      return;
+    }
+    Promise.all(others.map((entry) => api.getSheet(entry.id).then((sheet) => ({ sheetNo: sheet.sheet_no, doc: sheet.document as unknown as SchematicDocument }))))
+      .then((docs) => {
+        if (!cancelled) setOtherSheets(docs);
+      })
+      .catch(() => {
+        if (!cancelled) setOtherSheets([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawing?.id, drawing?.sheets.map((entry) => entry.id).join(","), sheetId]);
 
   // Select the first sheet of the current drawing.
   useEffect(() => {
@@ -343,10 +405,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     if (!editor || !sheetId || !context) return;
     setExporting(true);
     try {
+      const connectorTargets = resolveConnectorTargets({ sheetNo: sheetSummary?.sheet_no ?? 1, doc: editor.store.doc }, otherSheets).targets;
       const svg = renderDocumentSvg(editor.store.doc, registry, {
         standalone: true,
         background: "#ffffff",
-        context: withLegends(context, editor.store.doc, registry, tagScheme, flags)
+        context: withLegends(context, editor.store.doc, registry, tagScheme, flags, connectorTargets)
       });
       const { blob, filename } = await api.exportSheet(sheetId, { svg, format, dpi: 300 });
       downloadBlob(filename, blob);
@@ -570,6 +633,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
               baseContext={context}
               scheme={tagScheme}
               flags={flags}
+              sheetNo={sheetSummary?.sheet_no ?? 1}
+              otherSheets={otherSheets}
               canvasRef={canvasRef}
               onCursor={setCursor}
               onViewport={setViewport}
@@ -603,7 +668,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 onDeleteDrawing={() => void removeDrawing()}
               />
             )}
-            {editor && <Inspector editor={editor} registry={registry} canWrite={canWrite} />}
+            {editor && <Inspector editor={editor} registry={registry} canWrite={canWrite} lineClasses={lineClasses} otherSheets={otherSheets} sheetNo={sheetSummary?.sheet_no ?? 1} />}
           </div>
         </div>
         {editor && <StatusBar editor={editor} cursor={cursor} viewport={viewport} />}
@@ -780,7 +845,8 @@ function DrawingPanel({
     scale: stringField(drawing.fields, "scale") ?? "NO SCALE",
     notes: (drawing.notes ?? []).join("\n"),
     legendSymbols: legendFlags(drawing).symbols,
-    legendLetters: legendFlags(drawing).letters
+    legendLetters: legendFlags(drawing).letters,
+    legendLines: legendFlags(drawing).lines
   });
   const [revision, setRevision] = useState({ label: "", description: "", checked_by: "", approved_by: "" });
   useEffect(() => {
@@ -796,7 +862,8 @@ function DrawingPanel({
       scale: stringField(drawing.fields, "scale") ?? "NO SCALE",
       notes: (drawing.notes ?? []).join("\n"),
       legendSymbols: legendFlags(drawing).symbols,
-      legendLetters: legendFlags(drawing).letters
+      legendLetters: legendFlags(drawing).letters,
+      legendLines: legendFlags(drawing).lines
     });
   }, [drawing]);
   const update = (patch: Partial<typeof form>) => setForm((current) => ({ ...current, ...patch }));
@@ -812,7 +879,8 @@ function DrawingPanel({
     form.scale !== (stringField(drawing.fields, "scale") ?? "NO SCALE") ||
     form.notes !== (drawing.notes ?? []).join("\n") ||
     form.legendSymbols !== legendFlags(drawing).symbols ||
-    form.legendLetters !== legendFlags(drawing).letters;
+    form.legendLetters !== legendFlags(drawing).letters ||
+    form.legendLines !== legendFlags(drawing).lines;
 
   function apply() {
     onUpdate({
@@ -827,7 +895,7 @@ function DrawingPanel({
         ...drawing.fields,
         company: form.company,
         scale: form.scale,
-        legends: [form.legendSymbols ? "symbols" : "", form.legendLetters ? "letters" : ""].filter(Boolean).join(",")
+        legends: [form.legendSymbols ? "symbols" : "", form.legendLetters ? "letters" : "", form.legendLines ? "lines" : ""].filter(Boolean).join(",")
       },
       notes: form.notes
         .split(/\r?\n/)
@@ -924,6 +992,10 @@ function DrawingPanel({
             <label className="checkRow">
               <input type="checkbox" checked={form.legendLetters} onChange={(event) => update({ legendLetters: event.target.checked })} disabled={!canWrite} />
               <span>Instrument letter table</span>
+            </label>
+            <label className="checkRow">
+              <input type="checkbox" checked={form.legendLines} onChange={(event) => update({ legendLines: event.target.checked })} disabled={!canWrite} />
+              <span>Line legend</span>
             </label>
           </div>
           <div className="toolGroup">
@@ -1080,6 +1152,39 @@ function EditorToolbar({
         <button type="button" disabled={!canWrite || !state.selection.length} onClick={() => editor.renumberSelection()} title="Re-sequence the selected tags in reading order">
           Renumber
         </button>
+        <select
+          aria-label="Align or distribute"
+          value=""
+          disabled={state.selection.length < 2}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value.startsWith("distribute-")) editor.distributeSelection(value.endsWith("x") ? "x" : "y");
+            else if (value) editor.alignSelection(value as AlignMode);
+          }}
+          title="Align or distribute the selection"
+        >
+          <option value="">Align…</option>
+          <option value="left">Left edges</option>
+          <option value="centerX">Centres (vertical axis)</option>
+          <option value="right">Right edges</option>
+          <option value="top">Top edges</option>
+          <option value="centerY">Centres (horizontal axis)</option>
+          <option value="bottom">Bottom edges</option>
+          <option value="distribute-x">Distribute horizontally</option>
+          <option value="distribute-y">Distribute vertically</option>
+        </select>
+        <input
+          type="search"
+          className="findInput"
+          placeholder="Find tag…"
+          aria-label="Find"
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              const count = editor.findTag((event.target as HTMLInputElement).value).length;
+              (event.target as HTMLInputElement).setAttribute("data-matches", String(count));
+            }
+          }}
+        />
       </div>
       <label>
         Line type
@@ -1159,8 +1264,25 @@ function EditorToolbar({
   );
 }
 
-function Inspector({ editor, registry, canWrite }: { editor: Editor; registry: SymbolRegistry; canWrite: boolean }) {
-  const { state, connectivity } = useEditorSnapshot(editor);
+function Inspector({
+  editor,
+  registry,
+  canWrite,
+  lineClasses,
+  otherSheets,
+  sheetNo
+}: {
+  editor: Editor;
+  registry: SymbolRegistry;
+  canWrite: boolean;
+  lineClasses: LineClass[];
+  otherSheets: SheetDoc[];
+  sheetNo: number;
+}) {
+  const { state, connectivity, doc } = useEditorSnapshot(editor);
+  const connectorResolution = useMemo(() => resolveConnectorTargets({ sheetNo, doc }, otherSheets), [doc, sheetNo, otherSheets]);
+  const [annotationDraft, setAnnotationDraft] = useState<{ kind: LineAnnotation["kind"]; at: number; text: string; side: 1 | -1 }>({ kind: "note", at: 0.5, text: "", side: -1 });
+  const [nozzleDraft, setNozzleDraft] = useState<{ side: Side; offset: number; size: string }>({ side: "left", offset: 50, size: "" });
   const items = editor.selectedItems();
   const item: Item | undefined = items.length === 1 ? items[0] : undefined;
   const update = (patch: Record<string, unknown>) => {
@@ -1214,6 +1336,28 @@ function Inspector({ editor, registry, canWrite }: { editor: Editor; registry: S
                   ))}
                 </select>
               </label>
+            )}
+            {registry.resolve(item.symbol).category === "connector" && (
+              <>
+                <label>
+                  Connector reference (pair id)
+                  <input
+                    value={typeof item.fields.ref === "string" ? item.fields.ref : ""}
+                    onChange={(event) => update({ fields: { ...item.fields, ref: event.target.value.toUpperCase() || null } })}
+                    placeholder="A"
+                    disabled={!canWrite}
+                  />
+                </label>
+                <p>
+                  {connectorResolution.targets[item.id] ? (
+                    <span className="pill pill-good">{connectorResolution.targets[item.id]}</span>
+                  ) : typeof item.fields.ref === "string" && item.fields.ref ? (
+                    <span className="pill pill-warn">no matching connector with this reference</span>
+                  ) : (
+                    <span className="pill pill-muted">set a reference to pair with another sheet</span>
+                  )}
+                </p>
+              </>
             )}
             <label>
               Label
@@ -1277,21 +1421,127 @@ function Inspector({ editor, registry, canWrite }: { editor: Editor; registry: S
               <input value={item.service ?? ""} onChange={(event) => update({ service: event.target.value || undefined })} disabled={!canWrite} />
             </label>
             <label>
-              Size
-              <input value={item.size ?? ""} onChange={(event) => update({ size: event.target.value || undefined })} disabled={!canWrite} />
+              Line class
+              <select
+                value={item.lineClass ?? ""}
+                onChange={(event) => {
+                  const chosen = lineClasses.find((entry) => entry.name === event.target.value);
+                  const spec = chosen ? [chosen.material, chosen.wall ? `x ${chosen.wall} WALL` : ""].filter(Boolean).join(" ") : item.spec;
+                  update({
+                    lineClass: chosen?.name,
+                    spec: spec || undefined,
+                    insulation: chosen?.insulation ?? item.insulation,
+                    size: chosen && chosen.sizes.length && !chosen.sizes.includes(item.size ?? "") ? chosen.sizes[0] : item.size
+                  });
+                }}
+                disabled={!canWrite}
+              >
+                <option value="">None</option>
+                {lineClasses.map((entry) => (
+                  <option key={entry.id} value={entry.name}>
+                    {entry.name}
+                    {entry.material ? ` · ${entry.material}` : ""}
+                  </option>
+                ))}
+              </select>
             </label>
-            <label>
-              Spec
-              <input value={item.spec ?? ""} onChange={(event) => update({ spec: event.target.value || undefined })} disabled={!canWrite} />
-            </label>
+            <div className="fieldRow">
+              <label>
+                Size
+                <input list="lineSizes" value={item.size ?? ""} onChange={(event) => update({ size: event.target.value || undefined })} disabled={!canWrite} />
+                <datalist id="lineSizes">
+                  {(lineClasses.find((entry) => entry.name === item.lineClass)?.sizes ?? []).map((size) => (
+                    <option key={size} value={size} />
+                  ))}
+                </datalist>
+              </label>
+              <label>
+                Spec
+                <input value={item.spec ?? ""} onChange={(event) => update({ spec: event.target.value || undefined })} disabled={!canWrite} />
+              </label>
+            </div>
+            <div className="fieldRow">
+              <label>
+                Design P / T
+                <input value={[item.designPressure, item.designTemperature].filter(Boolean).join(" / ")} onChange={(event) => {
+                  const [pressure, temperature] = event.target.value.split("/").map((part) => part.trim());
+                  update({ designPressure: pressure || undefined, designTemperature: temperature || undefined });
+                }} placeholder="3000 psig / 120 °F" disabled={!canWrite} />
+              </label>
+              <label>
+                Operating P / T
+                <input value={[item.operatingPressure, item.operatingTemperature].filter(Boolean).join(" / ")} onChange={(event) => {
+                  const [pressure, temperature] = event.target.value.split("/").map((part) => part.trim());
+                  update({ operatingPressure: pressure || undefined, operatingTemperature: temperature || undefined });
+                }} placeholder="2500 psig / 85 °F" disabled={!canWrite} />
+              </label>
+            </div>
+            <div className="fieldRow">
+              <label>
+                Insulation
+                <input value={item.insulation ?? ""} onChange={(event) => update({ insulation: event.target.value || undefined })} disabled={!canWrite} />
+              </label>
+              <label>
+                Tracing
+                <input value={item.tracing ?? ""} onChange={(event) => update({ tracing: event.target.value || undefined })} disabled={!canWrite} />
+              </label>
+            </div>
             <label className="checkRow">
               <input type="checkbox" checked={Boolean(item.showArrow)} onChange={(event) => update({ showArrow: event.target.checked })} disabled={!canWrite} />
               <span>Flow arrow at end</span>
             </label>
+            <label className="checkRow">
+              <input type="checkbox" checked={item.showSpecLabel !== false} onChange={(event) => update({ showSpecLabel: event.target.checked })} disabled={!canWrite} />
+              <span>Print size and spec on the line</span>
+            </label>
+            {(() => {
+              const ends = lineEndpoints(doc, connectivity, item);
+              return (
+                <p>
+                  From <strong>{ends.from || "—"}</strong> to <strong>{ends.to || "—"}</strong>
+                </p>
+              );
+            })()}
             <p>
               Length <span className="mono">{polylineLength(item.points).toFixed(1)} mm</span> · {item.points.length} vertices · net{" "}
               <span className="mono">{connectivity.lineNet.get(item.id) ?? "—"}</span>
             </p>
+            <p>
+              <strong>Annotations</strong>
+            </p>
+            <ul className="portList">
+              {(item.annotations ?? []).map((annotation) => (
+                <li key={annotation.id}>
+                  <span className="mono">{annotation.kind}</span> @ {Math.round(annotation.at * 100)}% {annotation.text ? `· ${annotation.text}` : ""}{" "}
+                  {canWrite && (
+                    <button type="button" className="linkButton" onClick={() => editor.removeLineAnnotation(item.id, annotation.id)}>
+                      remove
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {canWrite && (
+              <form
+                className="annotationForm"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  editor.addLineAnnotation(item.id, { kind: annotationDraft.kind, at: annotationDraft.at, text: annotationDraft.text || undefined, side: annotationDraft.side });
+                  setAnnotationDraft({ ...annotationDraft, text: "" });
+                }}
+              >
+                <select value={annotationDraft.kind} onChange={(event) => setAnnotationDraft({ ...annotationDraft, kind: event.target.value as LineAnnotation["kind"] })} aria-label="Annotation kind">
+                  <option value="note">Note</option>
+                  <option value="spec">Spec label</option>
+                  <option value="flow_arrow">Flow arrow</option>
+                  <option value="size_change">Size change</option>
+                  <option value="spec_break">Spec break</option>
+                </select>
+                <input type="number" min={0} max={1} step={0.05} value={annotationDraft.at} onChange={(event) => setAnnotationDraft({ ...annotationDraft, at: Number(event.target.value) })} aria-label="Annotation position" />
+                <input value={annotationDraft.text} onChange={(event) => setAnnotationDraft({ ...annotationDraft, text: event.target.value })} placeholder="Text" aria-label="Annotation text" />
+                <button type="submit">Add</button>
+              </form>
+            )}
             <p className="hint">Drag a segment to slide it. Ends that sit on a port or another line are connected.</p>
           </>
         )}
@@ -1317,6 +1567,48 @@ function Inspector({ editor, registry, canWrite }: { editor: Editor; registry: S
                 {item.size.width} × {item.size.height} mm
               </span>
             </p>
+            <p>
+              <strong>Nozzles</strong>
+            </p>
+            <ul className="portList">
+              {(item.nozzles ?? []).map((nozzle) => (
+                <li key={nozzle.id}>
+                  <span className="mono">{nozzle.id}</span> · {nozzle.side} · {nozzle.size || "—"} ·{" "}
+                  {connectivity.portNet.get(`${item.id}:${nozzle.id}`) ? <span className="pill pill-good">connected</span> : <span className="pill pill-warn">open</span>}{" "}
+                  {canWrite && (
+                    <button type="button" className="linkButton" onClick={() => update({ nozzles: (item.nozzles ?? []).filter((entry) => entry.id !== nozzle.id) })}>
+                      remove
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {canWrite && (
+              <form
+                className="annotationForm"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const grid = state.grid;
+                  const along = Math.round((Math.max(0, Math.min(100, nozzleDraft.offset)) / 100) * (nozzleDraft.side === "left" || nozzleDraft.side === "right" ? item.size.height : item.size.width) / grid) * grid;
+                  const position =
+                    nozzleDraft.side === "left" ? { x: 0, y: along } :
+                    nozzleDraft.side === "right" ? { x: item.size.width, y: along } :
+                    nozzleDraft.side === "top" ? { x: along, y: 0 } : { x: along, y: item.size.height };
+                  const nozzle: Nozzle = { id: `N${(item.nozzles?.length ?? 0) + 1}`, ...position, side: nozzleDraft.side, size: nozzleDraft.size || undefined };
+                  update({ nozzles: [...(item.nozzles ?? []), nozzle] });
+                }}
+              >
+                <select value={nozzleDraft.side} onChange={(event) => setNozzleDraft({ ...nozzleDraft, side: event.target.value as Side })} aria-label="Nozzle side">
+                  <option value="left">Left</option>
+                  <option value="right">Right</option>
+                  <option value="top">Top</option>
+                  <option value="bottom">Bottom</option>
+                </select>
+                <input type="number" min={0} max={100} value={nozzleDraft.offset} onChange={(event) => setNozzleDraft({ ...nozzleDraft, offset: Number(event.target.value) })} aria-label="Nozzle position (% along side)" />
+                <input value={nozzleDraft.size} onChange={(event) => setNozzleDraft({ ...nozzleDraft, size: event.target.value })} placeholder="Size" aria-label="Nozzle size" />
+                <button type="submit">Add nozzle</button>
+              </form>
+            )}
           </>
         )}
         {item?.kind === "label" && (
@@ -1375,6 +1667,14 @@ function Inspector({ editor, registry, canWrite }: { editor: Editor; registry: S
           <span className="pill pill-muted">{connectivity.openPorts.length} open port(s)</span>
         </p>
         <TagChecks editor={editor} />
+        <p>
+          {connectorResolution.unmatched.length ? (
+            <span className="pill pill-warn">{connectorResolution.unmatched.length} unmatched connector(s)</span>
+          ) : (
+            <span className="pill pill-muted">{Object.keys(connectorResolution.targets).length} paired connector(s)</span>
+          )}{" "}
+          <span className="pill pill-muted">{[...connectivity.crossings.values()].reduce((sum, hops) => sum + hops.length, 0)} crossing(s)</span>
+        </p>
         {state.tool === "wire" && (
           <p className="hint">Click a port or point to start, click to add corners, click a port or line to finish. Space flips the bend, Enter ends, Esc cancels.</p>
         )}

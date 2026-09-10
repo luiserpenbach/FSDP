@@ -17,6 +17,7 @@ import {
 } from "react";
 import type { Editor, EditorSnapshot, Modifiers } from "../../engine/editor";
 import type { DrawingContext } from "../../engine/frames";
+import { equipmentPorts } from "../../engine/connectivity";
 import { type SymbolRegistry } from "../../engine/library";
 import { renderFrame, renderItem, renderJunctions, pathFromPoints } from "../../engine/render";
 import { frameRect, sheetSize } from "../../engine/sheet";
@@ -36,9 +37,35 @@ export function useEditorSnapshot(editor: Editor): EditorSnapshot {
   return useSyncExternalStore(subscribe, () => editor.snapshot, () => editor.snapshot);
 }
 
-const ItemView = memo(function ItemView({ item, registry, notes }: { item: Item; registry: SymbolRegistry; notes: boolean }) {
-  return <g dangerouslySetInnerHTML={{ __html: renderItem(item, { registry, notes }) }} />;
-});
+const ItemView = memo(
+  function ItemView({
+    item,
+    registry,
+    notes,
+    hops,
+    connectorTarget
+  }: {
+    item: Item;
+    registry: SymbolRegistry;
+    notes: boolean;
+    hops?: Point[];
+    connectorTarget?: string;
+  }) {
+    const crossings = hops?.length ? new Map([[item.id, hops]]) : undefined;
+    const connectorTargets = connectorTarget ? { [item.id]: connectorTarget } : undefined;
+    return <g dangerouslySetInnerHTML={{ __html: renderItem(item, { registry, notes, crossings, connectorTargets }) }} />;
+  },
+  (previous, next) =>
+    previous.item === next.item &&
+    previous.registry === next.registry &&
+    previous.notes === next.notes &&
+    previous.connectorTarget === next.connectorTarget &&
+    hopsKey(previous.hops) === hopsKey(next.hops)
+);
+
+function hopsKey(hops?: Point[]): string {
+  return hops ? hops.map((hop) => `${hop.x},${hop.y}`).join(";") : "";
+}
 
 function modifiers(event: { shiftKey: boolean; ctrlKey: boolean; metaKey: boolean; altKey: boolean }): Modifiers {
   return { shift: event.shiftKey, ctrl: event.ctrlKey || event.metaKey, alt: event.altKey };
@@ -52,6 +79,7 @@ function SchematicCanvasInner(
     editor,
     showGrid,
     context,
+    connectorTargets,
     onCursor,
     onViewport
   }: {
@@ -59,6 +87,8 @@ function SchematicCanvasInner(
     showGrid: boolean;
     /** Drawing/revision data for the title block and revision table. */
     context?: DrawingContext;
+    /** Resolved off-page references per connector item id. */
+    connectorTargets?: Record<string, string>;
     onCursor?: (point: Point | null) => void;
     onViewport?: (viewport: Viewport) => void;
   },
@@ -225,6 +255,10 @@ function SchematicCanvasInner(
   const hidden = new Set(doc.layers.filter((layer) => layer.hidden).map((layer) => layer.id));
   const overlayStroke = 1.5 / viewport.zoom;
   const showPorts = state.tool === "wire" || state.tool === "place";
+  const measure = state.measure;
+  const measureText = measure?.to
+    ? `${Math.hypot(measure.to.x - measure.from.x, measure.to.y - measure.from.y).toFixed(1)} mm (Δx ${(measure.to.x - measure.from.x).toFixed(1)}, Δy ${(measure.to.y - measure.from.y).toFixed(1)})`
+    : "";
   const windowRect: Rect | null =
     state.drag?.kind === "window" && state.tool === "select"
       ? {
@@ -266,7 +300,16 @@ function SchematicCanvasInner(
           <g dangerouslySetInnerHTML={{ __html: renderFrame(doc, context) }} />
           <g className="items">
             {doc.items.map((item) =>
-              hidden.has(item.layer) ? null : <ItemView key={item.id} item={item} registry={registry} notes />
+              hidden.has(item.layer) ? null : (
+                <ItemView
+                  key={item.id}
+                  item={item}
+                  registry={registry}
+                  notes
+                  hops={item.kind === "line" ? connectivity.crossings.get(item.id) : undefined}
+                  connectorTarget={connectorTargets?.[item.id]}
+                />
+              )
             )}
           </g>
           <g dangerouslySetInnerHTML={{ __html: renderJunctions(connectivity) }} />
@@ -275,8 +318,8 @@ function SchematicCanvasInner(
           <g className="overlays" pointerEvents="none">
             {showPorts &&
               doc.items.map((item) =>
-                item.kind === "symbol"
-                  ? registry.portsOf(item).map((port) => (
+                item.kind === "symbol" || item.kind === "equipment"
+                  ? (item.kind === "symbol" ? registry.portsOf(item) : equipmentPorts(item)).map((port) => (
                       <circle
                         key={`${item.id}:${port.id}`}
                         cx={port.position.x}
@@ -343,6 +386,16 @@ function SchematicCanvasInner(
                 strokeWidth={overlayStroke}
                 strokeDasharray={crossing ? `${2 / viewport.zoom} ${2 / viewport.zoom}` : undefined}
               />
+            )}
+            {measure?.to && (
+              <g>
+                <path d={`M${measure.from.x},${measure.from.y} L${measure.to.x},${measure.to.y}`} stroke="#b45309" strokeWidth={overlayStroke * 1.2} strokeDasharray={`${2 / viewport.zoom} ${1.5 / viewport.zoom}`} fill="none" />
+                <circle cx={measure.from.x} cy={measure.from.y} r={1} fill="#b45309" />
+                <circle cx={measure.to.x} cy={measure.to.y} r={1} fill="#b45309" />
+                <text x={(measure.from.x + measure.to.x) / 2} y={(measure.from.y + measure.to.y) / 2 - 2} fontSize={8 / viewport.zoom} fill="#b45309" textAnchor="middle" fontFamily="IBM Plex Mono, monospace">
+                  {measureText}
+                </text>
+              </g>
             )}
             {state.equipmentDraft && (
               <rect x={state.equipmentDraft.x} y={state.equipmentDraft.y} width={state.equipmentDraft.width} height={state.equipmentDraft.height} fill="rgba(34,87,196,0.05)" stroke="#2257c4" strokeWidth={overlayStroke} strokeDasharray="3 1.5" />

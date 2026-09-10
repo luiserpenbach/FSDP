@@ -18,7 +18,10 @@ const apiMock = vi.hoisted(() => ({
   getDiagram: vi.fn(),
   getTagScheme: vi.fn(),
   updateTagScheme: vi.fn(),
-  updateSymbol: vi.fn()
+  updateSymbol: vi.fn(),
+  listLineClasses: vi.fn(),
+  createLineClass: vi.fn(),
+  importLineClasses: vi.fn()
 }));
 
 vi.mock("../api", () => ({ api: apiMock }));
@@ -134,6 +137,7 @@ describe("DraftingPage", () => {
     apiMock.listDrawings.mockResolvedValue([drawing]);
     apiMock.getSheet.mockResolvedValue(sheet);
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
+    apiMock.listLineClasses.mockResolvedValue([]);
     apiMock.updateSheet.mockImplementation(async (_id: string, body: { document: unknown }) => ({ ...sheet, document: body.document }));
   });
 
@@ -262,5 +266,41 @@ describe("DraftingPage", () => {
     const [, body] = apiMock.exportSheet.mock.calls[0] as [string, { svg: string }];
     expect(body.svg).toContain("FIELD MOUNTED INSTRUMENT");
     expect(body.svg).toContain("SUCCEEDING LETTERS");
+  });
+
+  it("fills line specs from a project line class and resolves connector references across sheets", async () => {
+    apiMock.listLineClasses.mockResolvedValue([
+      { id: "lc1", project_id: "p1", name: "A1A", material: "316L SS", rating: "3000 psig", wall: '.035"', sizes: ['1/4"', '1/2"'], insulation: "foam", description: null, notes: null, created_at: "", updated_at: "" }
+    ]);
+    const sheet1Doc = {
+      ...sheet.document,
+      items: [
+        { id: "line1", kind: "line", layer: "process", points: [{ x: 50, y: 100 }, { x: 150, y: 100 }], lineType: "process", lineNumber: "3101", fields: {} },
+        { id: "conn", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "off_page_connector", version: 1 }, position: { x: 200, y: 100 }, rotation: 0, label: "TO VENT", fields: { ref: "A" } }
+      ]
+    };
+    const sheet2Doc = {
+      ...sheet.document,
+      items: [{ id: "back", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "terminator_in", version: 1 }, position: { x: 40, y: 250 }, rotation: 0, fields: { ref: "A" } }]
+    };
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? { ...sheet, id: "sh2", sheet_no: 2, document: sheet2Doc } : { ...sheet, document: sheet1Doc }));
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="conn"]')).not.toBeNull());
+    // The connector caption resolves to the paired connector's sheet and zone.
+    await waitFor(() => expect(canvas.textContent).toContain("SHT 2 / A-4"));
+
+    // Find the line by number, then pick the class: spec, insulation, and size follow.
+    const find = screen.getByLabelText("Find") as HTMLInputElement;
+    fireEvent.change(find, { target: { value: "3101" } });
+    fireEvent.keyDown(find, { key: "Enter" });
+    const classSelect = (await screen.findByLabelText("Line class")) as HTMLSelectElement;
+    fireEvent.change(classSelect, { target: { value: "A1A" } });
+    await waitFor(() => expect((screen.getByLabelText("Spec") as HTMLInputElement).value).toBe('316L SS x .035" WALL'));
+    const sizeInput = screen.getAllByLabelText("Size").find((element) => element.tagName === "INPUT") as HTMLInputElement;
+    expect(sizeInput.value).toBe('1/4"');
+    expect((screen.getByLabelText("Insulation") as HTMLInputElement).value).toBe("foam");
+    await waitFor(() => expect(canvas.textContent).toContain('1/4" 316L SS x .035" WALL'));
+    expect(screen.getByText(/paired connector/)).toBeInTheDocument();
   });
 });

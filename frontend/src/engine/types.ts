@@ -118,6 +118,17 @@ export type LineType =
   | "vacuum"
   | "future";
 
+/** Annotation attached to a line at a fraction of its length; it follows the line. */
+export type LineAnnotation = {
+  id: string;
+  kind: "spec" | "size_change" | "spec_break" | "flow_arrow" | "note";
+  /** Position along the polyline as a fraction of its total length (0..1). */
+  at: number;
+  text?: string;
+  /** Which side of the line the text sits on relative to travel direction (1 = right hand). */
+  side?: 1 | -1;
+};
+
 export type LineItem = ItemBase & {
   kind: "line";
   /** Orthogonal polyline vertices in sheet mm, at least two. */
@@ -128,11 +139,31 @@ export type LineItem = ItemBase & {
   lineNumber?: string;
   size?: string;
   spec?: string;
+  /** Name of the project line class (material, rating, wall) this line follows. */
+  lineClass?: string;
+  insulation?: string;
+  tracing?: string;
+  designPressure?: string;
+  designTemperature?: string;
+  operatingPressure?: string;
+  operatingTemperature?: string;
   color?: string;
   strokeWidth?: number;
   /** Draw a flow arrow at the last vertex. */
   showArrow?: boolean;
+  /** Print "size spec" under the longest segment (default on when either is set). */
+  showSpecLabel?: boolean;
+  annotations?: LineAnnotation[];
   fields: Record<string, FieldValue>;
+};
+
+/** Connection point on an equipment boundary, in mm relative to its top-left corner. */
+export type Nozzle = {
+  id: string;
+  x: number;
+  y: number;
+  side: Side;
+  size?: string;
 };
 
 export type EquipmentItem = ItemBase & {
@@ -144,6 +175,7 @@ export type EquipmentItem = ItemBase & {
   name: string;
   boundary: "solid" | "dashed";
   color?: string;
+  nozzles?: Nozzle[];
   fields: Record<string, FieldValue>;
 };
 
