@@ -155,6 +155,21 @@ export type Drawing = {
   updated_at: string;
 };
 
+export type LineClass = {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string | null;
+  material: string | null;
+  rating: string | null;
+  wall: string | null;
+  sizes: string[];
+  insulation: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type TagSchemeRead = {
   project_id: string;
   scheme: Record<string, unknown> | null;

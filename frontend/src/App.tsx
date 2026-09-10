@@ -70,6 +70,7 @@ import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout
 import { PartsCatalog } from "./pages/PartsCatalog";
 import { DraftingPage } from "./pages/DraftingPage";
 import { TagSchemePanel } from "./pages/TagSchemePanel";
+import { LineClassPanel } from "./pages/LineClassPanel";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, TraceLink, User } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
@@ -2284,6 +2285,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                   }}
                 />
                 <TagSchemePanel project={selectedProject} canWrite={user.role !== "viewer"} />
+                <LineClassPanel project={selectedProject} canWrite={user.role !== "viewer"} />
               </section>
             </PageLayout>
           }

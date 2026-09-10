@@ -8,6 +8,8 @@ import { computeConnectivity, type Connectivity } from "./connectivity";
 import { proprietaryText, resolveTemplate, titleBlockRect, wrapText, type DrawingContext } from "./frames";
 import { SYMBOL_STROKE_MM, type SymbolRegistry } from "./library";
 import { SHEET_SIZES, frameRect, sheetSize, zoneLabels } from "./sheet";
+import { equipmentPorts } from "./connectivity";
+import { pointAlong } from "./lines";
 import { NOTE_SIZE_MM } from "./spatial";
 import type {
   EquipmentItem,
@@ -82,7 +84,33 @@ export type RenderContext = {
   notes?: boolean;
   /** Ids to draw highlighted. */
   selection?: Set<string>;
+  /** Hop points per line id (from connectivity crossings). */
+  crossings?: Map<string, Point[]>;
+  /** Resolved off-page references per connector item id, e.g. "SHT 2 / D-4". */
+  connectorTargets?: Record<string, string>;
 };
+
+const HOP_RADIUS = 1.2;
+
+/** Path for an orthogonal polyline with hops (semicircles) at the given crossing points. */
+export function pathWithHops(points: Point[], hops: Point[]): string {
+  if (!hops.length) return pathFromPoints(points);
+  const parts: string[] = [`M${n(points[0].x)},${n(points[0].y)}`];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const a = points[index];
+    const b = points[index + 1];
+    const onSegment = hops
+      .filter((hop) => hop.y === a.y && a.y === b.y && hop.x > Math.min(a.x, b.x) && hop.x < Math.max(a.x, b.x))
+      .sort((p, q) => (b.x > a.x ? p.x - q.x : q.x - p.x));
+    const direction = b.x >= a.x ? 1 : -1;
+    for (const hop of onSegment) {
+      parts.push(`L${n(hop.x - direction * HOP_RADIUS)},${n(a.y)}`);
+      parts.push(`A${HOP_RADIUS},${HOP_RADIUS} 0 0 ${direction > 0 ? 1 : 0} ${n(hop.x + direction * HOP_RADIUS)},${n(a.y)}`);
+    }
+    parts.push(`L${n(b.x)},${n(b.y)}`);
+  }
+  return parts.join(" ");
+}
 
 function text(value: string, x: number, y: number, options: { size?: number; anchor?: string; rotation?: number; color?: string; weight?: string } = {}): string {
   const size = options.size ?? TEXT_MM;
@@ -114,7 +142,13 @@ export function renderSymbol(item: SymbolItem, ctx: RenderContext): string {
     if (letters) parts.push(text(letters, item.position.x, item.position.y - 0.5, { size: 2.2 }));
     if (number) parts.push(text(number, item.position.x, item.position.y + 2.4, { size: 2.2 }));
   } else if (definition.category === "connector") {
-    parts.push(text(caption, item.position.x - 2, item.position.y + 0.9, { size: 2.2 }));
+    const target = ctx.connectorTargets?.[item.id];
+    if (target) {
+      parts.push(text(target, item.position.x - 2, item.position.y + 0.9, { size: 2 }));
+      if (caption) parts.push(text(caption, item.position.x, item.position.y - 5.2, { size: 2.2 }));
+    } else {
+      parts.push(text(caption, item.position.x - 2, item.position.y + 0.9, { size: 2.2 }));
+    }
   } else if (caption) {
     const bounds = ctx.registry.boundsOf(item);
     parts.push(text(caption, item.position.x, bounds.y + bounds.height + 3.2, { size: TEXT_MM }));
@@ -137,30 +171,77 @@ function arrowHead(points: Point[], size: number): string {
   return `<path d="M${n(tip.x)},${n(tip.y)} L${n(left.x)},${n(left.y)} L${n(right.x)},${n(right.y)} Z" fill="currentColor" stroke="none"/>`;
 }
 
-export function renderLine(item: LineItem): string {
+function longestSegment(points: Point[]): { a: Point; b: Point } {
+  let best = 0;
+  let bestLength = -1;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const a = points[index];
+    const b = points[index + 1];
+    const length = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+    if (length > bestLength) {
+      bestLength = length;
+      best = index;
+    }
+  }
+  return { a: points[best], b: points[best + 1] };
+}
+
+function renderAnnotations(item: LineItem): string {
+  const parts: string[] = [];
+  for (const annotation of item.annotations ?? []) {
+    const at = pointAlong(item.points, annotation.at);
+    if (!at) continue;
+    const { point, direction } = at;
+    const vertical = Math.abs(direction.y) > Math.abs(direction.x);
+    const side = annotation.side ?? -1;
+    // Perpendicular (right-hand of travel = +90° in screen space).
+    const normal = { x: -direction.y * side, y: direction.x * side };
+    const angle = vertical ? -90 : 0;
+    const labelAt = { x: point.x + normal.x * 2.4, y: point.y + normal.y * 2.4 + (vertical ? 0 : side < 0 ? 0 : 1.8) };
+    const rotate = (svg: string) => `<g transform="translate(${n(point.x)} ${n(point.y)}) rotate(${n((Math.atan2(direction.y, direction.x) * 180) / Math.PI)})">${svg}</g>`;
+    switch (annotation.kind) {
+      case "flow_arrow":
+        parts.push(rotate('<path d="M-2,-2 L2,0 L-2,2 Z" fill="currentColor" stroke="none"/>'));
+        break;
+      case "size_change":
+        parts.push(rotate('<path d="M-3,-2.5 L3,-1.2 V1.2 L-3,2.5 Z" fill="#fff" stroke="currentColor" stroke-width="0.35"/>'));
+        if (annotation.text) parts.push(text(annotation.text, labelAt.x, labelAt.y, { size: 2, rotation: angle }));
+        break;
+      case "spec_break":
+        parts.push(rotate('<path d="M0,-4 V4 M-1.2,-4 H1.2 M-1.2,4 H1.2" stroke="currentColor" stroke-width="0.5"/>'));
+        parts.push(text(annotation.text || "SPEC BREAK", labelAt.x, labelAt.y, { size: 2, rotation: angle }));
+        break;
+      default:
+        if (annotation.text) parts.push(text(annotation.text, labelAt.x, labelAt.y, { size: 2.2, rotation: angle }));
+    }
+  }
+  return parts.join("");
+}
+
+export function renderLine(item: LineItem, ctx?: RenderContext): string {
   const style = LINE_STYLES[item.lineType] ?? LINE_STYLES.process;
   const width = item.strokeWidth ?? style.width;
   const color = item.color ?? DEFAULT_INK;
   const dash = style.dash ? ` stroke-dasharray="${style.dash}"` : "";
+  const hops = ctx?.crossings?.get(item.id) ?? [];
   const parts = [
-    `<path d="${pathFromPoints(item.points)}" fill="none" stroke="currentColor" stroke-width="${n(width)}" stroke-linecap="round" stroke-linejoin="round"${dash}/>`
+    `<path d="${pathWithHops(item.points, hops)}" fill="none" stroke="currentColor" stroke-width="${n(width)}" stroke-linecap="round" stroke-linejoin="round"${dash}/>`
   ];
   if (item.showArrow) parts.push(arrowHead(item.points, Math.max(2, width * 4)));
+  const specText = [item.size, item.spec].filter((part) => part && part.trim()).join(" ");
+  if (specText && item.showSpecLabel !== false && item.points.length >= 2) {
+    const { a, b } = longestSegment(item.points);
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    parts.push(
+      a.x === b.x
+        ? text(specText, mid.x + 2.6, mid.y, { size: 2, rotation: -90 })
+        : text(specText, mid.x, mid.y + 2.8, { size: 2 })
+    );
+  }
+  parts.push(renderAnnotations(item));
   if (item.lineNumber && item.points.length >= 2) {
     // Label the longest segment, offset to its left-hand side.
-    let best = 0;
-    let bestLength = -1;
-    for (let index = 0; index < item.points.length - 1; index += 1) {
-      const a = item.points[index];
-      const b = item.points[index + 1];
-      const length = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-      if (length > bestLength) {
-        bestLength = length;
-        best = index;
-      }
-    }
-    const a = item.points[best];
-    const b = item.points[best + 1];
+    const { a, b } = longestSegment(item.points);
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     const vertical = a.x === b.x;
     parts.push(
@@ -176,7 +257,15 @@ export function renderEquipment(item: EquipmentItem): string {
   const color = item.color ?? DEFAULT_INK;
   const dash = item.boundary === "dashed" ? ' stroke-dasharray="3 1.5"' : "";
   const caption = [item.tag, item.name].filter(Boolean).join("  ");
-  return `<g class="item item-equipment" data-id="${escapeXml(item.id)}" color="${escapeXml(color)}"><rect x="${n(item.position.x)}" y="${n(item.position.y)}" width="${n(item.size.width)}" height="${n(item.size.height)}" fill="none" stroke="currentColor" stroke-width="0.35"${dash}/>${caption ? text(caption, item.position.x + 1, item.position.y - 1.2, { anchor: "start", size: TEXT_MM, weight: "600" }) : ""}</g>`;
+  const nozzles = equipmentPorts(item)
+    .map((port) => {
+      const inward = { left: { x: 3, y: 0 }, right: { x: -3, y: 0 }, top: { x: 0, y: 3 }, bottom: { x: 0, y: -3 } }[port.side];
+      const stub = `<path d="M${n(port.position.x)},${n(port.position.y)} L${n(port.position.x + inward.x)},${n(port.position.y + inward.y)}" stroke="currentColor" stroke-width="0.5"/>`;
+      const label = port.size ? text(port.size, port.position.x + inward.x * 2.2, port.position.y + inward.y * 2.2 + 0.7, { size: 1.8 }) : "";
+      return stub + label;
+    })
+    .join("");
+  return `<g class="item item-equipment" data-id="${escapeXml(item.id)}" color="${escapeXml(color)}"><rect x="${n(item.position.x)}" y="${n(item.position.y)}" width="${n(item.size.width)}" height="${n(item.size.height)}" fill="none" stroke="currentColor" stroke-width="0.35"${dash}/>${nozzles}${caption ? text(caption, item.position.x + 1, item.position.y - 1.2, { anchor: "start", size: TEXT_MM, weight: "600" }) : ""}</g>`;
 }
 
 export function renderLabel(item: LabelItem): string {
@@ -203,7 +292,7 @@ export function renderItem(item: Item, ctx: RenderContext): string {
     case "symbol":
       return renderSymbol(item, ctx);
     case "line":
-      return renderLine(item);
+      return renderLine(item, ctx);
     case "equipment":
       return renderEquipment(item);
     case "label":
@@ -355,8 +444,14 @@ export function renderFrame(doc: SchematicDocument, ctx?: DrawingContext, color 
   if (ctx?.legends?.symbols?.length && block) {
     parts.push(renderSymbolLegend(ctx.legends.symbols, border, block));
   }
+  let rightCursor = border.y + 4;
   if (ctx?.legends?.letters) {
-    parts.push(renderLetterTable(ctx.legends.letters, border));
+    const table = renderLetterTable(ctx.legends.letters, border, rightCursor);
+    parts.push(table.svg);
+    rightCursor += table.height + 4;
+  }
+  if (ctx?.legends?.lines?.length) {
+    parts.push(renderLineLegend(ctx.legends.lines, border, rightCursor));
   }
 
   if (!ctx && doc.meta.title && !template.titleBlock) {
@@ -396,18 +491,40 @@ function renderSymbolLegend(entries: Array<{ definition: SymbolDef; count: numbe
   return `<g class="legend-symbols">${parts.join("")}</g>`;
 }
 
+/** Line legend: one sample stroke per (line type, service) used on the sheet. */
+function renderLineLegend(entries: Array<{ lineType: string; service?: string; count: number }>, border: Rect, top: number): string {
+  const rowHeight = 5;
+  const width = 104;
+  const left = border.x + border.width - 4 - width;
+  const height = 5 + entries.length * rowHeight + 1;
+  const parts = [
+    `<rect x="${n(left)}" y="${n(top)}" width="${n(width)}" height="${n(height)}" fill="#fff" stroke="currentColor" stroke-width="0.35"/>`,
+    text("LINE LEGEND", left + width / 2, top + 3.6, { size: 2.4, weight: "700" }),
+    `<path d="M${n(left)},${n(top + 5)} H${n(left + width)}" stroke="currentColor" stroke-width="0.25"/>`
+  ];
+  entries.forEach((entry, index) => {
+    const y = top + 5 + index * rowHeight + rowHeight / 2;
+    const style = LINE_STYLES[entry.lineType as LineType] ?? LINE_STYLES.process;
+    const dash = style.dash ? ` stroke-dasharray="${style.dash}"` : "";
+    parts.push(`<path d="M${n(left + 3)},${n(y)} H${n(left + 23)}" stroke="currentColor" stroke-width="${n(style.width)}"${dash}/>`);
+    const label = [entry.service, LINE_TYPE_LABELS[entry.lineType as LineType] ?? entry.lineType].filter(Boolean).join(" — ").toUpperCase();
+    parts.push(text(label, left + 27, y + 0.8, { size: 2, anchor: "start" }));
+  });
+  return `<g class="legend-lines">${parts.join("")}</g>`;
+}
+
 /** ISA instrument letter table, top-right inside the border. */
 function renderLetterTable(
   letters: { first: Array<{ letter: string; meaning: string }>; succeeding: Array<{ letter: string; meaning: string }> },
-  border: Rect
-): string {
+  border: Rect,
+  top: number
+): { svg: string; height: number } {
   const rowHeight = 3.2;
   const columnWidth = 52;
   const rows = Math.max(letters.first.length, letters.succeeding.length);
   const width = columnWidth * 2;
   const height = 8 + rows * rowHeight + 1;
   const left = border.x + border.width - 4 - width;
-  const top = border.y + 4;
   const parts = [
     `<rect x="${n(left)}" y="${n(top)}" width="${n(width)}" height="${n(height)}" fill="#fff" stroke="currentColor" stroke-width="0.35"/>`,
     text("INSTRUMENT LETTER DESIGNATIONS", left + width / 2, top + 3.4, { size: 2.4, weight: "700" }),
@@ -424,7 +541,7 @@ function renderLetterTable(
   };
   column(letters.first, left);
   column(letters.succeeding, left + columnWidth);
-  return `<g class="legend-letters">${parts.join("")}</g>`;
+  return { svg: `<g class="legend-letters">${parts.join("")}</g>`, height };
 }
 
 export type DocumentRenderOptions = {
@@ -440,8 +557,13 @@ export type DocumentRenderOptions = {
 /** Complete SVG of the sheet at paper size (1 user unit = 1 mm). */
 export function renderDocumentSvg(doc: SchematicDocument, registry: SymbolRegistry, options: DocumentRenderOptions = {}): string {
   const paper = sheetSize(doc.sheet);
-  const ctx: RenderContext = { registry, notes: options.notes ?? false };
   const connectivity = computeConnectivity(doc, registry);
+  const ctx: RenderContext = {
+    registry,
+    notes: options.notes ?? false,
+    crossings: connectivity.crossings,
+    connectorTargets: options.context?.connectorTargets
+  };
   const hidden = new Set(doc.layers.filter((layer) => layer.hidden).map((layer) => layer.id));
   const body = doc.items
     .filter((item) => !hidden.has(item.layer))

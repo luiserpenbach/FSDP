@@ -10,6 +10,7 @@ import {
   rectContainsRect,
   rectsIntersect
 } from "./geometry";
+import { equipmentPorts } from "./connectivity";
 import { type SymbolRegistry } from "./library";
 import type { Item, LabelItem, Point, Rect, SchematicDocument } from "./types";
 
@@ -153,6 +154,11 @@ export function hitTest(index: SpatialIndex, point: Point, tolerance: number): H
         break;
       }
       case "equipment": {
+        for (const port of equipmentPorts(item)) {
+          if (distance(port.position, point) <= tolerance) {
+            consider({ item, part: { type: "port", portId: port.id, position: port.position } }, -1 + distance(port.position, point));
+          }
+        }
         const inner = expandRect(rect, -tolerance);
         const onBorder = rectContains(rect, point, tolerance) && !(inner.width > 0 && inner.height > 0 && rectContains(inner, point));
         const onLabel = rectContains({ x: rect.x, y: rect.y - 6, width: Math.max(20, item.name.length * 2.2), height: 6 }, point, tolerance);

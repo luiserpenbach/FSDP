@@ -295,6 +295,24 @@ class PidSymbolDef(TimestampMixin, Base):
     tag_prefix: Mapped[str | None] = mapped_column(String(16))
 
 
+class LineClass(TimestampMixin, Base):
+    """Project pipe/tube class: material, rating, wall, and the sizes it comes in."""
+
+    __tablename__ = "line_classes"
+    __table_args__ = (UniqueConstraint("project_id", "name", name="uq_line_class_name"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    material: Mapped[str | None] = mapped_column(String(120))
+    rating: Mapped[str | None] = mapped_column(String(80))
+    wall: Mapped[str | None] = mapped_column(String(80))
+    sizes: Mapped[list] = mapped_column(JSON, default=list)
+    insulation: Mapped[str | None] = mapped_column(String(120))
+    notes: Mapped[str | None] = mapped_column(Text)
+
+
 class TagScheme(TimestampMixin, Base):
     """Per-project tag scheme (function letters, separator, id structure)."""
 
@@ -413,4 +431,3 @@ class CatalogDocument(TimestampMixin, Base):
     uploaded_by: Mapped[str | None] = mapped_column(String(160))
 
     part: Mapped[Part] = relationship()
-

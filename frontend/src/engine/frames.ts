@@ -52,7 +52,10 @@ export type DrawingContext = {
   legends?: {
     symbols?: Array<{ definition: SymbolDef; count: number }>;
     letters?: { first: Array<{ letter: string; meaning: string }>; succeeding: Array<{ letter: string; meaning: string }> };
+    lines?: Array<{ lineType: string; service?: string; count: number }>;
   };
+  /** Resolved off-page references per connector item id, e.g. "SHT 2 / D-4". */
+  connectorTargets?: Record<string, string>;
 };
 
 export type TitleCell = {

@@ -3002,3 +3002,26 @@ span.symbolListPendingName.untitled {
   min-width: 150px;
   width: auto;
 }
+
+/* ---------- Phase 3: line annotations, nozzles, find ---------- */
+
+.annotationForm {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr 64px 1fr auto;
+  margin-bottom: 8px;
+}
+
+.annotationForm input,
+.annotationForm select {
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.draftingTop .findInput {
+  font-size: 12.5px;
+  margin: 4px 0;
+  min-width: 130px;
+  padding: 5px 8px;
+  width: auto;
+}
