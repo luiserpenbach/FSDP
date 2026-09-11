@@ -365,9 +365,23 @@ class PartUsageBomRead(OrmModel):
     status: str
 
 
+class PartUsageDrawingItemRead(BaseModel):
+    sheet_id: str
+    item_id: str
+    tag: str | None
+    zone: str | None
+    dnp: bool
+    drawing_id: str
+    drawing_number: str
+    drawing_title: str
+    sheet_no: int
+    project_id: str
+
+
 class PartUsageRead(BaseModel):
     components: list[PartUsageComponentRead]
     bom_snapshots: list[PartUsageBomRead]
+    drawing_items: list[PartUsageDrawingItemRead] = []
 
 
 # Symbols are rendered via dangerouslySetInnerHTML. Block active content and
@@ -744,9 +758,105 @@ class DrawingSheetCreate(BaseModel):
         return SchematicDocumentIn(document=value).document
 
 
+class SheetIndexItemIn(BaseModel):
+    """One symbol or equipment item as indexed by the engine at save time."""
+
+    item_id: str
+    kind: str
+    category: str | None = None
+    symbol_key: str | None = None
+    symbol_name: str | None = None
+    tag: str | None = None
+    label: str | None = None
+    zone: str | None = None
+    x: float | None = None
+    y: float | None = None
+    part_id: str | None = None
+    dnp: bool = False
+    spare: int = 0
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, value: str) -> str:
+        if value not in {"symbol", "equipment"}:
+            raise ValueError("must be 'symbol' or 'equipment'")
+        return value
+
+    @field_validator("spare")
+    @classmethod
+    def _spare(cls, value: int) -> int:
+        return max(0, value)
+
+
+class SheetIndexLineIn(BaseModel):
+    line_id: str
+    line_number: str | None = None
+    line_type: str = "process"
+    service: str | None = None
+    size: str | None = None
+    spec: str | None = None
+    line_class: str | None = None
+    from_item: str | None = None
+    from_tag: str | None = None
+    to_item: str | None = None
+    to_tag: str | None = None
+    zone: str | None = None
+    length_mm: float = 0.0
+    length_m: float | None = None
+    connection_count: int = 0
+    tee_count: int = 0
+    design_pressure: str | None = None
+    design_temperature: str | None = None
+    operating_pressure: str | None = None
+    operating_temperature: str | None = None
+    insulation: str | None = None
+    tracing: str | None = None
+    fields: dict[str, Any] = Field(default_factory=dict)
+
+
+class SheetIndexIn(BaseModel):
+    items: list[SheetIndexItemIn] = Field(default_factory=list)
+    lines: list[SheetIndexLineIn] = Field(default_factory=list)
+
+
+class SheetItemRead(SheetIndexItemIn, OrmModel):
+    id: str
+    sheet_id: str
+
+
+class SheetLineRead(SheetIndexLineIn, OrmModel):
+    id: str
+    sheet_id: str
+
+
+class SheetIndexRead(BaseModel):
+    sheet_id: str
+    items: list[SheetItemRead]
+    lines: list[SheetLineRead]
+
+
+class ListColumnRead(BaseModel):
+    key: str
+    label: str
+
+
+class ListRead(BaseModel):
+    """An engineering list (instrument index, line list, ...) with its header."""
+
+    kind: str
+    title: str
+    scope: str
+    header: dict[str, Any]
+    columns: list[ListColumnRead]
+    rows: list[dict[str, Any]]
+
+
 class DrawingSheetUpdate(BaseModel):
     title: str | None = None
     document: dict[str, Any] | None = None
+    # Index rows computed by the engine for this document (replaces the stored index).
+    index: SheetIndexIn | None = None
 
     @field_validator("document")
     @classmethod
@@ -985,7 +1095,9 @@ class TraceLinkRead(TraceLinkCreate, OrmModel):
 
 class BomSnapshotRead(OrmModel):
     id: str
-    diagram_id: str
+    diagram_id: str | None
+    drawing_id: str | None = None
+    source_kind: str = "diagram"
     revision: int
     status: str
     rows: list[dict[str, Any]]
@@ -1015,12 +1127,17 @@ class BomReadinessIssue(BaseModel):
     part_number: str | None
     component_tags: list[str]
     warnings: list[str]
+    # Issue code and severity ("blocking" stops release, "warning" informs).
+    code: str = "part_incomplete"
+    severity: str = "warning"
 
 
 class BomReadinessRead(BaseModel):
     snapshot_id: str
     row_count: int
     issue_count: int
+    blocking_count: int = 0
+    warning_count: int = 0
     ready: bool
     issues: list[BomReadinessIssue]
 

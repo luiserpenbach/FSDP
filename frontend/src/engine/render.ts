@@ -88,7 +88,27 @@ export type RenderContext = {
   crossings?: Map<string, Point[]>;
   /** Resolved off-page references per connector item id, e.g. "SHT 2 / D-4". */
   connectorTargets?: Record<string, string>;
+  /** Canvas-only part badges per item id (part number + qualification tone); never exported. */
+  partBadges?: Record<string, PartBadge>;
 };
+
+export type PartBadgeTone = "good" | "warn" | "bad" | "none";
+export type PartBadge = { text: string; tone: PartBadgeTone };
+
+const BADGE_COLORS: Record<PartBadgeTone, string> = {
+  good: "#15803d",
+  warn: "#b45309",
+  bad: "#b91c1c",
+  none: "#64748b"
+};
+
+/** Small rounded label under an item: part number tinted by qualification. */
+function renderPartBadge(badge: PartBadge, centreX: number, top: number): string {
+  const size = 1.8;
+  const width = Math.max(6, badge.text.length * size * 0.62 + 2);
+  const color = BADGE_COLORS[badge.tone];
+  return `<g class="part-badge"><rect x="${n(centreX - width / 2)}" y="${n(top)}" width="${n(width)}" height="${n(size + 1.2)}" rx="0.6" fill="#fff" stroke="${color}" stroke-width="0.25"/>${text(badge.text, centreX, top + size + 0.15, { size, color })}</g>`;
+}
 
 const HOP_RADIUS = 1.2;
 
@@ -152,6 +172,13 @@ export function renderSymbol(item: SymbolItem, ctx: RenderContext): string {
   } else if (caption) {
     const bounds = ctx.registry.boundsOf(item);
     parts.push(text(caption, item.position.x, bounds.y + bounds.height + 3.2, { size: TEXT_MM }));
+  }
+  const badge = ctx.partBadges?.[item.id];
+  if (item.dnp || badge) {
+    const bounds = ctx.registry.boundsOf(item);
+    const captionBelow = caption && definition.category !== "instrument" && definition.category !== "connector";
+    if (item.dnp) parts.push(text("DNP", item.position.x, bounds.y - 1, { size: 1.8, weight: "600" }));
+    if (badge) parts.push(renderPartBadge(badge, item.position.x, bounds.y + bounds.height + (captionBelow ? 4.2 : 1.2)));
   }
   return `<g class="item item-symbol" data-id="${escapeXml(item.id)}" color="${escapeXml(color)}">${parts.join("")}</g>`;
 }
@@ -253,7 +280,7 @@ export function renderLine(item: LineItem, ctx?: RenderContext): string {
   return `<g class="item item-line" data-id="${escapeXml(item.id)}" color="${escapeXml(color)}">${parts.join("")}</g>`;
 }
 
-export function renderEquipment(item: EquipmentItem): string {
+export function renderEquipment(item: EquipmentItem, ctx?: RenderContext): string {
   const color = item.color ?? DEFAULT_INK;
   const dash = item.boundary === "dashed" ? ' stroke-dasharray="3 1.5"' : "";
   const caption = [item.tag, item.name].filter(Boolean).join("  ");
@@ -265,7 +292,11 @@ export function renderEquipment(item: EquipmentItem): string {
       return stub + label;
     })
     .join("");
-  return `<g class="item item-equipment" data-id="${escapeXml(item.id)}" color="${escapeXml(color)}"><rect x="${n(item.position.x)}" y="${n(item.position.y)}" width="${n(item.size.width)}" height="${n(item.size.height)}" fill="none" stroke="currentColor" stroke-width="0.35"${dash}/>${nozzles}${caption ? text(caption, item.position.x + 1, item.position.y - 1.2, { anchor: "start", size: TEXT_MM, weight: "600" }) : ""}</g>`;
+  const badge = ctx?.partBadges?.[item.id];
+  const extras =
+    (item.dnp ? text("DNP", item.position.x + item.size.width - 1, item.position.y - 1.2, { anchor: "end", size: 1.8, weight: "600" }) : "") +
+    (badge ? renderPartBadge(badge, item.position.x + item.size.width / 2, item.position.y + item.size.height + 1.2) : "");
+  return `<g class="item item-equipment" data-id="${escapeXml(item.id)}" color="${escapeXml(color)}"><rect x="${n(item.position.x)}" y="${n(item.position.y)}" width="${n(item.size.width)}" height="${n(item.size.height)}" fill="none" stroke="currentColor" stroke-width="0.35"${dash}/>${nozzles}${caption ? text(caption, item.position.x + 1, item.position.y - 1.2, { anchor: "start", size: TEXT_MM, weight: "600" }) : ""}${extras}</g>`;
 }
 
 export function renderLabel(item: LabelItem): string {
@@ -294,7 +325,7 @@ export function renderItem(item: Item, ctx: RenderContext): string {
     case "line":
       return renderLine(item, ctx);
     case "equipment":
-      return renderEquipment(item);
+      return renderEquipment(item, ctx);
     case "label":
       return renderLabel(item);
     case "note":

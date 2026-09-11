@@ -106,6 +106,12 @@ export type SymbolItem = ItemBase & {
   componentId?: string;
   /** Actuator symbol composed onto a valve body (drawn at the body's actuatorMount). */
   actuator?: SymbolRef;
+  /** Catalog part assigned to this item (Part.id); rolled up by the BoM. */
+  partId?: string | null;
+  /** Do not populate: drawn and listed, but not counted in the BoM. */
+  dnp?: boolean;
+  /** Spares to procure in addition to the placed quantity. */
+  spare?: number;
   fields: Record<string, FieldValue>;
 };
 
@@ -154,6 +160,10 @@ export type LineItem = ItemBase & {
   /** Print "size spec" under the longest segment (default on when either is set). */
   showSpecLabel?: boolean;
   annotations?: LineAnnotation[];
+  /** Physical length in metres, when known; overrides the drawn-length estimate. */
+  physicalLength?: number;
+  /** Physical metres per drawn millimetre when estimating length from the sheet (default 0.001). */
+  lengthFactor?: number;
   fields: Record<string, FieldValue>;
 };
 
@@ -176,6 +186,9 @@ export type EquipmentItem = ItemBase & {
   boundary: "solid" | "dashed";
   color?: string;
   nozzles?: Nozzle[];
+  partId?: string | null;
+  dnp?: boolean;
+  spare?: number;
   fields: Record<string, FieldValue>;
 };
 

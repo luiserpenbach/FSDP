@@ -19,7 +19,7 @@ import type { Editor, EditorSnapshot, Modifiers } from "../../engine/editor";
 import type { DrawingContext } from "../../engine/frames";
 import { equipmentPorts } from "../../engine/connectivity";
 import { type SymbolRegistry } from "../../engine/library";
-import { renderFrame, renderItem, renderJunctions, pathFromPoints } from "../../engine/render";
+import { renderFrame, renderItem, renderJunctions, pathFromPoints, type PartBadge } from "../../engine/render";
 import { frameRect, sheetSize } from "../../engine/sheet";
 import { itemBounds } from "../../engine/spatial";
 import type { Item, Point, Rect } from "../../engine/types";
@@ -29,6 +29,8 @@ export type Viewport = { x: number; y: number; zoom: number };
 export type SchematicCanvasHandle = {
   fitToSheet: () => void;
   zoomBy: (factor: number) => void;
+  /** Centre the view on a sheet point (mm), zooming in when the view is wider than `spanMm`. */
+  focusPoint: (point: Point, spanMm?: number) => void;
   viewport: () => Viewport;
 };
 
@@ -43,23 +45,28 @@ const ItemView = memo(
     registry,
     notes,
     hops,
-    connectorTarget
+    connectorTarget,
+    partBadge
   }: {
     item: Item;
     registry: SymbolRegistry;
     notes: boolean;
     hops?: Point[];
     connectorTarget?: string;
+    partBadge?: PartBadge;
   }) {
     const crossings = hops?.length ? new Map([[item.id, hops]]) : undefined;
     const connectorTargets = connectorTarget ? { [item.id]: connectorTarget } : undefined;
-    return <g dangerouslySetInnerHTML={{ __html: renderItem(item, { registry, notes, crossings, connectorTargets }) }} />;
+    const partBadges = partBadge ? { [item.id]: partBadge } : undefined;
+    return <g dangerouslySetInnerHTML={{ __html: renderItem(item, { registry, notes, crossings, connectorTargets, partBadges }) }} />;
   },
   (previous, next) =>
     previous.item === next.item &&
     previous.registry === next.registry &&
     previous.notes === next.notes &&
     previous.connectorTarget === next.connectorTarget &&
+    previous.partBadge?.text === next.partBadge?.text &&
+    previous.partBadge?.tone === next.partBadge?.tone &&
     hopsKey(previous.hops) === hopsKey(next.hops)
 );
 
@@ -80,6 +87,7 @@ function SchematicCanvasInner(
     showGrid,
     context,
     connectorTargets,
+    partBadges,
     onCursor,
     onViewport
   }: {
@@ -89,6 +97,8 @@ function SchematicCanvasInner(
     context?: DrawingContext;
     /** Resolved off-page references per connector item id. */
     connectorTargets?: Record<string, string>;
+    /** Assigned-part badges per item id (canvas only). */
+    partBadges?: Record<string, PartBadge>;
     onCursor?: (point: Point | null) => void;
     onViewport?: (viewport: Viewport) => void;
   },
@@ -138,6 +148,12 @@ function SchematicCanvasInner(
     () => ({
       fitToSheet,
       zoomBy: (factor) => zoomAround(factor, { x: size.width / 2, y: size.height / 2 }),
+      focusPoint: (point, spanMm = 120) => {
+        setViewport((current) => {
+          const zoom = Math.min(MAX_ZOOM, Math.max(current.zoom, Math.min(size.width, size.height) / spanMm));
+          return { zoom, x: size.width / 2 - point.x * zoom, y: size.height / 2 - point.y * zoom };
+        });
+      },
       viewport: () => viewport
     }),
     [fitToSheet, zoomAround, size.width, size.height, viewport]
@@ -308,6 +324,7 @@ function SchematicCanvasInner(
                   notes
                   hops={item.kind === "line" ? connectivity.crossings.get(item.id) : undefined}
                   connectorTarget={connectorTargets?.[item.id]}
+                  partBadge={partBadges?.[item.id]}
                 />
               )
             )}

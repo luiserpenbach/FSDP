@@ -610,6 +610,19 @@ export function PartsCatalog({
                   ) : (
                     <p className="hint">Not placed on any diagram.</p>
                   )}
+                  {usage?.drawing_items?.length ? (
+                    <DataTable
+                      rows={usage.drawing_items}
+                      getKey={(row) => `${row.sheet_id}-${row.item_id}`}
+                      columns={[
+                        { header: "Tag", render: (row) => <span className="mono">{row.tag ?? row.item_id}{row.dnp ? " (DNP)" : ""}</span> },
+                        { header: "Drawing", render: (row) => `${row.drawing_number} sheet ${row.sheet_no}` },
+                        { header: "Zone", render: (row) => <span className="mono">{row.zone ?? "—"}</span> }
+                      ]}
+                    />
+                  ) : (
+                    <p className="hint">Not on any drawing.</p>
+                  )}
                   {usage && usage.bom_snapshots.length > 0 && (
                     <p className="hint">
                       {usage.bom_snapshots.length} BoM snapshot{usage.bom_snapshots.length === 1 ? "" : "s"} on those

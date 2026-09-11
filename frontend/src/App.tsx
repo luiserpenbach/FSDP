@@ -60,7 +60,7 @@ import {
 import { EditorSettingsContext, type LabelMode } from "./components/pid/settings";
 import { SymbolEditorModal } from "./components/pid/SymbolEditorModal";
 import { PanelResizer, useStoredWidth } from "./components/resizable";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { api, bomCsvUrl, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
@@ -385,6 +385,12 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [selectedSystemId, setSelectedSystemId] = useState("");
   const [selectedDiagramId, setSelectedDiagramId] = useState("");
   const [selectedPartId, setSelectedPartId] = useState("");
+  // Deep link from drawing part badges: /parts?part=<id>.
+  const location = useLocation();
+  useEffect(() => {
+    const linked = new URLSearchParams(location.search).get("part");
+    if (linked) setSelectedPartId(linked);
+  }, [location.search]);
   const [selectedRequirementId, setSelectedRequirementId] = useState("");
   const [selectedComponentId, setSelectedComponentId] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
@@ -2220,6 +2226,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
               selectedSystemId={selectedSystemId}
               customSymbols={customSymbols}
               refreshSymbols={() => void api.listSymbols().then((list) => setCustomSymbols(Array.isArray(list) ? list : []))}
+              parts={parts}
               user={user}
               canWrite={user.role !== "viewer"}
               notify={notifyFromDrafting}

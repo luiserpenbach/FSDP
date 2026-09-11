@@ -13,6 +13,7 @@ from app.api.routes import record_change, require_model
 from app.core.security import require_writer
 from app.db import get_db
 from app.models import (
+    BomSnapshot,
     Diagram,
     Drawing,
     DrawingRevision,
@@ -20,10 +21,13 @@ from app.models import (
     FluidSystem,
     LineClass,
     Project,
+    SheetItem,
+    SheetLine,
     TagScheme,
     User,
 )
 from app.schemas import (
+    BomSnapshotRead,
     DrawingCreate,
     DrawingRead,
     DrawingRevisionCreate,
@@ -38,11 +42,24 @@ from app.schemas import (
     LineClassImportRead,
     LineClassRead,
     LineClassUpdate,
+    ListRead,
     SheetExportIn,
+    SheetIndexRead,
     TagSchemeIn,
     TagSchemeRead,
 )
+from app.services.bom import generate_drawing_bom_snapshot
 from app.services.export import export_filename, svg_to_pdf, svg_to_png
+from app.services.lists import (
+    LIST_KINDS,
+    list_columns,
+    list_filename,
+    list_header,
+    list_rows,
+    rows_to_csv,
+    rows_to_xlsx,
+)
+from app.services.sheet_index import replace_sheet_index
 
 drawing_router = APIRouter()
 
@@ -287,6 +304,8 @@ def update_sheet(
         sheet.title = data["title"]
     if data.get("document") is not None:
         sheet.document = data["document"]
+    if payload.index is not None:
+        replace_sheet_index(db, sheet, payload.index)
     drawing = require_model(db, Drawing, sheet.drawing_id)
     item_count = len((sheet.document or {}).get("items", []))
     record_change(
@@ -411,6 +430,143 @@ def export_sheet(
         content=body,
         media_type=MEDIA_TYPES[payload.format],
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@drawing_router.get("/sheets/{sheet_id}/index", response_model=SheetIndexRead)
+def get_sheet_index(sheet_id: str, db: Session = Depends(get_db)) -> dict:
+    sheet = require_model(db, DrawingSheet, sheet_id)
+    items = list(db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id)))
+    lines = list(db.scalars(select(SheetLine).where(SheetLine.sheet_id == sheet.id)))
+    return {"sheet_id": sheet.id, "items": items, "lines": lines}
+
+
+LIST_MEDIA_TYPES = {
+    "csv": "text/csv",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
+def _list_kind(kind: str) -> str:
+    normalized = kind.replace("-", "_")
+    if normalized not in LIST_KINDS:
+        raise HTTPException(
+            status_code=404, detail="Unknown list; expected one of " + ", ".join(LIST_KINDS)
+        )
+    return normalized
+
+
+def _list_response(
+    kind: str,
+    scope: str,
+    scope_name: str,
+    header: dict,
+    columns: list[tuple[str, str]],
+    rows: list[dict],
+    fmt: str,
+) -> Response | dict:
+    if fmt == "json":
+        return {
+            "kind": kind,
+            "title": header.get("list", kind),
+            "scope": scope,
+            "header": header,
+            "columns": [{"key": key, "label": label} for key, label in columns],
+            "rows": rows,
+        }
+    if fmt not in LIST_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail="format must be json, csv, or xlsx")
+    payload = (
+        rows_to_csv(header, columns, rows).encode("utf-8")
+        if fmt == "csv"
+        else rows_to_xlsx(header, columns, rows)
+    )
+    filename = list_filename(kind, scope_name, fmt)
+    return Response(
+        payload,
+        media_type=LIST_MEDIA_TYPES[fmt],
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@drawing_router.get("/drawings/{drawing_id}/lists/{kind}", response_model=ListRead)
+def get_drawing_list(
+    drawing_id: str, kind: str, format: str = "json", db: Session = Depends(get_db)
+):
+    """Engineering list for one drawing (all sheets), as JSON rows, CSV, or XLSX."""
+    list_kind = _list_kind(kind)
+    drawing = _load_drawing(db, drawing_id)
+    project = require_model(db, Project, drawing.project_id)
+    rows = list_rows(db, list_kind, [drawing])
+    return _list_response(
+        list_kind,
+        "drawing",
+        drawing.number,
+        list_header(list_kind, "drawing", drawing, project),
+        list_columns(list_kind, "drawing"),
+        rows,
+        format,
+    )
+
+
+@drawing_router.get("/projects/{project_id}/lists/{kind}", response_model=ListRead)
+def get_project_list(
+    project_id: str, kind: str, format: str = "json", db: Session = Depends(get_db)
+):
+    """Engineering list across every drawing of a project."""
+    list_kind = _list_kind(kind)
+    project = require_model(db, Project, project_id)
+    drawings = list(
+        db.scalars(
+            select(Drawing)
+            .where(Drawing.project_id == project.id)
+            .options(selectinload(Drawing.sheets), selectinload(Drawing.revisions))
+            .order_by(Drawing.number)
+        )
+    )
+    rows = list_rows(db, list_kind, drawings)
+    return _list_response(
+        list_kind,
+        "project",
+        project.name,
+        list_header(list_kind, "project", None, project),
+        list_columns(list_kind, "project"),
+        rows,
+        format,
+    )
+
+
+@drawing_router.post("/drawings/{drawing_id}/bom", response_model=BomSnapshotRead, status_code=201)
+def create_drawing_bom(
+    drawing_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> BomSnapshot:
+    """Generate a BoM snapshot from the drawing's sheet index."""
+    drawing = _load_drawing(db, drawing_id)
+    snapshot = generate_drawing_bom_snapshot(db, drawing)
+    record_change(
+        db,
+        "bom_snapshot",
+        snapshot.id,
+        "created",
+        f"Generated BoM rev {snapshot.revision} for drawing {drawing.number}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(snapshot)
+    return snapshot
+
+
+@drawing_router.get("/drawings/{drawing_id}/bom", response_model=list[BomSnapshotRead])
+def list_drawing_boms(drawing_id: str, db: Session = Depends(get_db)) -> list[BomSnapshot]:
+    require_model(db, Drawing, drawing_id)
+    return list(
+        db.scalars(
+            select(BomSnapshot)
+            .where(BomSnapshot.drawing_id == drawing_id)
+            .order_by(BomSnapshot.revision.desc())
+        )
     )
 
 

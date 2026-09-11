@@ -3025,3 +3025,219 @@ span.symbolListPendingName.untitled {
   padding: 5px 8px;
   width: auto;
 }
+
+/* ---- Phase 4: lists drawer, part assignment ---- */
+
+.draftingBody.withLists .schematicCanvas,
+.draftingBody.withLists .draftingSide,
+.draftingBody.withLists .draftingInspector,
+.draftingBody.withLists .libraryPanel {
+  height: calc(100vh - 214px - 250px);
+  max-height: calc(100vh - 214px - 250px);
+  min-height: 300px;
+}
+
+.listsDrawer {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-top: none;
+  display: flex;
+  flex-direction: column;
+  height: 250px;
+  min-height: 0;
+}
+
+.listsHead {
+  align-items: center;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 4px 10px;
+}
+
+.listTabs {
+  display: flex;
+  gap: 2px;
+}
+
+.listTab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.listTab.active {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.listCount {
+  background: var(--line-soft);
+  border-radius: 999px;
+  font-size: 10px;
+  margin-left: 6px;
+  padding: 0 6px;
+}
+
+.listControls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.listControls .checkRow {
+  font-size: 12px;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.listControls .findInput {
+  width: 160px;
+}
+
+.listControls button,
+.listControls .findInput {
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.listScroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 10px 8px;
+}
+
+.bomControls {
+  margin: 8px 0;
+}
+
+.listTable {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+}
+
+.listTable th {
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  padding: 4px 8px;
+  position: sticky;
+  text-align: left;
+  top: 0;
+  white-space: nowrap;
+}
+
+.listTable td {
+  border-bottom: 1px solid var(--line-soft);
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.listRow {
+  cursor: pointer;
+}
+
+.listRow:hover td {
+  background: var(--surface-2);
+}
+
+.partSection {
+  border-top: 1px solid var(--line-soft);
+  margin-top: 8px;
+  padding-top: 6px;
+}
+
+.partSection .toolGroup {
+  display: flex;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+
+.partCurrent a {
+  font-weight: 600;
+}
+
+.partWarnings {
+  color: var(--warn, #b45309);
+  font-size: 12px;
+  margin: 0 0 6px;
+  padding-left: 16px;
+}
+
+.assignPartModal {
+  display: flex;
+  flex-direction: column;
+  max-height: 80vh;
+  width: min(760px, 94vw);
+}
+
+.assignPartFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.assignPartFilters input {
+  flex: 1 1 240px;
+}
+
+.chip {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  padding: 2px 10px;
+}
+
+.chip.active {
+  background: var(--accent-soft, #dbeafe);
+  border-color: var(--accent, #2563eb);
+  color: var(--accent, #2563eb);
+}
+
+.assignPartList {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  flex: 1;
+  min-height: 160px;
+  overflow: auto;
+}
+
+.assignPartRow {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
+  color: var(--text);
+  display: grid;
+  gap: 2px 10px;
+  grid-template-columns: 130px 1fr auto;
+  padding: 6px 10px;
+  text-align: left;
+  width: 100%;
+}
+
+.assignPartRow.active {
+  background: var(--accent-soft, #dbeafe);
+}
+
+.assignPartRow .assignPartMeta,
+.assignPartRow .assignPartWarnings {
+  color: var(--text-2);
+  font-size: 11px;
+  grid-column: 1 / -1;
+}
+
+.assignPartRow .assignPartWarnings {
+  color: var(--warn, #b45309);
+}

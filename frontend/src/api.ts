@@ -13,6 +13,7 @@ import type {
   FluidSystem,
   Impact,
   LineClass,
+  ListRead,
   Part,
   PartUsage,
   PidSymbolDef,
@@ -148,7 +149,7 @@ export const api = {
   createSheet: (drawingId: string, body: { title?: string | null; source_diagram_id?: string | null; document?: unknown }) =>
     request<DrawingSheet>(`/drawings/${drawingId}/sheets`, { method: "POST", body: JSON.stringify(body) }),
   getSheet: (sheetId: string) => request<DrawingSheet>(`/sheets/${sheetId}`),
-  updateSheet: (sheetId: string, body: { title?: string | null; document?: unknown }) =>
+  updateSheet: (sheetId: string, body: { title?: string | null; document?: unknown; index?: unknown }) =>
     request<DrawingSheet>(`/sheets/${sheetId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteSheet: (sheetId: string) => requestNoContent(`/sheets/${sheetId}`, { method: "DELETE" }),
   createRevision: (drawingId: string, body: Partial<Omit<DrawingRevision, "id" | "drawing_id" | "sequence" | "status" | "created_at">>) =>
@@ -162,6 +163,16 @@ export const api = {
     const match = /filename="([^"]+)"/.exec(disposition);
     return { blob: await response.blob(), filename: match?.[1] ?? `sheet.${body.format}` };
   },
+  getDrawingList: (drawingId: string, kind: string) => request<ListRead>(`/drawings/${drawingId}/lists/${kind}`),
+  getProjectList: (projectId: string, kind: string) => request<ListRead>(`/projects/${projectId}/lists/${kind}`),
+  downloadList: async (scope: "drawing" | "project", id: string, kind: string, format: "csv" | "xlsx") => {
+    const base = scope === "drawing" ? `/drawings/${id}` : `/projects/${id}`;
+    const response = await rawRequest(`${base}/lists/${kind}?format=${format}`);
+    const match = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "");
+    return { blob: await response.blob(), filename: match?.[1] ?? `${kind}-list.${format}` };
+  },
+  generateDrawingBom: (drawingId: string) => request<BomSnapshot>(`/drawings/${drawingId}/bom`, { method: "POST" }),
+  listDrawingBoms: (drawingId: string) => request<BomSnapshot[]>(`/drawings/${drawingId}/bom`),
   listLineClasses: (projectId: string) => request<LineClass[]>(`/projects/${projectId}/line-classes`),
   createLineClass: (projectId: string, body: Partial<Omit<LineClass, "id" | "project_id" | "created_at" | "updated_at">> & { name: string }) =>
     request<LineClass>(`/projects/${projectId}/line-classes`, { method: "POST", body: JSON.stringify(body) }),
