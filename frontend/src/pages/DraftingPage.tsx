@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import { AssignPartModal } from "../components/schematic/AssignPartModal";
 import { DrcPanel, useDrc, type DrcInputs } from "../components/schematic/DrcPanel";
+import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
@@ -255,7 +256,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
-  const [showDrawingPanel, setShowDrawingPanel] = useState(true);
+  const [showDrawingPanel, setShowDrawingPanel] = useState(false);
   const [creating, setCreating] = useState<null | { mode: "new" | "convert" }>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
@@ -270,6 +271,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [listsBusy, setListsBusy] = useState(false);
   const [waivers, setWaivers] = useState<DrcWaiver[]>([]);
   const [exportFindings, setExportFindings] = useState(false);
+  const [libraryWidth, setLibraryWidth] = useStoredWidth("fsdp.draftingLibraryWidth", 248, 200, 420);
+  const [sideWidth, setSideWidth] = useStoredWidth("fsdp.draftingSideWidth", 340, 280, 560);
   const pendingLocate = useRef<LocateTarget | null>(null);
   const canvasRef = useRef<SchematicCanvasHandle>(null);
   const registry = useMemo(() => SymbolRegistry.withBuiltins(customSymbols), [customSymbols]);
@@ -767,169 +770,199 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   }
 
   return (
-    <PageLayout className="draftingPage" title="Drafting" description="Paper-space P&ID drawings">
-      <div className="draftingLayout">
-        <div className="draftingTop toolbar">
-          <label>
-            Drawing
-            <select value={drawingId} onChange={(event) => switchDrawing(event.target.value)} disabled={!drawings.length}>
-              {drawings.length === 0 && <option value="">No drawings in this project</option>}
-              {drawings.map((entry) => (
-                <option key={entry.id} value={entry.id}>
-                  {entry.number} · {entry.title.split("\n")[0]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="toolGroup">
-            <button type="button" disabled={!canWrite || !projectId} onClick={() => setCreating({ mode: "new" })}>
-              New drawing
-            </button>
-            <button type="button" disabled={!canWrite || !diagrams.length} onClick={() => setCreating({ mode: "convert" })} title="Create a drawing from a diagram on the Diagrams page">
-              Convert diagram…
+    <PageLayout className="draftingPage" title="Drafting" description="Paper-space P&ID drawings" showHeader={false}>
+      <header className="draftingHeader">
+        <h1>Drafting</h1>
+        <label className="draftingDrawingSelect">
+          <span className="srOnly">Drawing</span>
+          <select value={drawingId} onChange={(event) => switchDrawing(event.target.value)} disabled={!drawings.length} aria-label="Drawing">
+            {drawings.length === 0 && <option value="">No drawings in this project</option>}
+            {drawings.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.number} · {entry.title.split("\n")[0]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {drawing && (
+          <div className="sheetTabs" role="tablist" aria-label="Sheets">
+            <span className="sheetTabsLabel">Sheet</span>
+            {drawing.sheets.map((sheet) => (
+              <button
+                key={sheet.id}
+                type="button"
+                role="tab"
+                aria-selected={sheet.id === sheetId}
+                className={sheet.id === sheetId ? "sheetTab active" : "sheetTab"}
+                onClick={() => switchSheet(sheet.id)}
+                title={sheet.title ?? `Sheet ${sheet.sheet_no}`}
+              >
+                {sheet.sheet_no}
+              </button>
+            ))}
+            <button type="button" className="sheetTab sheetTabAdd" disabled={!canWrite} onClick={() => void addSheet()} title="Add sheet">
+              +
             </button>
           </div>
-          {drawing && (
-            <div className="sheetTabs" role="tablist" aria-label="Sheets">
-              {drawing.sheets.map((sheet) => (
-                <button
-                  key={sheet.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={sheet.id === sheetId}
-                  className={sheet.id === sheetId ? "sheetTab active" : "sheetTab"}
-                  onClick={() => switchSheet(sheet.id)}
-                  title={sheet.title ?? `Sheet ${sheet.sheet_no}`}
-                >
-                  {sheet.sheet_no}
-                </button>
-              ))}
-              <button type="button" className="sheetTab" disabled={!canWrite} onClick={() => void addSheet()} title="Add sheet">
-                +
-              </button>
-            </div>
-          )}
+        )}
+        <div className="draftingHeaderActions">
+          <button type="button" disabled={!canWrite || !projectId} onClick={() => setCreating({ mode: "new" })}>
+            New drawing
+          </button>
+          <button type="button" disabled={!canWrite || !diagrams.length} onClick={() => setCreating({ mode: "convert" })} title="Create a drawing from a diagram on the Diagrams page">
+            Convert diagram…
+          </button>
           {editor && (
-            <EditorToolbar
-              editor={editor}
-              registry={registry}
-              canWrite={canWrite}
-              showGrid={showGrid}
-              onToggleGrid={() => setShowGrid((current) => !current)}
-              onFit={() => canvasRef.current?.fitToSheet()}
-              onZoom={(factor) => canvasRef.current?.zoomBy(factor)}
-              onSave={() => void save()}
-              onExport={(format) => void exportSheet(format)}
-              exporting={exporting}
-              showLibrary={showLibrary}
-              onToggleLibrary={() => setShowLibrary((current) => !current)}
-              showLists={showLists}
-              onToggleLists={() => setShowLists((current) => !current)}
-              exportFindings={exportFindings}
-              onToggleExportFindings={() => setExportFindings((current) => !current)}
-            />
+            <>
+              <span className="draftingHeaderDivider" />
+              <div className="exportGroup" role="group" aria-label="Export">
+                <button type="button" disabled={exporting} onClick={() => void exportSheet("pdf")} title="Vector PDF at paper size">
+                  PDF
+                </button>
+                <button type="button" disabled={exporting} onClick={() => void exportSheet("png")} title="PNG at 300 dpi">
+                  PNG
+                </button>
+                <button type="button" disabled={exporting} onClick={() => void exportSheet("svg")} title="SVG at paper size">
+                  SVG
+                </button>
+                <label className="checkRow" title="Append a design rule check findings page to the PDF">
+                  <input type="checkbox" checked={exportFindings} onChange={() => setExportFindings((current) => !current)} />
+                  <span>DRC page</span>
+                </label>
+              </div>
+              <SaveButton editor={editor} canWrite={canWrite} onSave={() => void save()} />
+            </>
           )}
         </div>
-        {creating && (
-          <NewDrawingForm
-            mode={creating.mode}
-            systems={systems}
-            diagrams={diagrams}
-            defaultSystemId={selectedSystemId}
-            defaultCompany={stringField(drawing?.fields, "company") ?? ""}
-            onSubmit={(form) => void createDrawing(form)}
-            onCancel={() => setCreating(null)}
+      </header>
+      {creating && (
+        <NewDrawingForm
+          mode={creating.mode}
+          systems={systems}
+          diagrams={diagrams}
+          defaultSystemId={selectedSystemId}
+          defaultCompany={stringField(drawing?.fields, "company") ?? ""}
+          onSubmit={(form) => void createDrawing(form)}
+          onCancel={() => setCreating(null)}
+        />
+      )}
+      <section className="draftingWorkspace">
+        {editor && (
+          <EditorToolbar
+            editor={editor}
+            registry={registry}
+            canWrite={canWrite}
+            showGrid={showGrid}
+            onToggleGrid={() => setShowGrid((current) => !current)}
+            onFit={() => canvasRef.current?.fitToSheet()}
+            onZoom={(factor) => canvasRef.current?.zoomBy(factor)}
+            showLibrary={showLibrary}
+            onToggleLibrary={() => setShowLibrary((current) => !current)}
+            showLists={showLists}
+            onToggleLists={() => setShowLists((current) => !current)}
           />
         )}
-        <div className={`draftingBody${showLibrary && editor ? " withLibrary" : ""}${showLists && editor ? " withLists" : ""}`}>
+        <div className="draftingColumns">
           {editor && showLibrary && (
-            <LibraryPanelHost editor={editor} registry={registry} canWrite={canWrite} onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)} />
+            <>
+              <aside className="draftingLibrary" style={{ width: libraryWidth }}>
+                <LibraryPanelHost editor={editor} registry={registry} canWrite={canWrite} onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)} />
+              </aside>
+              <PanelResizer width={libraryWidth} onResize={setLibraryWidth} direction={1} label="Resize symbol library" />
+            </>
           )}
-          {editor ? (
-            <DrawingCanvas
-              editor={editor}
-              registry={registry}
-              showGrid={showGrid}
-              baseContext={context}
-              scheme={tagScheme}
-              flags={flags}
-              sheetNo={sheetSummary?.sheet_no ?? 1}
-              otherSheets={otherSheets}
-              parts={parts}
-              canvasRef={canvasRef}
-              onCursor={setCursor}
-              onViewport={setViewport}
-            />
-          ) : (
-            <div className="schematicCanvas schematicEmpty">
-              <p className="hint">
-                {loading
-                  ? "Opening sheet…"
-                  : !projectId
-                    ? "Select a project on the Systems page first."
-                    : drawings.length
-                      ? "Select a drawing."
-                      : "Create a new drawing, or convert a diagram from the Diagrams page."}
-              </p>
-            </div>
-          )}
-          <div className="draftingSide">
-            {drawing && (
-              <DrawingPanel
-                drawing={drawing}
-                systems={systems}
-                sheetCount={drawing.sheets.length}
-                canWrite={canWrite}
-                open={showDrawingPanel}
-                onToggle={() => setShowDrawingPanel((current) => !current)}
-                onUpdate={(patch) => void updateDrawing(patch)}
-                onAddRevision={(body) => void addRevision(body)}
-                onUpdateRevision={(id, body) => void updateRevision(id, body)}
-                onDeleteSheet={drawing.sheets.length > 1 ? () => void removeSheet() : undefined}
-                onDeleteDrawing={() => void removeDrawing()}
-              />
-            )}
-            {editor && (
-              <Inspector
+          <div className="draftingCenter">
+            {editor ? (
+              <DrawingCanvas
                 editor={editor}
                 registry={registry}
-                canWrite={canWrite}
-                lineClasses={lineClasses}
-                otherSheets={otherSheets}
+                showGrid={showGrid}
+                baseContext={context}
+                scheme={tagScheme}
+                flags={flags}
                 sheetNo={sheetSummary?.sheet_no ?? 1}
+                otherSheets={otherSheets}
                 parts={parts}
-                drcInputs={drcInputs}
-                onLocate={focusItem}
-                onWaive={(key, reason) => void waiveFinding(key, reason)}
-                onUnwaive={(key) => void unwaiveFinding(key)}
-                onRunDrc={reportDrc}
+                canvasRef={canvasRef}
+                onCursor={setCursor}
+                onViewport={setViewport}
+              />
+            ) : (
+              <div className="schematicCanvas schematicEmpty">
+                <p className="hint">
+                  {loading
+                    ? "Opening sheet…"
+                    : !projectId
+                      ? "Select a project on the Systems page first."
+                      : drawings.length
+                        ? "Select a drawing."
+                        : "Create a new drawing, or convert a diagram from the Diagrams page."}
+                </p>
+              </div>
+            )}
+            {editor && showLists && (
+              <ListsDrawer
+                editor={editor}
+                sheetId={sheetId}
+                sheetNo={sheetSummary?.sheet_no ?? 1}
+                otherSheets={otherSheets}
+                parts={parts}
+                projectId={projectId}
+                drawing={drawing}
+                canWrite={canWrite}
+                tab={listTab}
+                onTab={setListTab}
+                onLocate={locate}
+                onExport={(scope, kind, format) => void exportList(scope, kind, format)}
+                onGenerateBom={() => void generateBom()}
+                bom={bom}
+                readiness={bomReadiness}
+                busy={listsBusy}
+                onClose={() => setShowLists(false)}
               />
             )}
           </div>
+          {(drawing || editor) && (
+            <>
+              <PanelResizer width={sideWidth} onResize={setSideWidth} direction={-1} label="Resize inspector" />
+              <div className="draftingSide" style={{ width: sideWidth }}>
+                {drawing && (
+                  <DrawingPanel
+                    drawing={drawing}
+                    systems={systems}
+                    sheetCount={drawing.sheets.length}
+                    canWrite={canWrite}
+                    open={showDrawingPanel}
+                    onToggle={() => setShowDrawingPanel((current) => !current)}
+                    onUpdate={(patch) => void updateDrawing(patch)}
+                    onAddRevision={(body) => void addRevision(body)}
+                    onUpdateRevision={(id, body) => void updateRevision(id, body)}
+                    onDeleteSheet={drawing.sheets.length > 1 ? () => void removeSheet() : undefined}
+                    onDeleteDrawing={() => void removeDrawing()}
+                  />
+                )}
+                {editor && (
+                  <Inspector
+                    editor={editor}
+                    registry={registry}
+                    canWrite={canWrite}
+                    lineClasses={lineClasses}
+                    otherSheets={otherSheets}
+                    sheetNo={sheetSummary?.sheet_no ?? 1}
+                    parts={parts}
+                    drcInputs={drcInputs}
+                    onLocate={focusItem}
+                    onWaive={(key, reason) => void waiveFinding(key, reason)}
+                    onUnwaive={(key) => void unwaiveFinding(key)}
+                    onRunDrc={reportDrc}
+                  />
+                )}
+              </div>
+            </>
+          )}
         </div>
-        {editor && showLists && (
-          <ListsDrawer
-            editor={editor}
-            sheetId={sheetId}
-            sheetNo={sheetSummary?.sheet_no ?? 1}
-            otherSheets={otherSheets}
-            parts={parts}
-            projectId={projectId}
-            drawing={drawing}
-            canWrite={canWrite}
-            tab={listTab}
-            onTab={setListTab}
-            onLocate={locate}
-            onExport={(scope, kind, format) => void exportList(scope, kind, format)}
-            onGenerateBom={() => void generateBom()}
-            bom={bom}
-            readiness={bomReadiness}
-            busy={listsBusy}
-            onClose={() => setShowLists(false)}
-          />
-        )}
         {editor && <StatusBar editor={editor} cursor={cursor} viewport={viewport} drcInputs={drcInputs} />}
-      </div>
+      </section>
     </PageLayout>
   );
 }
@@ -1166,9 +1199,18 @@ function DrawingPanel({
       <div className="panelHead">
         <h2>Drawing {drawing.number}</h2>
         <button type="button" className="linkButton" onClick={onToggle}>
-          {open ? "Hide" : "Show"}
+          {open ? "Hide" : "Edit"}
         </button>
       </div>
+      {!open && (
+        <p className="drawingSummary">
+          <span>{drawing.title.split("\n")[0]}</span>
+          <span className="mono">{SHEET_SIZES[drawing.size as SheetSizeId]?.label ?? drawing.size}</span>
+          <span>{sheetCount} sheet(s)</span>
+          <span>rev {drawing.revisions[drawing.revisions.length - 1]?.label ?? "-"}</span>
+          <span className="pill pill-muted">{drawing.status}</span>
+        </p>
+      )}
       {open && (
         <>
           <label>
@@ -1327,6 +1369,26 @@ function DrawingPanel({
   );
 }
 
+/** Save button that reflects the store's dirty state. */
+function SaveButton({ editor, canWrite, onSave }: { editor: Editor; canWrite: boolean; onSave: () => void }) {
+  useEditorSnapshot(editor);
+  const dirty = editor.store.dirty;
+  return (
+    <button type="button" className="primary" disabled={!canWrite || !dirty} onClick={onSave} title="Save the sheet (Ctrl+S)">
+      {dirty ? "Save" : "Saved"}
+    </button>
+  );
+}
+
+function RibbonButton({ active, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { active?: boolean }) {
+  return (
+    <button type="button" className={active ? "ribbonButton active" : "ribbonButton"} aria-pressed={active} {...props}>
+      {children}
+    </button>
+  );
+}
+
+/** One-row ribbon: tools, edit, view, panels, and tagging/find, in that order. */
 function EditorToolbar({
   editor,
   registry,
@@ -1335,15 +1397,10 @@ function EditorToolbar({
   onToggleGrid,
   onFit,
   onZoom,
-  onSave,
-  onExport,
-  exporting,
   showLibrary,
   onToggleLibrary,
   showLists,
-  onToggleLists,
-  exportFindings,
-  onToggleExportFindings
+  onToggleLists
 }: {
   editor: Editor;
   registry: SymbolRegistry;
@@ -1352,95 +1409,81 @@ function EditorToolbar({
   onToggleGrid: () => void;
   onFit: () => void;
   onZoom: (factor: number) => void;
-  onSave: () => void;
-  onExport: (format: "pdf" | "png" | "svg") => void;
-  exporting: boolean;
   showLibrary: boolean;
   onToggleLibrary: () => void;
   showLists: boolean;
   onToggleLists: () => void;
-  exportFindings: boolean;
-  onToggleExportFindings: () => void;
 }) {
-  const { state, doc } = useEditorSnapshot(editor);
+  const { state } = useEditorSnapshot(editor);
   const store = editor.store;
-  const scheme = editor.tagScheme;
   void registry;
+  void canWrite;
+  const hasSelection = state.selection.length > 0;
 
   return (
-    <>
-      <div className="toolGroup" role="group" aria-label="Tools">
+    <div className="draftingRibbon" role="toolbar" aria-label="Editor tools">
+      <div className="ribbonGroup" role="group" aria-label="Tools">
         {TOOLS.map((tool) => (
-          <button
-            key={tool.id}
-            type="button"
-            className={state.tool === tool.id ? "toolButton active" : "toolButton"}
-            onClick={() => editor.setTool(tool.id)}
-            title={`${tool.label} (${tool.key})`}
-          >
+          <RibbonButton key={tool.id} active={state.tool === tool.id} onClick={() => editor.setTool(tool.id)} title={`${tool.label} (${tool.key})`}>
             {tool.label}
-          </button>
+          </RibbonButton>
         ))}
-      </div>
-      <div className="toolGroup">
-        <button type="button" className={showLibrary ? "toolButton active" : "toolButton"} onClick={onToggleLibrary} title="Show or hide the symbol library (P)">
-          Library
-        </button>
-        <button type="button" className={showLists ? "toolButton active" : "toolButton"} onClick={onToggleLists} title="Instrument index, line list, valve list, equipment list, tie-ins, and BoM">
-          Lists
-        </button>
-        {scheme.kind === "structured" && (
-          <>
-            <select
-              value={state.tagContext.system ?? scheme.systems[0]?.digit ?? ""}
-              onChange={(event) => editor.setTagContext({ system: event.target.value })}
-              title="System digit for new tags"
-              aria-label="Tag system"
-            >
-              {scheme.systems.map((entry) => (
-                <option key={entry.digit} value={entry.digit}>
-                  {entry.digit} · {entry.name}
-                </option>
-              ))}
-            </select>
-            <select
-              value={state.tagContext.cls ?? scheme.classes[0]?.digit ?? ""}
-              onChange={(event) => editor.setTagContext({ cls: event.target.value })}
-              title="Class digit for new tags"
-              aria-label="Tag class"
-            >
-              {scheme.classes.map((entry) => (
-                <option key={entry.digit} value={entry.digit}>
-                  {entry.digit} · {entry.name}
-                </option>
-              ))}
-            </select>
-          </>
-        )}
-        <button type="button" disabled={!canWrite || !state.selection.length} onClick={() => editor.renumberSelection()} title="Re-sequence the selected tags in reading order">
-          Renumber
-        </button>
-        <select
-          aria-label="Align or distribute"
-          value=""
-          disabled={state.selection.length < 2}
-          onChange={(event) => {
-            const value = event.target.value;
-            if (value.startsWith("distribute-")) editor.distributeSelection(value.endsWith("x") ? "x" : "y");
-            else if (value) editor.alignSelection(value as AlignMode);
-          }}
-          title="Align or distribute the selection"
-        >
-          <option value="">Align…</option>
-          <option value="left">Left edges</option>
-          <option value="centerX">Centres (vertical axis)</option>
-          <option value="right">Right edges</option>
-          <option value="top">Top edges</option>
-          <option value="centerY">Centres (horizontal axis)</option>
-          <option value="bottom">Bottom edges</option>
-          <option value="distribute-x">Distribute horizontally</option>
-          <option value="distribute-y">Distribute vertically</option>
+        <select className="ribbonSelect" value={state.lineType} onChange={(event) => editor.setLineType(event.target.value as LineType)} aria-label="Line type" title="Line type for new wires">
+          {(Object.keys(LINE_TYPE_LABELS) as LineType[]).map((type) => (
+            <option key={type} value={type}>
+              {LINE_TYPE_LABELS[type]}
+            </option>
+          ))}
         </select>
+      </div>
+      <span className="ribbonDivider" />
+      <div className="ribbonGroup" role="group" aria-label="Edit">
+        <RibbonButton disabled={!store.canUndo} onClick={() => store.undo()} title="Undo (Ctrl+Z)">
+          Undo
+        </RibbonButton>
+        <RibbonButton disabled={!store.canRedo} onClick={() => store.redo()} title="Redo (Ctrl+Shift+Z)">
+          Redo
+        </RibbonButton>
+        <RibbonButton disabled={!hasSelection && state.tool !== "place"} onClick={() => editor.rotateSelection()} title="Rotate (R)">
+          Rotate
+        </RibbonButton>
+        <RibbonButton disabled={!hasSelection && state.tool !== "place"} onClick={() => editor.mirrorSelection()} title="Mirror (X)">
+          Mirror
+        </RibbonButton>
+        <RibbonButton disabled={!hasSelection} onClick={() => editor.deleteSelection()} title="Delete (Del)">
+          Delete
+        </RibbonButton>
+      </div>
+      <span className="ribbonDivider" />
+      <div className="ribbonGroup" role="group" aria-label="View">
+        <RibbonButton onClick={onFit} title="Fit sheet">
+          Fit
+        </RibbonButton>
+        <RibbonButton onClick={() => onZoom(1.25)} title="Zoom in">
+          +
+        </RibbonButton>
+        <RibbonButton onClick={() => onZoom(0.8)} title="Zoom out">
+          −
+        </RibbonButton>
+        <RibbonButton active={showGrid} onClick={onToggleGrid} title="Show or hide the grid">
+          Grid
+        </RibbonButton>
+        <select className="ribbonSelect ribbonSelectNarrow" value={String(state.grid)} onChange={(event) => editor.setGrid(Number(event.target.value))} aria-label="Snap grid" title="Snap grid">
+          <option value="1.25">1.25 mm</option>
+          <option value="2.5">2.5 mm</option>
+          <option value="5">5 mm</option>
+        </select>
+      </div>
+      <span className="ribbonDivider" />
+      <div className="ribbonGroup" role="group" aria-label="Panels">
+        <RibbonButton active={showLibrary} onClick={onToggleLibrary} title="Show or hide the symbol library (P)">
+          Library
+        </RibbonButton>
+        <RibbonButton active={showLists} onClick={onToggleLists} title="Instrument index, line list, valve list, equipment list, tie-ins, and BoM">
+          Lists
+        </RibbonButton>
+      </div>
+      <div className="ribbonGroup ribbonEnd" role="group" aria-label="Search">
         <input
           type="search"
           className="findInput"
@@ -1454,85 +1497,7 @@ function EditorToolbar({
           }}
         />
       </div>
-      <label>
-        Line type
-        <select value={state.lineType} onChange={(event) => editor.setLineType(event.target.value as LineType)}>
-          {(Object.keys(LINE_TYPE_LABELS) as LineType[]).map((type) => (
-            <option key={type} value={type}>
-              {LINE_TYPE_LABELS[type]}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        Sheet
-        <select
-          value={doc.sheet.size}
-          onChange={(event) => store.dispatch({ type: "sheet", sheet: makeSheet(event.target.value as SheetSizeId, doc.sheet.orientation) })}
-        >
-          {(Object.keys(SHEET_SIZES) as SheetSizeId[]).map((size) => (
-            <option key={size} value={size}>
-              {SHEET_SIZES[size].label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="toolGroup">
-        <button type="button" disabled={!store.canUndo} onClick={() => store.undo()} title="Undo (Ctrl+Z)">
-          Undo
-        </button>
-        <button type="button" disabled={!store.canRedo} onClick={() => store.redo()} title="Redo (Ctrl+Shift+Z)">
-          Redo
-        </button>
-        <button type="button" disabled={!state.selection.length && state.tool !== "place"} onClick={() => editor.rotateSelection()} title="Rotate (R)">
-          Rotate
-        </button>
-        <button type="button" disabled={!state.selection.length && state.tool !== "place"} onClick={() => editor.mirrorSelection()} title="Mirror (X)">
-          Mirror
-        </button>
-        <button type="button" disabled={!state.selection.length} onClick={() => editor.deleteSelection()} title="Delete (Del)">
-          Delete
-        </button>
-      </div>
-      <div className="toolGroup">
-        <button type="button" onClick={onFit} title="Fit sheet">
-          Fit
-        </button>
-        <button type="button" onClick={() => onZoom(1.25)} title="Zoom in">
-          +
-        </button>
-        <button type="button" onClick={() => onZoom(0.8)} title="Zoom out">
-          −
-        </button>
-        <label className="checkRow">
-          <input type="checkbox" checked={showGrid} onChange={onToggleGrid} />
-          <span>Grid</span>
-        </label>
-        <select value={String(state.grid)} onChange={(event) => editor.setGrid(Number(event.target.value))} title="Snap grid">
-          <option value="1.25">1.25 mm</option>
-          <option value="2.5">2.5 mm</option>
-          <option value="5">5 mm</option>
-        </select>
-      </div>
-      <div className="toolGroup">
-        <button type="button" disabled={exporting} onClick={() => onExport("pdf")} title="Vector PDF at paper size">
-          PDF
-        </button>
-        <button type="button" disabled={exporting} onClick={() => onExport("png")} title="PNG at 300 dpi">
-          PNG
-        </button>
-        <button type="button" disabled={exporting} onClick={() => onExport("svg")} title="SVG at paper size">
-          SVG
-        </button>
-        <label className="checkRow" title="Append a design rule check findings page to the PDF">
-          <input type="checkbox" checked={exportFindings} onChange={onToggleExportFindings} />
-          <span>DRC page</span>
-        </label>
-        <button type="button" className="primary" disabled={!canWrite || !store.dirty} onClick={onSave} title="Save (Ctrl+S)">
-          {store.dirty ? "Save" : "Saved"}
-        </button>
-      </div>
-    </>
+    </div>
   );
 }
 
@@ -1578,16 +1543,93 @@ function Inspector({
     <aside className="inspector draftingInspector">
       <article className="panel">
         <div className="panelHead">
-          <h2>{item ? item.kind[0].toUpperCase() + item.kind.slice(1) : items.length ? `${items.length} items` : "Nothing selected"}</h2>
+          <h2>{item ? item.kind[0].toUpperCase() + item.kind.slice(1) : items.length ? `${items.length} items` : "Sheet"}</h2>
         </div>
         {!item && items.length === 0 && (
-          <p className="hint">
-            Click to select, drag to move. Shift-click adds. Drag left-to-right for a window, right-to-left for a crossing
-            selection. Space + drag or middle mouse pans; wheel zooms.
-          </p>
+          <>
+            <div className="fieldRow">
+              <label>
+                Paper size
+                <select
+                  value={doc.sheet.size}
+                  onChange={(event) => editor.store.dispatch({ type: "sheet", sheet: makeSheet(event.target.value as SheetSizeId, doc.sheet.orientation) })}
+                  disabled={!canWrite}
+                >
+                  {(Object.keys(SHEET_SIZES) as SheetSizeId[]).map((size) => (
+                    <option key={size} value={size}>
+                      {SHEET_SIZES[size].label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Orientation
+                <select value={doc.sheet.orientation} onChange={(event) => editor.store.dispatch({ type: "sheet", sheet: makeSheet(doc.sheet.size, event.target.value as "landscape" | "portrait") })} disabled={!canWrite}>
+                  <option value="landscape">Landscape</option>
+                  <option value="portrait">Portrait</option>
+                </select>
+              </label>
+            </div>
+            {editor.tagScheme.kind === "structured" && (
+              <div className="fieldRow">
+                <label>
+                  New tags: system
+                  <select value={state.tagContext.system ?? editor.tagScheme.systems[0]?.digit ?? ""} onChange={(event) => editor.setTagContext({ system: event.target.value })} aria-label="Tag system" title="System digit for new tags">
+                    {editor.tagScheme.systems.map((entry) => (
+                      <option key={entry.digit} value={entry.digit}>
+                        {entry.digit} · {entry.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  New tags: class
+                  <select value={state.tagContext.cls ?? editor.tagScheme.classes[0]?.digit ?? ""} onChange={(event) => editor.setTagContext({ cls: event.target.value })} aria-label="Tag class" title="Class digit for new tags">
+                    {editor.tagScheme.classes.map((entry) => (
+                      <option key={entry.digit} value={entry.digit}>
+                        {entry.digit} · {entry.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+            <p className="hint">
+              Click to select, drag to move. Shift-click adds. Drag left-to-right for a window, right-to-left for a crossing
+              selection. Space + drag or middle mouse pans; wheel zooms.
+            </p>
+          </>
         )}
         {!item && items.length > 1 && (
-          <p className="hint">Rotate (R), mirror (X), duplicate (Ctrl+D), or delete the selection.</p>
+          <>
+            <div className="selectionActions">
+              <select
+                aria-label="Align or distribute"
+                value=""
+                disabled={!canWrite}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (value.startsWith("distribute-")) editor.distributeSelection(value.endsWith("x") ? "x" : "y");
+                  else if (value) editor.alignSelection(value as AlignMode);
+                }}
+                title="Align or distribute the selection"
+              >
+                <option value="">Align…</option>
+                <option value="left">Left edges</option>
+                <option value="centerX">Centres (vertical axis)</option>
+                <option value="right">Right edges</option>
+                <option value="top">Top edges</option>
+                <option value="centerY">Centres (horizontal axis)</option>
+                <option value="bottom">Bottom edges</option>
+                <option value="distribute-x">Distribute horizontally</option>
+                <option value="distribute-y">Distribute vertically</option>
+              </select>
+              <button type="button" disabled={!canWrite} onClick={() => editor.renumberSelection()} title="Re-sequence the selected tags in reading order">
+                Renumber
+              </button>
+            </div>
+            <p className="hint">Rotate (R), mirror (X), duplicate (Ctrl+D), or delete the selection.</p>
+          </>
         )}
         {item?.kind === "symbol" && (
           <>
