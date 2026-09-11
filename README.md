@@ -9,6 +9,7 @@ FSDP is a greenfield web platform for connected fluid-system design data. The MV
 - [Implementation guide](docs/implementation.md): repository structure, backend API, data model, frontend workflow, and verification commands.
 - [Gap analysis](docs/gap-analysis.md): verified bugs, P&ID/BoM usability gaps, authentication and deployment readiness (Vercel demo, internal server + Tailscale), and prioritized roadmap.
 - [Part catalog concept](docs/part-catalog-concept.md): proposed fully featured Parts Catalog (object model, P&ID/BoM thread, UX, phases). Not yet implemented.
+- [Requirements, FMEA, and safety analysis concept](docs/safety-requirements-concept.md): proposed hazard log, FMEA worksheets bound to drawing items, engine-derived safety analyses, requirements verification and evidence, safety review packages, and a launch-pad fueling system walk-through against the spreadsheet workflow. Not yet implemented.
 - [P&ID professional upgrade plan](docs/pid-professional-upgrade-plan.md): plan to grow the Diagrams editor into an AutoCAD/KiCad-grade P&ID tool (schematic engine, sheets and title blocks, ISA symbol library, first-class lines, tag schemes, vector/DXF export, generated lists, DRC, revision control). Phases 0–3 (engine, drawings and sheets, title blocks, PDF/PNG export, symbol library, tag schemes, first-class lines and connectors) are delivered; later phases are not.
 
 ## Stack

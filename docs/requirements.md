@@ -195,6 +195,8 @@ Includes:
 - Fault tree analysis.
 - Design-rule checks for unprotected pressure sources, missing relief devices, dead-end lines, and improper isolation.
 
+A proposed concept for this epic together with Epic 5 (hazard log, FMEA worksheets bound to drawing items, engine-derived analyses, requirement evidence and verification roll-up, review packages, phased delivery) is in [safety-requirements-concept.md](safety-requirements-concept.md). It is not implemented.
+
 ### Epic 7: BoM and Procurement
 
 Goal: generate procurement-ready hardware packages.
