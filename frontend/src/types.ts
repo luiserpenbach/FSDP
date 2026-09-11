@@ -203,6 +203,12 @@ export type ComponentInstance = {
   properties?: Record<string, unknown>;
 };
 
+export type RequirementConstraintRead = {
+  kind: "material_in" | "material_not_in" | "pressure_rating_min" | "part_qualified" | "line_class_in" | "relief_required";
+  values: string[];
+  scope?: { categories?: string[]; services?: string[] };
+};
+
 export type Requirement = {
   id: string;
   project_id: string;
@@ -212,7 +218,60 @@ export type Requirement = {
   requirement_type: string;
   verification_method?: string | null;
   status: string;
+  /** Machine-checkable constraint evaluated by the drawing DRC. */
+  constraint?: RequirementConstraintRead | null;
 };
+
+export type DrcResultRead = {
+  id: string;
+  sheet_id: string;
+  key: string;
+  rule: string;
+  severity: "error" | "warning" | "info";
+  message: string;
+  item_id: string | null;
+  subject: string | null;
+  zone: string | null;
+  requirement_id: string | null;
+};
+
+export type DrcWaiverRead = {
+  id: string;
+  sheet_id: string;
+  key: string;
+  reason: string;
+  waived_by: string | null;
+  created_at: string;
+};
+
+export type SheetDrcRead = {
+  sheet_id: string;
+  sheet_no: number;
+  counts: { error: number; warning: number; info: number; waived: number };
+  findings: DrcResultRead[];
+  waivers: DrcWaiverRead[];
+  checks: Array<{ id: string; sheet_id: string; requirement_id: string; item_id: string; subject: string | null; zone: string | null; status: "pass" | "fail"; message: string }>;
+};
+
+export type DrawingDrcRead = { drawing_id: string; counts: SheetDrcRead["counts"]; sheets: SheetDrcRead[] };
+
+export type VerificationRow = {
+  requirement_id: string;
+  key: string;
+  title: string;
+  status: string;
+  constraint: RequirementConstraintRead | null;
+  checked: number;
+  passed: number;
+  failed: number;
+  verdict: "pass" | "fail" | "no_data" | "manual";
+  drawings: Array<{ drawing_id: string; drawing_number: string; checked: number; failed: number; sheets: number[] }>;
+  linked_components: number;
+  linked_drawings: number;
+  failures: SheetDrcRead["checks"];
+};
+
+export type VerificationMatrix = { project_id: string; rows: VerificationRow[] };
 
 export type BomSnapshot = {
   id: string;

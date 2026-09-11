@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { AssignPartModal } from "../components/schematic/AssignPartModal";
+import { DrcPanel, useDrc, type DrcInputs } from "../components/schematic/DrcPanel";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
@@ -17,6 +18,8 @@ import { convertLegacyGraph } from "../engine/convert";
 import { Editor, type AlignMode, type ToolId } from "../engine/editor";
 import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
 import { polylineLength } from "../engine/geometry";
+import { runDrc, type DrcResult, type DrcWaiver, type RequirementRef } from "../engine/drc";
+import { renderFindingsSheet } from "../engine/drcSheet";
 import { buildSheetIndex, lineLengthM } from "../engine/index";
 import type { ListKind } from "../engine/lists";
 import { partBadge, partWarnings } from "../engine/parts";
@@ -28,7 +31,7 @@ import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, validateTag, type TagSc
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
-import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, User } from "../types";
+import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, Requirement, User } from "../types";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
@@ -43,6 +46,8 @@ type Props = {
   refreshSymbols?: () => void;
   /** Catalog parts for assignment, badges, and list part numbers. */
   parts?: Part[];
+  /** Project requirements; those with a constraint are checked by the DRC. */
+  requirements?: Requirement[];
   user: User;
   canWrite: boolean;
   notify: (message: string, error?: boolean) => void;
@@ -242,7 +247,7 @@ function DrawingCanvas({
   return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} onCursor={onCursor} onViewport={onViewport} />;
 }
 
-export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts = [], user, canWrite, notify }: Props) {
+export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
@@ -263,9 +268,20 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [bom, setBom] = useState<BomSnapshot | null>(null);
   const [bomReadiness, setBomReadiness] = useState<BomReadiness | null>(null);
   const [listsBusy, setListsBusy] = useState(false);
+  const [waivers, setWaivers] = useState<DrcWaiver[]>([]);
+  const [exportFindings, setExportFindings] = useState(false);
   const pendingLocate = useRef<LocateTarget | null>(null);
   const canvasRef = useRef<SchematicCanvasHandle>(null);
   const registry = useMemo(() => SymbolRegistry.withBuiltins(customSymbols), [customSymbols]);
+  const partMap = useMemo(() => new Map(parts.map((part) => [part.id, part])), [parts]);
+  const requirementRefs = useMemo<RequirementRef[]>(
+    () => requirements.map((requirement) => ({ id: requirement.id, key: requirement.key, title: requirement.title, constraint: requirement.constraint ?? null })),
+    [requirements]
+  );
+  const drcInputs = useMemo<DrcInputs>(
+    () => ({ registry, tagScheme, parts: partMap, requirements: requirementRefs, waivers }),
+    [registry, tagScheme, partMap, requirementRefs, waivers]
+  );
   const flags = useMemo(() => legendFlags(drawings.find((entry) => entry.id === drawingId) ?? null), [drawings, drawingId]);
   const drawing = drawings.find((entry) => entry.id === drawingId) ?? null;
   const sheetSummary = drawing?.sheets.find((entry) => entry.id === sheetId) ?? null;
@@ -354,6 +370,24 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       cancelled = true;
     };
   }, [projectId]);
+
+  // Stored DRC waivers of the open sheet.
+  useEffect(() => {
+    let cancelled = false;
+    setWaivers([]);
+    if (!sheetId) return;
+    api
+      .getSheetDrc(sheetId)
+      .then((drc) => {
+        if (!cancelled) setWaivers(drc.waivers.map((waiver) => ({ key: waiver.key, reason: waiver.reason, by: waiver.waived_by, at: waiver.created_at })));
+      })
+      .catch(() => {
+        if (!cancelled) setWaivers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sheetId]);
 
   // Other sheets of the drawing, for off-page connector references.
   useEffect(() => {
@@ -447,15 +481,50 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       const connectorTargets = resolveConnectorTargets({ sheetNo, doc: editor.store.doc }, otherSheets).targets;
       // The index rows travel with the document so lists, BoM, and where-used read the saved state.
       const index = buildSheetIndex(editor.store.doc, registry, { connectivity: editor.connectivity, connectorTargets });
-      await api.updateSheet(sheetId, { document: editor.store.doc, index });
+      // The DRC runs on save: open and waived findings plus requirement checks are stored with the sheet.
+      const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
+      await api.updateSheet(sheetId, {
+        document: editor.store.doc,
+        index,
+        drc: { findings: [...drc.findings, ...drc.waived].map(({ key, rule, severity, message, itemId, subject, zone, requirementId }) => ({ key, rule, severity, message, itemId, subject, zone, requirementId })), checks: drc.requirementChecks }
+      });
       editor.store.markSaved();
-      notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed).`);
+      const drcSummary = drc.counts.error || drc.counts.warning ? `; DRC: ${drc.counts.error} error(s), ${drc.counts.warning} warning(s)` : "; DRC clean";
+      notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed${drcSummary}).`);
       return true;
     } catch (error) {
       notify(error instanceof Error ? error.message : "Save failed.", true);
       return false;
     }
-  }, [editor, sheetId, drawing, sheetSummary, otherSheets, registry, notify]);
+  }, [editor, sheetId, drawing, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify]);
+
+  async function waiveFinding(key: string, reason: string) {
+    if (!sheetId) return;
+    try {
+      await api.waiveFinding(sheetId, key, reason);
+      const drc = await api.getSheetDrc(sheetId);
+      setWaivers(drc.waivers.map((waiver) => ({ key: waiver.key, reason: waiver.reason, by: waiver.waived_by, at: waiver.created_at })));
+      notify("Finding waived.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not waive the finding.", true);
+    }
+  }
+
+  async function unwaiveFinding(key: string) {
+    if (!sheetId) return;
+    try {
+      await api.unwaiveFinding(sheetId, key);
+      setWaivers((current) => current.filter((waiver) => waiver.key !== key));
+      notify("Waiver removed.");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not remove the waiver.", true);
+    }
+  }
+
+  function reportDrc(result: DrcResult) {
+    const summary = `DRC: ${result.counts.error} error(s), ${result.counts.warning} warning(s), ${result.counts.info} info, ${result.counts.waived} waived.`;
+    notify(summary, result.counts.error > 0);
+  }
 
   /** Exports and the BoM read the saved index, so save a dirty sheet first. */
   async function ensureSaved(): Promise<boolean> {
@@ -547,12 +616,18 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     setExporting(true);
     try {
       const connectorTargets = resolveConnectorTargets({ sheetNo: sheetSummary?.sheet_no ?? 1, doc: editor.store.doc }, otherSheets).targets;
+      const fullContext = withLegends(context, editor.store.doc, registry, tagScheme, flags, connectorTargets);
       const svg = renderDocumentSvg(editor.store.doc, registry, {
         standalone: true,
         background: "#ffffff",
-        context: withLegends(context, editor.store.doc, registry, tagScheme, flags, connectorTargets)
+        context: fullContext
       });
-      const { blob, filename } = await api.exportSheet(sheetId, { svg, format, dpi: 300 });
+      const pages: string[] = [];
+      if (format === "pdf" && exportFindings) {
+        const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
+        pages.push(renderFindingsSheet(editor.store.doc, registry, fullContext, drc.findings, drc.waived));
+      }
+      const { blob, filename } = await api.exportSheet(sheetId, { svg, format, dpi: 300, pages });
       downloadBlob(filename, blob);
       notify(`Exported ${filename}.`);
     } catch (error) {
@@ -750,6 +825,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
               onToggleLibrary={() => setShowLibrary((current) => !current)}
               showLists={showLists}
               onToggleLists={() => setShowLists((current) => !current)}
+              exportFindings={exportFindings}
+              onToggleExportFindings={() => setExportFindings((current) => !current)}
             />
           )}
         </div>
@@ -812,7 +889,22 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 onDeleteDrawing={() => void removeDrawing()}
               />
             )}
-            {editor && <Inspector editor={editor} registry={registry} canWrite={canWrite} lineClasses={lineClasses} otherSheets={otherSheets} sheetNo={sheetSummary?.sheet_no ?? 1} parts={parts} />}
+            {editor && (
+              <Inspector
+                editor={editor}
+                registry={registry}
+                canWrite={canWrite}
+                lineClasses={lineClasses}
+                otherSheets={otherSheets}
+                sheetNo={sheetSummary?.sheet_no ?? 1}
+                parts={parts}
+                drcInputs={drcInputs}
+                onLocate={focusItem}
+                onWaive={(key, reason) => void waiveFinding(key, reason)}
+                onUnwaive={(key) => void unwaiveFinding(key)}
+                onRunDrc={reportDrc}
+              />
+            )}
           </div>
         </div>
         {editor && showLists && (
@@ -836,7 +928,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
             onClose={() => setShowLists(false)}
           />
         )}
-        {editor && <StatusBar editor={editor} cursor={cursor} viewport={viewport} />}
+        {editor && <StatusBar editor={editor} cursor={cursor} viewport={viewport} drcInputs={drcInputs} />}
       </div>
     </PageLayout>
   );
@@ -1249,7 +1341,9 @@ function EditorToolbar({
   showLibrary,
   onToggleLibrary,
   showLists,
-  onToggleLists
+  onToggleLists,
+  exportFindings,
+  onToggleExportFindings
 }: {
   editor: Editor;
   registry: SymbolRegistry;
@@ -1265,6 +1359,8 @@ function EditorToolbar({
   onToggleLibrary: () => void;
   showLists: boolean;
   onToggleLists: () => void;
+  exportFindings: boolean;
+  onToggleExportFindings: () => void;
 }) {
   const { state, doc } = useEditorSnapshot(editor);
   const store = editor.store;
@@ -1428,6 +1524,10 @@ function EditorToolbar({
         <button type="button" disabled={exporting} onClick={() => onExport("svg")} title="SVG at paper size">
           SVG
         </button>
+        <label className="checkRow" title="Append a design rule check findings page to the PDF">
+          <input type="checkbox" checked={exportFindings} onChange={onToggleExportFindings} />
+          <span>DRC page</span>
+        </label>
         <button type="button" className="primary" disabled={!canWrite || !store.dirty} onClick={onSave} title="Save (Ctrl+S)">
           {store.dirty ? "Save" : "Saved"}
         </button>
@@ -1443,7 +1543,12 @@ function Inspector({
   lineClasses,
   otherSheets,
   sheetNo,
-  parts
+  parts,
+  drcInputs,
+  onLocate,
+  onWaive,
+  onUnwaive,
+  onRunDrc
 }: {
   editor: Editor;
   registry: SymbolRegistry;
@@ -1452,6 +1557,11 @@ function Inspector({
   otherSheets: SheetDoc[];
   sheetNo: number;
   parts: Part[];
+  drcInputs: DrcInputs;
+  onLocate: (itemId: string) => void;
+  onWaive: (key: string, reason: string) => void;
+  onUnwaive: (key: string) => void;
+  onRunDrc: (result: DrcResult) => void;
 }) {
   const { state, connectivity, doc } = useEditorSnapshot(editor);
   const connectorResolution = useMemo(() => resolveConnectorTargets({ sheetNo, doc }, otherSheets), [doc, sheetNo, otherSheets]);
@@ -1853,6 +1963,7 @@ function Inspector({
           </>
         )}
       </article>
+      <DrcPanel editor={editor} inputs={drcInputs} canWrite={canWrite} onLocate={onLocate} onWaive={onWaive} onUnwaive={onUnwaive} onRun={onRunDrc} />
       <article className="panel">
         <div className="panelHead">
           <h2>Checks</h2>
@@ -2014,8 +2125,9 @@ function TagChecks({ editor }: { editor: Editor }) {
   );
 }
 
-function StatusBar({ editor, cursor, viewport }: { editor: Editor; cursor: Point | null; viewport: Viewport }) {
+function StatusBar({ editor, cursor, viewport, drcInputs }: { editor: Editor; cursor: Point | null; viewport: Viewport; drcInputs: DrcInputs }) {
   const { doc, state } = useEditorSnapshot(editor);
+  const drc = useDrc(editor, drcInputs);
   const zone = cursor ? zoneAt(doc.sheet, cursor) : null;
   return (
     <div className="draftingStatus">
@@ -2027,6 +2139,9 @@ function StatusBar({ editor, cursor, viewport }: { editor: Editor; cursor: Point
         {SHEET_SIZES[doc.sheet.size].label} · {doc.items.length} items
       </span>
       <span className="statusTool">{state.tool}</span>
+      <span className={drc.counts.error ? "statusDrc drcBad" : drc.counts.warning ? "statusDrc drcWarn" : "statusDrc"} title="Design rule check">
+        DRC {drc.counts.error} / {drc.counts.warning}
+      </span>
       <span>{editor.store.dirty ? "Unsaved changes" : "Saved"}</span>
     </div>
   );

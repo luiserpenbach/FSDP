@@ -26,7 +26,10 @@ const apiMock = vi.hoisted(() => ({
   getProjectList: vi.fn(),
   downloadList: vi.fn(),
   generateDrawingBom: vi.fn(),
-  getBomReadiness: vi.fn()
+  getBomReadiness: vi.fn(),
+  getSheetDrc: vi.fn(),
+  waiveFinding: vi.fn(),
+  unwaiveFinding: vi.fn()
 }));
 
 vi.mock("../api", () => ({ api: apiMock }));
@@ -152,6 +155,7 @@ describe("DraftingPage", () => {
     apiMock.getSheet.mockResolvedValue(sheet);
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.listLineClasses.mockResolvedValue([]);
+    apiMock.getSheetDrc.mockResolvedValue({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
     apiMock.updateSheet.mockImplementation(async (_id: string, body: { document: unknown }) => ({ ...sheet, document: body.document }));
   });
 
@@ -187,7 +191,11 @@ describe("DraftingPage", () => {
     expect(index.items[0]).toMatchObject({ item_id: "pt", tag: "PT-3223", category: "instrument" });
     expect(index.items[0].zone).toMatch(/^[A-Z]-\d$/);
     expect(index.lines).toEqual([]);
-    expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1 (1 items, 0 lines indexed).");
+    // The DRC runs on save: the lone PT has an open process port.
+    const drc = (body as unknown as { drc: { findings: Array<{ key: string; severity: string }>; checks: unknown[] } }).drc;
+    expect(drc.findings.map((finding) => finding.key)).toEqual(["open_port:pt:process"]);
+    expect(drc.checks).toEqual([]);
+    expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1 (1 items, 0 lines indexed; DRC: 0 error(s), 1 warning(s)).");
   });
 
   it("converts a legacy diagram into a new drawing", async () => {
@@ -424,5 +432,78 @@ describe("DraftingPage", () => {
     expect(drawer.textContent).toContain("1 blocking");
     expect(drawer.textContent).toContain("no_part");
     expect(notify).toHaveBeenCalledWith("Generated BoM rev 1 for AMB2-9003 (1 rows).");
+  });
+
+  it("lists design rule findings with jump, waive, and requirement checks, and appends a findings page to the PDF", async () => {
+    const brokenSheet: DrawingSheet = {
+      ...sheet,
+      document: {
+        ...sheet.document,
+        items: [
+          ...(sheet.document as { items: unknown[] }).items,
+          { id: "hv", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 100 }, rotation: 0, tag: "PT-3222", partId: "part-3", fields: {} },
+          { id: "l1", kind: "line", layer: "process", lineType: "process", size: '1/4"', service: "GHe", points: [{ x: 70, y: 100 }, { x: 100, y: 100 }, { x: 100, y: 105 }], fields: {} }
+        ]
+      }
+    };
+    apiMock.getSheet.mockResolvedValue(brokenSheet);
+    apiMock.getSheetDrc.mockResolvedValue({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 1 }, findings: [], waivers: [{ id: "w1", sheet_id: "sh1", key: "open_port:hv:in", reason: "Bottle valve, capped", waived_by: "eng@fsdp.test", created_at: "2026-09-11T08:00:00Z" }], checks: [] });
+    apiMock.waiveFinding.mockResolvedValue({ id: "w2", sheet_id: "sh1", key: "line_unnumbered:l1", reason: "Stub", waived_by: "eng@fsdp.test", created_at: "2026-09-11T08:00:00Z" });
+    apiMock.exportSheet.mockResolvedValue({ blob: new Blob(["%PDF"], { type: "application/pdf" }), filename: "AMB2-9003-01-rev0.pdf" });
+    Object.assign(URL, { createObjectURL: vi.fn(() => "blob:fake"), revokeObjectURL: vi.fn() });
+    const requirements = [
+      { id: "r1", project_id: "p1", key: "REQ-7", title: "316L wetted", text: "", requirement_type: "materials", status: "draft", constraint: { kind: "material_in" as const, values: ["316L"] } },
+      { id: "r2", project_id: "p1", key: "REQ-9", title: "Manual", text: "", requirement_type: "process", status: "draft", constraint: null }
+    ];
+    render(
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[]} parts={parts} requirements={requirements} user={user} canWrite notify={vi.fn()} />
+      </MemoryRouter>
+    );
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="hv"]')).not.toBeNull());
+    const panel = await screen.findByRole("article", { name: "Design rule check" });
+    await waitFor(() => expect(panel.textContent).toContain("3 error(s)"));
+    expect(panel.textContent).toContain("Duplicate tag");
+    expect(panel.textContent).toContain("PT-3222: Duplicate of PT-3222");
+    expect(panel.textContent).toContain("REQ-7 (316L wetted): AMB2-003 material brass is not one of 316L");
+    expect(panel.textContent).toContain("Part status");
+    expect(panel.textContent).toContain("Unnumbered line");
+    // The stored waiver hides the bottle-side open port.
+    expect(panel.textContent).toContain("1 waived");
+    expect(panel.textContent).not.toContain("port in has no line");
+    expect(screen.getByTitle("Design rule check").textContent).toBe("DRC 3 / 2");
+    expect(panel.textContent).toContain("Relief coverage");
+
+    // Jump to the duplicate tag's item.
+    const duplicate = within(panel).getByText("PT-3222: Duplicate of PT-3222").closest("li")!;
+    fireEvent.click(within(duplicate).getByRole("button", { name: "Go" }));
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Symbol" })).toBeInTheDocument());
+
+    // Waive the unnumbered line with a reason.
+    vi.spyOn(window, "prompt").mockReturnValue("Stub");
+    const unnumbered = within(panel).getByText(/has no line number/).closest("li")!;
+    fireEvent.click(within(unnumbered).getByRole("button", { name: "Waive…" }));
+    await waitFor(() => expect(apiMock.waiveFinding).toHaveBeenCalledWith("sh1", "line_unnumbered:l1", "Stub"));
+
+    // Export with the findings page appended.
+    fireEvent.click(screen.getByLabelText("DRC page"));
+    fireEvent.click(screen.getByRole("button", { name: "PDF" }));
+    await waitFor(() => expect(apiMock.exportSheet).toHaveBeenCalledTimes(1));
+    const [, exportBody] = apiMock.exportSheet.mock.calls[0] as [string, { format: string; pages: string[] }];
+    expect(exportBody.format).toBe("pdf");
+    expect(exportBody.pages).toHaveLength(1);
+    expect(exportBody.pages[0]).toContain("DESIGN RULE CHECK");
+    expect(exportBody.pages[0]).toContain("Duplicate of PT-3222");
+
+    // Saving stores open and waived findings and the requirement checks.
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" }); // dirty the sheet
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+    const [, body] = apiMock.updateSheet.mock.calls[0] as [string, { drc: { findings: Array<{ key: string; requirementId?: string }>; checks: Array<{ requirementId: string; status: string; subject: string | null }> } }];
+    expect(body.drc.findings.map((finding) => finding.key)).toContain("open_port:hv:in");
+    expect(body.drc.findings.find((finding) => finding.key === "requirement:r1:hv")?.requirementId).toBe("r1");
+    expect(body.drc.checks).toEqual([{ requirementId: "r1", itemId: "hv", subject: "PT-3222", zone: expect.any(String), status: "fail", message: "AMB2-003 material brass is not one of 316L" }]);
   });
 });

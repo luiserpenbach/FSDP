@@ -27,6 +27,7 @@ from app.models import (
     Project,
     Requirement,
     SheetItem,
+    SheetLine,
     TraceLink,
     User,
 )
@@ -1271,6 +1272,9 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
     "project": Project,
     "fluid_system": FluidSystem,
     "diagram": Diagram,
+    "drawing": Drawing,
+    "sheet_item": SheetItem,
+    "sheet_line": SheetLine,
     "part": Part,
     "component": ComponentInstance,
     "requirement": Requirement,
