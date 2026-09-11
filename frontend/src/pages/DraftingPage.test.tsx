@@ -198,6 +198,62 @@ describe("DraftingPage", () => {
     expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1 (1 items, 0 lines indexed; DRC: 0 error(s), 1 warning(s)).");
   });
 
+  it("does not PUT the previous sheet's document after switching sheets mid-load", async () => {
+    const sheet2: DrawingSheet = {
+      ...sheet,
+      id: "sh2",
+      sheet_no: 2,
+      title: "Vent",
+      document: {
+        ...sheet.document,
+        items: [
+          {
+            id: "hv",
+            kind: "symbol",
+            layer: "symbols",
+            symbol: { library: "fsdp", key: "hand_valve", version: 1 },
+            position: { x: 80, y: 80 },
+            rotation: 0,
+            tag: "HV-1",
+            fields: {}
+          }
+        ]
+      }
+    };
+    let resolveSheet2: (value: DrawingSheet) => void = () => undefined;
+    const sheet2Pending = new Promise<DrawingSheet>((resolve) => {
+      resolveSheet2 = resolve;
+    });
+    apiMock.getSheet.mockImplementation((id: string) => {
+      if (id === "sh1") return Promise.resolve(sheet);
+      if (id === "sh2") return sheet2Pending;
+      return Promise.reject(new Error(`unexpected sheet ${id}`));
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+
+    // Dirty sheet 1, then switch to sheet 2 while its fetch is still pending.
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("tab", { name: "2" }));
+
+    // Previous editor is cleared immediately — no Save affordance against the new id.
+    await waitFor(() => expect(screen.queryByTestId("schematic-canvas")).toBeNull());
+    expect(screen.getByText("Opening sheet…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(apiMock.updateSheet).not.toHaveBeenCalled();
+
+    resolveSheet2(sheet2);
+    const nextCanvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(nextCanvas.querySelector('[data-id="hv"]')).not.toBeNull());
+    expect(nextCanvas.querySelector('[data-id="pt"]')).toBeNull();
+    expect(apiMock.updateSheet).not.toHaveBeenCalled();
+  });
+
   it("converts a legacy diagram into a new drawing", async () => {
     apiMock.getSchematic.mockResolvedValue({ diagram_id: "d1", revision: 3, document: null });
     apiMock.getDiagram.mockResolvedValue(legacyDiagram);
