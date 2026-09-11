@@ -253,6 +253,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
   const [editor, setEditor] = useState<Editor | null>(null);
+  /** Sheet id the live editor was loaded for — Save must never write another sheet's id. */
+  const [editorSheetId, setEditorSheetId] = useState("");
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
@@ -310,6 +312,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     setDrawingId("");
     setSheetId("");
     setEditor(null);
+    setEditorSheetId("");
     if (!projectId) {
       setDrawings([]);
       return;
@@ -428,12 +431,25 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   useEffect(() => {
     let cancelled = false;
     if (!sheetId) {
-      setEditor(null);
+      setEditor((previous) => {
+        previous?.dispose();
+        return null;
+      });
+      setEditorSheetId("");
+      setLoading(false);
       return;
     }
+    // Drop the previous sheet immediately so Save / ensureSaved cannot PUT its
+    // document (or a mid-load edit of it) under the newly selected sheet id.
     setLoading(true);
+    setEditor((previous) => {
+      previous?.dispose();
+      return null;
+    });
+    setEditorSheetId("");
+    const loadId = sheetId;
     api
-      .getSheet(sheetId)
+      .getSheet(loadId)
       .then((sheet) => {
         if (cancelled) return;
         const document = withFrameTemplate(sheet.document as unknown as SchematicDocument, drawing?.frame_template ?? "basic");
@@ -442,6 +458,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           previous?.dispose();
           return new Editor(store, registry, { author: user.name, tagScheme });
         });
+        setEditorSheetId(loadId);
       })
       .catch((error) => {
         if (!cancelled) notify(error instanceof Error ? error.message : "Could not open the sheet.", true);
@@ -478,7 +495,9 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   );
 
   const save = useCallback(async (): Promise<boolean> => {
-    if (!editor || !sheetId || !drawing) return false;
+    // Refuse to write while the selection and loaded editor disagree (sheet switch / failed load).
+    if (!editor || !sheetId || !drawing || loading || editorSheetId !== sheetId) return false;
+    const targetSheetId = editorSheetId;
     try {
       const sheetNo = sheetSummary?.sheet_no ?? 1;
       const connectorTargets = resolveConnectorTargets({ sheetNo, doc: editor.store.doc }, otherSheets).targets;
@@ -486,7 +505,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       const index = buildSheetIndex(editor.store.doc, registry, { connectivity: editor.connectivity, connectorTargets });
       // The DRC runs on save: open and waived findings plus requirement checks are stored with the sheet.
       const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
-      await api.updateSheet(sheetId, {
+      await api.updateSheet(targetSheetId, {
         document: editor.store.doc,
         index,
         drc: { findings: [...drc.findings, ...drc.waived].map(({ key, rule, severity, message, itemId, subject, zone, requirementId }) => ({ key, rule, severity, message, itemId, subject, zone, requirementId })), checks: drc.requirementChecks }
@@ -499,10 +518,10 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       notify(error instanceof Error ? error.message : "Save failed.", true);
       return false;
     }
-  }, [editor, sheetId, drawing, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify]);
+  }, [editor, editorSheetId, sheetId, drawing, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, loading, notify]);
 
   async function waiveFinding(key: string, reason: string) {
-    if (!sheetId) return;
+    if (!sheetId || editorSheetId !== sheetId) return;
     try {
       await api.waiveFinding(sheetId, key, reason);
       const drc = await api.getSheetDrc(sheetId);
@@ -514,7 +533,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   }
 
   async function unwaiveFinding(key: string) {
-    if (!sheetId) return;
+    if (!sheetId || editorSheetId !== sheetId) return;
     try {
       await api.unwaiveFinding(sheetId, key);
       setWaivers((current) => current.filter((waiver) => waiver.key !== key));
@@ -607,15 +626,16 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   // Complete a cross-sheet locate once the target sheet's editor is open.
   useEffect(() => {
     const pending = pendingLocate.current;
-    if (!editor || !pending || pending.sheetId !== sheetId) return;
+    if (!editor || !pending || pending.sheetId !== sheetId || editorSheetId !== sheetId) return;
     pendingLocate.current = null;
     // The canvas fits the sheet after mount; focus on the next frame so the fit does not undo it.
     const handle = window.setTimeout(() => focusItem(pending.itemId), 50);
     return () => window.clearTimeout(handle);
-  }, [editor, sheetId, focusItem]);
+  }, [editor, editorSheetId, sheetId, focusItem]);
 
   async function exportSheet(format: "pdf" | "png" | "svg") {
-    if (!editor || !sheetId || !context) return;
+    if (!editor || !sheetId || !context || editorSheetId !== sheetId || loading) return;
+    const targetSheetId = editorSheetId;
     setExporting(true);
     try {
       const connectorTargets = resolveConnectorTargets({ sheetNo: sheetSummary?.sheet_no ?? 1, doc: editor.store.doc }, otherSheets).targets;
@@ -630,7 +650,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
         const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
         pages.push(renderFindingsSheet(editor.store.doc, registry, fullContext, drc.findings, drc.waived));
       }
-      const { blob, filename } = await api.exportSheet(sheetId, { svg, format, dpi: 300, pages });
+      const { blob, filename } = await api.exportSheet(targetSheetId, { svg, format, dpi: 300, pages });
       downloadBlob(filename, blob);
       notify(`Exported ${filename}.`);
     } catch (error) {
@@ -694,7 +714,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   }
 
   async function addSheet() {
-    if (!drawing) return;
+    if (!drawing || !confirmDiscard()) return;
     try {
       const sheet = await api.createSheet(drawing.id, {});
       await refreshDrawings(drawing.id);

@@ -517,6 +517,11 @@ class LineClassCreate(BaseModel):
     def _name(cls, value: str) -> str:
         return clean_required_text(value)
 
+    @field_validator("sizes", mode="before")
+    @classmethod
+    def _sizes_list(cls, value: Any) -> Any:
+        return [] if value is None else value
+
     @field_validator("sizes")
     @classmethod
     def _sizes(cls, value: list[str]) -> list[str]:
@@ -539,6 +544,21 @@ class LineClassUpdate(BaseModel):
     def _name(cls, value: str | None) -> str | None:
         return clean_optional_text(value)
 
+    @field_validator("sizes", mode="before")
+    @classmethod
+    def _sizes_list(cls, value: Any) -> Any:
+        # Explicit JSON null must not persist: LineClassRead requires a list, and
+        # one null sizes row makes GET /projects/{id}/line-classes fail for the project.
+        return [] if value is None else value
+
+    @field_validator("sizes")
+    @classmethod
+    def _sizes(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        cleaned = [str(entry).strip() for entry in value if str(entry).strip()]
+        return list(dict.fromkeys(cleaned))
+
 
 class LineClassRead(OrmModel):
     id: str
@@ -548,11 +568,16 @@ class LineClassRead(OrmModel):
     material: str | None
     rating: str | None
     wall: str | None
-    sizes: list[str]
+    sizes: list[str] = Field(default_factory=list)
     insulation: str | None
     notes: str | None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("sizes", mode="before")
+    @classmethod
+    def _sizes_list(cls, value: Any) -> Any:
+        return [] if value is None else value
 
 
 class LineClassImportIn(BaseModel):
@@ -1044,6 +1069,16 @@ class DrawingCreate(BaseModel):
     def _frame(cls, value: str) -> str:
         return _clean_frame_template(value) or "fsdp-standard"
 
+    @field_validator("fields", mode="before")
+    @classmethod
+    def _fields_object(cls, value: Any) -> Any:
+        return {} if value is None else value
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _notes_list(cls, value: Any) -> Any:
+        return [] if value is None else value
+
 
 class DrawingUpdate(BaseModel):
     title: str | None = None
@@ -1072,6 +1107,19 @@ class DrawingUpdate(BaseModel):
     def _frame(cls, value: str | None) -> str | None:
         return _clean_frame_template(value)
 
+    @field_validator("fields", mode="before")
+    @classmethod
+    def _fields_object(cls, value: Any) -> Any:
+        # Explicit JSON null must not persist: DrawingRead requires an object, and
+        # one null fields row makes GET /projects/{id}/drawings fail for the project.
+        return {} if value is None else value
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _notes_list(cls, value: Any) -> Any:
+        # Explicit JSON null must not persist: DrawingRead requires a list.
+        return [] if value is None else value
+
 
 class DrawingRead(OrmModel):
     id: str
@@ -1084,12 +1132,22 @@ class DrawingRead(OrmModel):
     discipline: str
     status: str
     frame_template: str
-    fields: dict[str, Any]
-    notes: list[str]
+    fields: dict[str, Any] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
     sheets: list[DrawingSheetSummary]
     revisions: list[DrawingRevisionRead]
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("fields", mode="before")
+    @classmethod
+    def _fields_object(cls, value: Any) -> Any:
+        return {} if value is None else value
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def _notes_list(cls, value: Any) -> Any:
+        return [] if value is None else value
 
 
 class SheetExportIn(BaseModel):

@@ -65,3 +65,33 @@ def test_line_class_csv_import(client: TestClient) -> None:
 
     bad = client.post(f"/projects/{project_id}/line-classes/import", json={"csv": "foo,bar\n1,2\n"})
     assert bad.status_code == 422
+
+
+def test_line_class_update_json_null_sizes_do_not_brick_list(client: TestClient) -> None:
+    """Explicit JSON null on sizes must not persist NULL or 500 the project list."""
+    project_id = client.post("/projects", json={"name": "AMB2"}).json()["id"]
+    keep = client.post(
+        f"/projects/{project_id}/line-classes",
+        json={"name": "KEEP", "sizes": ['1/2"']},
+    ).json()
+    line_class = client.post(
+        f"/projects/{project_id}/line-classes",
+        json={"name": "NULL", "sizes": ['1/4"', '1/2"']},
+    ).json()
+
+    updated = client.put(f"/line-classes/{line_class['id']}", json={"sizes": None})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["sizes"] == []
+
+    listed = client.get(f"/projects/{project_id}/line-classes")
+    assert listed.status_code == 200, listed.text
+    by_id = {row["id"]: row for row in listed.json()}
+    assert by_id[line_class["id"]]["sizes"] == []
+    assert by_id[keep["id"]]["sizes"] == ['1/2"']
+
+    # Omitting sizes must preserve a restored list.
+    restored = client.put(f"/line-classes/{line_class['id']}", json={"sizes": ['3/8"']})
+    assert restored.status_code == 200
+    renamed = client.put(f"/line-classes/{line_class['id']}", json={"rating": "3000 psig"})
+    assert renamed.status_code == 200
+    assert renamed.json()["sizes"] == ['3/8"']
