@@ -213,3 +213,52 @@ def test_sheet_export_pdf_png_and_svg(client: TestClient) -> None:
     assert scripted.status_code == 422
     not_svg = client.post(f"/sheets/{sheet_id}/export", json={"svg": "hello", "format": "pdf"})
     assert not_svg.status_code == 422
+
+
+def test_drawing_update_json_null_object_fields_do_not_brick_project_list(client: TestClient) -> None:
+    """Explicit JSON null on fields/notes must not persist NULL.
+
+    Before the fix, update_drawing stored NULL, the PUT response failed DrawingRead
+    validation (500 after commit), and GET /projects/{id}/drawings failed for the
+    whole project.
+    """
+    project_id = _project(client)
+    keep = client.post(
+        f"/projects/{project_id}/drawings",
+        json={"title": "Keep", "number": "AMB2-KEEP", "fields": {"company": "OK"}, "notes": ["keep"]},
+    ).json()
+    drawing = client.post(
+        f"/projects/{project_id}/drawings",
+        json={
+            "title": "Null fields",
+            "number": "AMB2-NULL",
+            "fields": {"company": "Sierra Lobo"},
+            "notes": ["ALL LINES 1/4 IN"],
+        },
+    ).json()
+
+    for field, empty in (("fields", {}), ("notes", [])):
+        updated = client.put(f"/drawings/{drawing['id']}", json={field: None})
+        assert updated.status_code == 200, updated.text
+        assert updated.json()[field] == empty
+
+        listed = client.get(f"/projects/{project_id}/drawings")
+        assert listed.status_code == 200, listed.text
+        by_id = {row["id"]: row for row in listed.json()}
+        assert by_id[drawing["id"]][field] == empty
+        assert by_id[keep["id"]]["fields"]["company"] == "OK"
+        assert by_id[keep["id"]]["notes"] == ["keep"]
+
+        single = client.get(f"/drawings/{drawing['id']}")
+        assert single.status_code == 200
+        assert single.json()[field] == empty
+
+    # Omitting the fields must not wipe previously stored values.
+    client.put(
+        f"/drawings/{drawing['id']}",
+        json={"fields": {"company": "Restored"}, "notes": ["note"]},
+    )
+    renamed = client.put(f"/drawings/{drawing['id']}", json={"title": "Renamed"})
+    assert renamed.status_code == 200
+    assert renamed.json()["fields"] == {"company": "Restored"}
+    assert renamed.json()["notes"] == ["note"]
