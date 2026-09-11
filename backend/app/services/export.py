@@ -8,9 +8,11 @@ gives every client identical output and a place to store release artifacts.
 
 from __future__ import annotations
 
+import io
 import re
 
 import cairosvg
+from pypdf import PdfWriter
 
 _SCRIPT_TAG = re.compile(r"<\s*script[^>]*>.*?<\s*/\s*script\s*>", re.IGNORECASE | re.DOTALL)
 _EXTERNAL_REF = re.compile(r"""(href|src)\s*=\s*['"](?:https?:|file:|ftp:)""", re.IGNORECASE)
@@ -24,8 +26,20 @@ def sanitize_svg(svg: str) -> str:
     return cleaned
 
 
-def svg_to_pdf(svg: str) -> bytes:
-    return cairosvg.svg2pdf(bytestring=sanitize_svg(svg).encode("utf-8"))
+def svg_to_pdf(svg: str, pages: list[str] | None = None) -> bytes:
+    """One PDF page per SVG; extra `pages` (e.g. a DRC findings sheet) follow the sheet."""
+    first = cairosvg.svg2pdf(bytestring=sanitize_svg(svg).encode("utf-8"))
+    if not pages:
+        return first
+    writer = PdfWriter()
+    for document in [
+        first,
+        *(cairosvg.svg2pdf(bytestring=sanitize_svg(p).encode("utf-8")) for p in pages),
+    ]:
+        writer.append(io.BytesIO(document))
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
 def svg_to_png(svg: str, dpi: int = 300) -> bytes:

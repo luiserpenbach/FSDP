@@ -15,6 +15,10 @@ import type {
   LineClass,
   ListRead,
   Part,
+  SheetDrcRead,
+  DrcWaiverRead,
+  DrawingDrcRead,
+  VerificationMatrix,
   PartUsage,
   PidSymbolDef,
   Project,
@@ -149,7 +153,7 @@ export const api = {
   createSheet: (drawingId: string, body: { title?: string | null; source_diagram_id?: string | null; document?: unknown }) =>
     request<DrawingSheet>(`/drawings/${drawingId}/sheets`, { method: "POST", body: JSON.stringify(body) }),
   getSheet: (sheetId: string) => request<DrawingSheet>(`/sheets/${sheetId}`),
-  updateSheet: (sheetId: string, body: { title?: string | null; document?: unknown; index?: unknown }) =>
+  updateSheet: (sheetId: string, body: { title?: string | null; document?: unknown; index?: unknown; drc?: unknown }) =>
     request<DrawingSheet>(`/sheets/${sheetId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteSheet: (sheetId: string) => requestNoContent(`/sheets/${sheetId}`, { method: "DELETE" }),
   createRevision: (drawingId: string, body: Partial<Omit<DrawingRevision, "id" | "drawing_id" | "sequence" | "status" | "created_at">>) =>
@@ -157,12 +161,19 @@ export const api = {
   updateRevision: (revisionId: string, body: Partial<Omit<DrawingRevision, "id" | "drawing_id" | "sequence" | "status" | "created_at">>) =>
     request<DrawingRevision>(`/revisions/${revisionId}`, { method: "PUT", body: JSON.stringify(body) }),
   /** Convert a rendered sheet SVG on the server; resolves to the file blob and its filename. */
-  exportSheet: async (sheetId: string, body: { svg: string; format: "pdf" | "png" | "svg"; dpi?: number }) => {
+  exportSheet: async (sheetId: string, body: { svg: string; format: "pdf" | "png" | "svg"; dpi?: number; pages?: string[] }) => {
     const response = await rawRequest(`/sheets/${sheetId}/export`, { method: "POST", body: JSON.stringify(body) });
     const disposition = response.headers.get("content-disposition") ?? "";
     const match = /filename="([^"]+)"/.exec(disposition);
     return { blob: await response.blob(), filename: match?.[1] ?? `sheet.${body.format}` };
   },
+  getSheetDrc: (sheetId: string) => request<SheetDrcRead>(`/sheets/${sheetId}/drc`),
+  waiveFinding: (sheetId: string, key: string, reason: string) =>
+    request<DrcWaiverRead>(`/sheets/${sheetId}/drc/waivers`, { method: "PUT", body: JSON.stringify({ key, reason }) }),
+  unwaiveFinding: (sheetId: string, key: string) =>
+    requestNoContent(`/sheets/${sheetId}/drc/waivers/${encodeURIComponent(key)}`, { method: "DELETE" }),
+  getDrawingDrc: (drawingId: string) => request<DrawingDrcRead>(`/drawings/${drawingId}/drc`),
+  getVerificationMatrix: (projectId: string) => request<VerificationMatrix>(`/projects/${projectId}/verification-matrix`),
   getDrawingList: (drawingId: string, kind: string) => request<ListRead>(`/drawings/${drawingId}/lists/${kind}`),
   getProjectList: (projectId: string, kind: string) => request<ListRead>(`/projects/${projectId}/lists/${kind}`),
   downloadList: async (scope: "drawing" | "project", id: string, kind: string, format: "csv" | "xlsx") => {

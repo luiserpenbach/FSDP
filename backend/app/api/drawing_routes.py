@@ -18,6 +18,7 @@ from app.models import (
     Drawing,
     DrawingRevision,
     DrawingSheet,
+    DrcWaiver,
     FluidSystem,
     LineClass,
     Project,
@@ -29,6 +30,7 @@ from app.models import (
 from app.schemas import (
     BomSnapshotRead,
     DrawingCreate,
+    DrawingDrcRead,
     DrawingRead,
     DrawingRevisionCreate,
     DrawingRevisionRead,
@@ -37,18 +39,23 @@ from app.schemas import (
     DrawingSheetRead,
     DrawingSheetUpdate,
     DrawingUpdate,
+    DrcWaiverIn,
+    DrcWaiverRead,
     LineClassCreate,
     LineClassImportIn,
     LineClassImportRead,
     LineClassRead,
     LineClassUpdate,
     ListRead,
+    SheetDrcRead,
     SheetExportIn,
     SheetIndexRead,
     TagSchemeIn,
     TagSchemeRead,
+    VerificationMatrixRead,
 )
 from app.services.bom import generate_drawing_bom_snapshot
+from app.services.drc import drawing_drc, replace_sheet_drc, sheet_drc, verification_matrix
 from app.services.export import export_filename, svg_to_pdf, svg_to_png
 from app.services.lists import (
     LIST_KINDS,
@@ -306,6 +313,8 @@ def update_sheet(
         sheet.document = data["document"]
     if payload.index is not None:
         replace_sheet_index(db, sheet, payload.index)
+    if payload.drc is not None:
+        replace_sheet_drc(db, sheet, payload.drc)
     drawing = require_model(db, Drawing, sheet.drawing_id)
     item_count = len((sheet.document or {}).get("items", []))
     record_change(
@@ -417,7 +426,7 @@ def export_sheet(
     filename = export_filename(drawing.number, sheet.sheet_no, revision_label, payload.format)
     try:
         if payload.format == "pdf":
-            body = svg_to_pdf(payload.svg)
+            body = svg_to_pdf(payload.svg, payload.pages)
         elif payload.format == "png":
             body = svg_to_png(payload.svg, dpi=payload.dpi)
         else:
@@ -431,6 +440,85 @@ def export_sheet(
         media_type=MEDIA_TYPES[payload.format],
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@drawing_router.get("/sheets/{sheet_id}/drc", response_model=SheetDrcRead)
+def get_sheet_drc(sheet_id: str, db: Session = Depends(get_db)) -> dict:
+    """Stored findings (from the last save), waivers, and requirement checks of a sheet."""
+    return sheet_drc(db, require_model(db, DrawingSheet, sheet_id))
+
+
+@drawing_router.put("/sheets/{sheet_id}/drc/waivers", response_model=DrcWaiverRead, status_code=201)
+def waive_finding(
+    sheet_id: str,
+    payload: DrcWaiverIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> DrcWaiver:
+    """Waive a finding by key with a reason; re-runs keep the waiver."""
+    sheet = require_model(db, DrawingSheet, sheet_id)
+    waiver = db.scalar(
+        select(DrcWaiver).where(DrcWaiver.sheet_id == sheet.id, DrcWaiver.key == payload.key)
+    )
+    if waiver is None:
+        waiver = DrcWaiver(sheet_id=sheet.id, key=payload.key)
+        db.add(waiver)
+    waiver.reason = payload.reason
+    waiver.waived_by = user.email
+    drawing = require_model(db, Drawing, sheet.drawing_id)
+    record_change(
+        db,
+        "drawing",
+        drawing.id,
+        "updated",
+        f"Waived DRC finding {payload.key} on {drawing.number} sheet {sheet.sheet_no}: "
+        f"{payload.reason}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(waiver)
+    return waiver
+
+
+@drawing_router.delete("/sheets/{sheet_id}/drc/waivers/{key:path}", status_code=204)
+def unwaive_finding(
+    sheet_id: str,
+    key: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Response:
+    sheet = require_model(db, DrawingSheet, sheet_id)
+    waiver = db.scalar(
+        select(DrcWaiver).where(DrcWaiver.sheet_id == sheet.id, DrcWaiver.key == key)
+    )
+    if waiver is None:
+        raise HTTPException(status_code=404, detail="Waiver not found")
+    drawing = require_model(db, Drawing, sheet.drawing_id)
+    db.delete(waiver)
+    record_change(
+        db,
+        "drawing",
+        drawing.id,
+        "updated",
+        f"Removed DRC waiver {key} on {drawing.number} sheet {sheet.sheet_no}",
+        actor=user.email,
+    )
+    db.commit()
+    return Response(status_code=204)
+
+
+@drawing_router.get("/drawings/{drawing_id}/drc", response_model=DrawingDrcRead)
+def get_drawing_drc(drawing_id: str, db: Session = Depends(get_db)) -> dict:
+    """DRC counts and findings across every sheet of a drawing."""
+    return drawing_drc(db, _load_drawing(db, drawing_id))
+
+
+@drawing_router.get(
+    "/projects/{project_id}/verification-matrix", response_model=VerificationMatrixRead
+)
+def get_verification_matrix(project_id: str, db: Session = Depends(get_db)) -> dict:
+    """Requirements against the drawing DRC checks and trace links."""
+    return verification_matrix(db, require_model(db, Project, project_id))
 
 
 @drawing_router.get("/sheets/{sheet_id}/index", response_model=SheetIndexRead)

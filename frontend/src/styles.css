@@ -3241,3 +3241,59 @@ span.symbolListPendingName.untitled {
 .assignPartRow .assignPartWarnings {
   color: var(--warn, #b45309);
 }
+
+/* ---- Phase 5: design rule check panel ---- */
+
+.drcPanel .panelHead {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.drcCounts button.pill {
+  cursor: pointer;
+}
+
+.drcList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.drcFinding {
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  font-size: 12px;
+  gap: 2px 8px;
+  grid-template-columns: auto 1fr;
+  padding: 6px 0;
+}
+
+.drcFinding .drcMessage {
+  grid-column: 2;
+  line-height: 1.35;
+}
+
+.drcFinding .drcActions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  grid-column: 2;
+}
+
+.drcFinding .drcActions .mono {
+  color: var(--text-2);
+}
+
+.drcWaived .drcMessage {
+  color: var(--text-2);
+}
+
+.statusDrc.drcWarn {
+  color: var(--warn, #b45309);
+}
+
+.statusDrc.drcBad {
+  color: var(--bad, #b91c1c);
+  font-weight: 600;
+}

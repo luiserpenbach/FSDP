@@ -852,11 +852,138 @@ class ListRead(BaseModel):
     rows: list[dict[str, Any]]
 
 
+DRC_SEVERITIES = {"error", "warning", "info"}
+
+
+class DrcFindingIn(BaseModel):
+    key: str
+    rule: str
+    severity: str = "warning"
+    message: str
+    item_id: str | None = Field(default=None, validation_alias=AliasChoices("item_id", "itemId"))
+    subject: str | None = None
+    zone: str | None = None
+    requirement_id: str | None = Field(
+        default=None, validation_alias=AliasChoices("requirement_id", "requirementId")
+    )
+
+    @field_validator("severity")
+    @classmethod
+    def _severity(cls, value: str) -> str:
+        if value not in DRC_SEVERITIES:
+            raise ValueError("must be one of: " + ", ".join(sorted(DRC_SEVERITIES)))
+        return value
+
+
+class DrcRequirementCheckIn(BaseModel):
+    requirement_id: str = Field(validation_alias=AliasChoices("requirement_id", "requirementId"))
+    item_id: str = Field(validation_alias=AliasChoices("item_id", "itemId"))
+    subject: str | None = None
+    zone: str | None = None
+    status: str = "pass"
+    message: str = ""
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, value: str) -> str:
+        if value not in {"pass", "fail"}:
+            raise ValueError("must be 'pass' or 'fail'")
+        return value
+
+
+class DrcIn(BaseModel):
+    """The engine's DRC run for a sheet: open findings and requirement checks."""
+
+    findings: list[DrcFindingIn] = Field(default_factory=list)
+    checks: list[DrcRequirementCheckIn] = Field(default_factory=list)
+
+
+class DrcResultRead(OrmModel):
+    id: str
+    sheet_id: str
+    key: str
+    rule: str
+    severity: str
+    message: str
+    item_id: str | None
+    subject: str | None
+    zone: str | None
+    requirement_id: str | None
+
+
+class DrcWaiverIn(BaseModel):
+    key: str
+    reason: str
+
+    @field_validator("key", "reason")
+    @classmethod
+    def _text(cls, value: str) -> str:
+        return clean_required_text(value)
+
+
+class DrcWaiverRead(OrmModel):
+    id: str
+    sheet_id: str
+    key: str
+    reason: str
+    waived_by: str | None
+    created_at: datetime
+
+
+class DrcRequirementCheckRead(OrmModel):
+    id: str
+    sheet_id: str
+    requirement_id: str
+    item_id: str
+    subject: str | None
+    zone: str | None
+    status: str
+    message: str
+
+
+class SheetDrcRead(BaseModel):
+    sheet_id: str
+    sheet_no: int
+    counts: dict[str, int]
+    findings: list[DrcResultRead]
+    waivers: list[DrcWaiverRead]
+    checks: list[DrcRequirementCheckRead]
+
+
+class DrawingDrcRead(BaseModel):
+    drawing_id: str
+    counts: dict[str, int]
+    sheets: list[SheetDrcRead]
+
+
+class VerificationRowRead(BaseModel):
+    requirement_id: str
+    key: str
+    title: str
+    status: str
+    constraint: dict[str, Any] | None
+    checked: int
+    passed: int
+    failed: int
+    verdict: str
+    drawings: list[dict[str, Any]]
+    linked_components: int
+    linked_drawings: int
+    failures: list[DrcRequirementCheckRead]
+
+
+class VerificationMatrixRead(BaseModel):
+    project_id: str
+    rows: list[VerificationRowRead]
+
+
 class DrawingSheetUpdate(BaseModel):
     title: str | None = None
     document: dict[str, Any] | None = None
     # Index rows computed by the engine for this document (replaces the stored index).
     index: SheetIndexIn | None = None
+    # The engine's DRC run for this document (replaces stored findings and checks).
+    drc: DrcIn | None = None
 
     @field_validator("document")
     @classmethod
@@ -971,10 +1098,23 @@ class SheetExportIn(BaseModel):
     svg: str
     format: str = "pdf"
     dpi: int = 300
+    # Extra SVG pages appended after the sheet (PDF only), e.g. the DRC findings page.
+    pages: list[str] = Field(default_factory=list)
 
     @field_validator("svg")
     @classmethod
     def _svg(cls, value: str) -> str:
+        return cls._check_svg(value)
+
+    @field_validator("pages")
+    @classmethod
+    def _pages(cls, value: list[str]) -> list[str]:
+        if len(value) > 10:
+            raise ValueError("at most 10 extra pages")
+        return [cls._check_svg(page) for page in value]
+
+    @staticmethod
+    def _check_svg(value: str) -> str:
         text = value.strip()
         if not text.startswith("<?xml") and not text.startswith("<svg"):
             raise ValueError("svg must be an SVG document")
@@ -1041,6 +1181,38 @@ class ComponentInstanceRead(ComponentInstanceCreate, OrmModel):
     updated_at: datetime
 
 
+CONSTRAINT_KINDS = {
+    "material_in",
+    "material_not_in",
+    "pressure_rating_min",
+    "part_qualified",
+    "line_class_in",
+    "relief_required",
+}
+
+
+def clean_constraint(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Normalize a requirement constraint: kind, string values, optional scope lists."""
+    if value is None:
+        return None
+    kind = value.get("kind")
+    if kind not in CONSTRAINT_KINDS:
+        raise ValueError("constraint.kind must be one of: " + ", ".join(sorted(CONSTRAINT_KINDS)))
+    raw_values = value.get("values") or []
+    if not isinstance(raw_values, list):
+        raise ValueError("constraint.values must be a list")
+    values = [str(entry).strip() for entry in raw_values if str(entry).strip()]
+    if kind not in {"relief_required", "part_qualified"} and not values:
+        raise ValueError(f"constraint.values must not be empty for {kind}")
+    scope_in = value.get("scope") or {}
+    scope: dict[str, list[str]] = {}
+    for field in ("categories", "services"):
+        entries = scope_in.get(field) if isinstance(scope_in, dict) else None
+        if entries:
+            scope[field] = [str(entry).strip() for entry in entries if str(entry).strip()]
+    return {"kind": kind, "values": values, "scope": scope}
+
+
 class RequirementCreate(BaseModel):
     project_id: str
     key: str
@@ -1050,11 +1222,17 @@ class RequirementCreate(BaseModel):
     verification_method: str | None = None
     status: str = "draft"
     owner: str | None = None
+    constraint: dict[str, Any] | None = None
 
     @field_validator("key", "title", "text", "requirement_type")
     @classmethod
     def _required_text(cls, value: str) -> str:
         return clean_required_text(value)
+
+    @field_validator("constraint")
+    @classmethod
+    def _constraint(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return clean_constraint(value)
 
 
 class RequirementUpdate(BaseModel):
@@ -1065,11 +1243,17 @@ class RequirementUpdate(BaseModel):
     verification_method: str | None = None
     status: str | None = None
     owner: str | None = None
+    constraint: dict[str, Any] | None = None
 
     @field_validator("key", "title", "text", "requirement_type")
     @classmethod
     def _required_text(cls, value: str | None) -> str | None:
         return clean_optional_text(value)
+
+    @field_validator("constraint")
+    @classmethod
+    def _constraint(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return clean_constraint(value)
 
 
 class RequirementRead(RequirementCreate, OrmModel):

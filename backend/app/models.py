@@ -348,6 +348,61 @@ class SheetLine(TimestampMixin, Base):
     sheet: Mapped[DrawingSheet] = relationship()
 
 
+class DrcResult(TimestampMixin, Base):
+    """One open DRC finding on a sheet, replaced on every save from the engine's run."""
+
+    __tablename__ = "drc_results"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    sheet_id: Mapped[str] = mapped_column(
+        ForeignKey("drawing_sheets.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(200), nullable=False)
+    rule: Mapped[str] = mapped_column(String(60), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="warning")
+    item_id: Mapped[str | None] = mapped_column(String(80))
+    subject: Mapped[str | None] = mapped_column(String(160))
+    zone: Mapped[str | None] = mapped_column(String(16))
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    requirement_id: Mapped[str | None] = mapped_column(
+        ForeignKey("requirements.id", ondelete="SET NULL")
+    )
+
+
+class DrcWaiver(TimestampMixin, Base):
+    """A waived finding: survives re-runs because it is keyed by the finding key."""
+
+    __tablename__ = "drc_waivers"
+    __table_args__ = (UniqueConstraint("sheet_id", "key", name="uq_drc_waiver"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    sheet_id: Mapped[str] = mapped_column(
+        ForeignKey("drawing_sheets.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(200), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    waived_by: Mapped[str | None] = mapped_column(String(160))
+
+
+class DrcRequirementCheck(TimestampMixin, Base):
+    """Pass/fail of one requirement constraint on one item (verification matrix rows)."""
+
+    __tablename__ = "drc_requirement_checks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    sheet_id: Mapped[str] = mapped_column(
+        ForeignKey("drawing_sheets.id", ondelete="CASCADE"), nullable=False
+    )
+    requirement_id: Mapped[str] = mapped_column(
+        ForeignKey("requirements.id", ondelete="CASCADE"), nullable=False
+    )
+    item_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    subject: Mapped[str | None] = mapped_column(String(160))
+    zone: Mapped[str | None] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default="pass")
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
 class PidSymbolDef(TimestampMixin, Base):
     """User-defined P&ID symbol: sanitized SVG markup plus connection ports.
 
@@ -410,6 +465,9 @@ class Requirement(TimestampMixin, Base):
     verification_method: Mapped[str | None] = mapped_column(String(80))
     status: Mapped[str] = mapped_column(String(80), default="draft")
     owner: Mapped[str | None] = mapped_column(String(160))
+    # Machine-checkable constraint evaluated by the drawing DRC:
+    # {"kind": "material_in", "values": ["316L"], "scope": {"services": ["GHe"]}}
+    constraint: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     project: Mapped[Project] = relationship(back_populates="requirements")
 
