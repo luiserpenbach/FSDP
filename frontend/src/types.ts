@@ -311,6 +311,7 @@ export type Hazard = {
   accepted_at: string | null;
   acceptance_justification: string | null;
   fault_tolerance_required: number;
+  volume_keys?: string[] | null;
   created_at: string;
   updated_at: string;
   computed_status: "open" | "controlled" | "accepted" | "closed" | string;
@@ -323,7 +324,7 @@ export type Hazard = {
   causes: number;
 };
 
-export type HazardInput = Partial<Pick<Hazard, "title" | "description" | "category" | "system_id" | "operating_modes" | "severity_initial" | "likelihood_initial" | "severity_residual" | "likelihood_residual" | "status" | "owner" | "fault_tolerance_required">>;
+export type HazardInput = Partial<Pick<Hazard, "title" | "description" | "category" | "system_id" | "operating_modes" | "severity_initial" | "likelihood_initial" | "severity_residual" | "likelihood_residual" | "status" | "owner" | "fault_tolerance_required" | "volume_keys">>;
 
 export type ScaleEntry = { code: string; name: string; description?: string };
 
@@ -500,6 +501,11 @@ export type Impact = {
   direct_links: TraceLink[];
   affected_bom_snapshots: BomSnapshot[];
   affected_components: ComponentInstance[];
+  affected_items?: ImpactItem[];
+  affected_fmea_rows?: ImpactRow[];
+  affected_hazards?: ImpactHazard[];
+  affected_requirements?: ImpactRequirement[];
+  affected_analyses?: ImpactAnalysis[];
 };
 
 export type SymbolPortSide = "left" | "right" | "top" | "bottom";
@@ -664,3 +670,81 @@ export type FmeaDiff = {
   changed: Array<{ item_tag: string | null; failure_mode_title: string | null; fields: Record<string, { from: unknown; to: unknown }> }>;
 };
 export type FmeaComment = { id: string; row_id: string; author: string | null; body: string; resolved: boolean; created_at: string };
+
+// ---- Volumes, analyses, overlay (phase C) ----
+
+export type SheetVolume = {
+  id: string;
+  sheet_id: string;
+  sheet_no: number | null;
+  drawing_id: string | null;
+  drawing_number: string | null;
+  key: string;
+  isolable: boolean;
+  relieved: boolean;
+  service: string | null;
+  design_pressure: string | null;
+  design_temperature: string | null;
+  length_m: number;
+  line_ids: string[];
+  item_ids: string[];
+  item_tags: string[];
+  relief_tags: string[];
+  isolating_tags: string[];
+  line_numbers: string[];
+  hazard_keys: string[];
+};
+
+export type AnalysisKind = "trapped_volume" | "relief_scenario" | "single_point_failure" | "fault_tolerance" | "manual";
+
+export type Analysis = {
+  id: string;
+  project_id: string;
+  kind: AnalysisKind | string;
+  title: string;
+  sheet_id: string | null;
+  sheet_no: number | null;
+  drawing_id: string | null;
+  drawing_number: string | null;
+  scope: Record<string, unknown> | null;
+  assumptions: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
+  verdict: "pass" | "fail" | "no_data" | "info" | string | null;
+  sheet_hash: string | null;
+  outdated: boolean;
+  run_by: string | null;
+  run_at: string | null;
+  evidence_for: string[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type OverlayItem = { item_id: string; tag: string | null; open_rows: number; stale_rows: number; max_rpn: number | null; hazard_keys: string[]; highest_risk: string | null };
+export type OverlayVolume = { key: string; line_ids: string[]; isolable: boolean; relieved: boolean; hazard_keys: string[]; highest_risk: string | null };
+export type SheetOverlay = { sheet_id: string; items: OverlayItem[]; volumes: OverlayVolume[] };
+
+export type ProjectDrcFinding = {
+  drawing_id: string;
+  drawing_number: string;
+  sheet_id: string;
+  sheet_no: number;
+  key: string;
+  rule: string;
+  severity: "error" | "warning" | "info" | string;
+  message: string;
+  item_id: string | null;
+  subject: string | null;
+  zone: string | null;
+  requirement_id: string | null;
+  hazard_id: string | null;
+  hazard_key: string | null;
+  waived: boolean;
+  waiver_reason: string | null;
+};
+export type ProjectDrc = { project_id: string; counts: { error: number; warning: number; info: number; waived: number }; findings: ProjectDrcFinding[] };
+
+export type ImpactItem = { id: string; item_id: string; sheet_id: string; sheet_no: number | null; drawing_id: string | null; drawing_number: string | null; tag: string; volume_key: string | null };
+export type ImpactRow = { id: string; worksheet_id: string; worksheet_title: string | null; item_tag: string | null; failure_mode: string | null; rpn: number | null; stale_reason: string | null; hazard_id: string | null };
+export type ImpactHazard = { id: string; key: string; title: string; severity_initial: string | null; status: string };
+export type ImpactRequirement = { id: string; key: string; title: string; verification_status: string; safety_critical: boolean };
+export type ImpactAnalysis = { id: string; kind: string; title: string; verdict: string | null; outdated: boolean };

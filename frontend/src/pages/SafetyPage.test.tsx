@@ -90,6 +90,7 @@ const requirements: Requirement[] = [
 
 function stubFetch(calls: Array<{ path: string; init?: RequestInit }>) {
   const worksheets: Array<Record<string, unknown>> = [];
+  const analyses: Array<Record<string, unknown>> = [];
   const fmeaRows: Array<Record<string, unknown>> = [];
   const hazards = [hazard({}), hazard({ id: "h2", key: "HZ-015", title: "Backflow of LOX into transfer pump on trip", category: "backflow", severity_initial: "II", severity_residual: "II", likelihood_residual: "C", operating_modes: ["fast_fill"], controls_total: 2, controls_verified: 2, independent_controls: 2, computed_status: "controlled", risk_residual: "medium" })];
   vi.stubGlobal(
@@ -115,6 +116,14 @@ function stubFetch(calls: Array<{ path: string; init?: RequestInit }>) {
       if (path === "/hazards/h1/derive-requirement" && init?.method === "POST") {
         return jsonResponse({ id: "r3", project_id: "p1", key: "REQ-SAF-040", title: "New", text: "Shall.", requirement_type: "safety", status: "draft" }, 201);
       }
+      if (path === "/projects/p1/volumes") return jsonResponse([{ id: "v1", sheet_id: "s1", sheet_no: 1, drawing_id: "d1", drawing_number: "GSE-LOX-001", key: "vol-1", isolable: true, relieved: false, service: "LOX", design_pressure: "40 bar", design_temperature: null, length_m: 12, line_ids: ["l2"], item_ids: ["fv201"], item_tags: ["FV-201"], relief_tags: [], isolating_tags: ["FV-201"], line_numbers: ["L-2014", "L-2015"], hazard_keys: ["HZ-001"] }]);
+      if (path === "/projects/p1/analyses" && init?.method === "POST") {
+        analyses.push({ id: "a1", project_id: "p1", kind: "trapped_volume", title: "Trapped volumes · GSE-LOX-001 sheet 1", sheet_id: "s1", sheet_no: 1, drawing_id: "d1", drawing_number: "GSE-LOX-001", scope: {}, assumptions: { ambient_temperature_k: 293.15 }, result: { volumes: [{ volume_key: "vol-1", line_numbers: ["L-2014", "L-2015"], service: "LOX", isolating_tags: ["FV-201"], relief_tags: [], relieved: false, temperature_rise_to_design_k: 1.0, verdict: "fail" }], unrelieved_count: 1, method: "dP = K beta dT" }, verdict: "fail", sheet_hash: "abc", outdated: false, run_by: "gse@fsdp.test", run_at: "2026-09-12T00:00:00Z", evidence_for: [], created_at: "2026-09-12T00:00:00Z", updated_at: "2026-09-12T00:00:00Z" });
+        return jsonResponse(analyses[0], 201);
+      }
+      if (path === "/projects/p1/analyses") return jsonResponse(analyses);
+      if (path === "/analyses/a1/attach-evidence" && init?.method === "POST") return jsonResponse({ ...analyses[0], evidence_for: ["r1"] });
+      if (path === "/projects/p1/drc") return jsonResponse({ project_id: "p1", counts: { error: 0, warning: 1, info: 0, waived: 0 }, findings: [{ drawing_id: "d1", drawing_number: "GSE-LOX-001", sheet_id: "s1", sheet_no: 1, key: "relief_coverage:l2", rule: "relief_coverage", severity: "warning", message: "Isolable volume (L-2014, L-2015) has no relief device", item_id: "l2", subject: "L-2014", zone: "C-4", requirement_id: null, hazard_id: "h1", hazard_key: "HZ-001", waived: false, waiver_reason: null }] });
       if (path === "/projects/p1/drawings") return jsonResponse([{ id: "d1", project_id: "p1", number: "GSE-LOX-001", title: "LOX fill and drain", sheets: [{ id: "s1", sheet_no: 1 }], revisions: [{ id: "rv1", label: "B", sequence: 1 }] }]);
       if (path === "/projects/p1/fmea" && init?.method === "POST") {
         worksheets.push({ id: "w1", project_id: "p1", system_id: null, drawing_id: "d1", drawing_number: "GSE-LOX-001", drawing_revision_label: "B", drawing_current_revision_label: "B", revision_drift: false, title: JSON.parse(String(init.body)).title, method: "fmea", operating_modes: ["hold", "fast_fill"], status: "draft", revision: 0, row_count: 0, stale_count: 0, open_actions: 0, above_threshold: 0, created_at: "2026-09-12T00:00:00Z", updated_at: "2026-09-12T00:00:00Z" });
@@ -218,6 +227,31 @@ describe("SafetyPage", () => {
     expect(within(grid).getByText("PT-205")).toBeInTheDocument();
     expect(await screen.findByText(/No library modes for: QD-201/)).toBeInTheDocument();
     expect(await screen.findByText(/1 thing blocks release/)).toBeInTheDocument();
+  });
+
+  it("runs a trapped-volume analysis, attaches it as evidence, and lists project design rule findings", async () => {
+    const calls: Array<{ path: string; init?: RequestInit }> = [];
+    stubFetch(calls);
+    render(<MemoryRouter><SafetyPage project={{ id: "p1", name: "LOX GSE" }} systems={[]} requirements={requirements} canWrite onRequirementsChanged={() => undefined} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByRole("grid", { name: "residual risk matrix" })).toBeInTheDocument());
+    expect(screen.getByText("Volumes without relief").parentElement).toHaveTextContent("1");
+    fireEvent.click(screen.getByRole("button", { name: "Analyses" }));
+    const form = await screen.findByText("New analysis");
+    const panel = form.closest("article")!;
+    fireEvent.change(within(panel).getByLabelText("Sheet"), { target: { value: "s1" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "Create and run" }));
+    await waitFor(() => expect(calls.some((call) => call.path === "/projects/p1/analyses" && call.init?.method === "POST")).toBe(true));
+    const drawer = await screen.findByRole("complementary", { name: /Analysis Trapped volumes/ });
+    expect(within(drawer).getByText("L-2014, L-2015")).toBeInTheDocument();
+    expect(within(drawer).getByText(/1 without relief/)).toBeInTheDocument();
+    fireEvent.change(within(drawer).getByLabelText("Attach to requirement"), { target: { value: "r1" } });
+    fireEvent.click(within(drawer).getByRole("button", { name: "Attach as evidence" }));
+    await waitFor(() => expect(calls.some((call) => call.path === "/analyses/a1/attach-evidence")).toBe(true));
+    await waitFor(() => expect(within(drawer).getByText(/Attached to REQ-SAF-031/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Design rules" }));
+    expect(await screen.findByText(/relief coverage · 1/)).toBeInTheDocument();
+    expect(screen.getByText(/HZ-001/, { selector: ".ref" })).toBeInTheDocument();
   });
 
   it("asks for a project when none is selected", () => {

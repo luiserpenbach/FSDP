@@ -29,7 +29,12 @@ const apiMock = vi.hoisted(() => ({
   getBomReadiness: vi.fn(),
   getSheetDrc: vi.fn(),
   waiveFinding: vi.fn(),
-  unwaiveFinding: vi.fn()
+  unwaiveFinding: vi.fn(),
+  getSheetOverlay: vi.fn(() => Promise.resolve({ sheet_id: "sh1", items: [], volumes: [] })),
+  listWorksheets: vi.fn(() => Promise.resolve([])),
+  listHazards: vi.fn(() => Promise.resolve([])),
+  listWorksheetRows: vi.fn(() => Promise.resolve([])),
+  createHazard: vi.fn()
 }));
 
 vi.mock("../api", () => ({ api: apiMock }));

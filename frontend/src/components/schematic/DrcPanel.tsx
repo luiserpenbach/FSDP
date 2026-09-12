@@ -36,7 +36,9 @@ export function DrcPanel({
   onLocate,
   onWaive,
   onUnwaive,
-  onRun
+  onRun,
+  onCreateHazard,
+  hazardsByLine
 }: {
   editor: Editor;
   inputs: DrcInputs;
@@ -45,6 +47,10 @@ export function DrcPanel({
   onWaive: (key: string, reason: string) => void;
   onUnwaive: (key: string) => void;
   onRun: (result: DrcResult) => void;
+  /** Create a hazard from a relief-coverage finding (safety phase C). */
+  onCreateHazard?: (finding: { key: string; itemId: string | null; message: string }) => void;
+  /** Hazard keys already scoped to a volume, by the volume's first line id. */
+  hazardsByLine?: Record<string, string[]>;
 }) {
   const result = useDrc(editor, inputs);
   const [showInfo, setShowInfo] = useState(false);
@@ -87,6 +93,13 @@ export function DrcPanel({
                   Go
                 </button>
               )}
+              {finding.rule === "relief_coverage" && finding.itemId && (hazardsByLine?.[finding.itemId]?.length ? (
+                <span className="mono ref">{hazardsByLine[finding.itemId].join(", ")}</span>
+              ) : onCreateHazard ? (
+                <button type="button" className="linkButton" disabled={!canWrite} onClick={() => onCreateHazard({ key: finding.key, itemId: finding.itemId, message: finding.message })}>
+                  Create hazard
+                </button>
+              ) : null)}
               <button type="button" className="linkButton" disabled={!canWrite} onClick={() => waive(finding.key, finding.message)}>
                 Waive…
               </button>

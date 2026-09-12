@@ -2085,7 +2085,20 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
               <section className="grid">
                 <Panel title="Change Impact">
                   <button disabled={!selectedPart && !selectedComponent} onClick={inspectImpact}>Inspect impact</button>
-                  {impact && <div className="impact"><p>{impact.direct_links.length} trace links, {impact.affected_components.length} components, {impact.affected_bom_snapshots.length} BoM snapshots affected.</p></div>}
+                  {impact && (
+                    <div className="impact">
+                      <p>{impact.direct_links.length} trace links, {impact.affected_components.length} components, {impact.affected_bom_snapshots.length} BoM snapshots affected.</p>
+                      {(impact.affected_items?.length || impact.affected_fmea_rows?.length || impact.affected_hazards?.length || impact.affected_requirements?.length) ? (
+                        <ul className="attentionList">
+                          {impact.affected_items?.map((entry) => <li key={entry.id}><span className="pill pill-info">item</span> <span className="mono">{entry.tag}</span> on {entry.drawing_number} sheet {entry.sheet_no}</li>)}
+                          {impact.affected_fmea_rows?.map((entry) => <li key={entry.id}><span className="pill pill-warn">FMEA</span> <span className="mono">{entry.item_tag}</span> {entry.failure_mode}{entry.stale_reason ? ` · stale (${entry.stale_reason.replaceAll("_", " ")})` : ""}</li>)}
+                          {impact.affected_hazards?.map((entry) => <li key={entry.id}><span className="pill pill-bad">hazard</span> <span className="mono">{entry.key}</span> {entry.title}</li>)}
+                          {impact.affected_requirements?.map((entry) => <li key={entry.id}><span className="pill pill-muted">requirement</span> <span className="mono">{entry.key}</span> {entry.title} · {entry.verification_status.replaceAll("_", " ")}</li>)}
+                          {impact.affected_analyses?.map((entry) => <li key={entry.id}><span className="pill pill-muted">analysis</span> {entry.title}{entry.outdated ? " · outdated" : ""}</li>)}
+                        </ul>
+                      ) : null}
+                    </div>
+                  )}
                 </Panel>
                 <Panel title="Recent Changes">
                   <button disabled={busy} onClick={refreshChanges}>Refresh</button>

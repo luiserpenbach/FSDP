@@ -4,11 +4,13 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { AnalysesTab } from "../components/safety/AnalysesTab";
+import { DrcTab } from "../components/safety/DrcTab";
 import { FmeaTab } from "../components/safety/FmeaTab";
 import { HazardDrawer } from "../components/safety/HazardDrawer";
 import { RiskMatrix, type MatrixCell, type MatrixMode } from "../components/safety/RiskMatrix";
 import { DataTable, Panel, StatusPill, SummaryCard } from "../components/ui";
-import type { Drawing, FluidSystem, Hazard, HazardMatrix, Project, Requirement, RequirementCoverage, SafetySettings } from "../types";
+import type { Analysis, Drawing, FluidSystem, Hazard, HazardMatrix, Project, Requirement, RequirementCoverage, SafetySettings, SheetVolume } from "../types";
 import { PageLayout } from "./PageLayout";
 
 type Tab = "overview" | "hazards" | "fmea" | "analyses" | "rules";
@@ -46,6 +48,8 @@ export function SafetyPage({
   const [settings, setSettings] = useState<SafetySettings | null>(null);
   const [coverage, setCoverage] = useState<RequirementCoverage | null>(null);
   const [drawings, setDrawings] = useState<Drawing[]>([]);
+  const [volumes, setVolumes] = useState<SheetVolume[]>([]);
+  const [analyses, setAnalyses] = useState<Analysis[]>([]);
   const [matrixMode, setMatrixMode] = useState<MatrixMode>("residual");
   const [cell, setCell] = useState<MatrixCell | null>(null);
   const [filters, setFilters] = useState({ category: "", computed: "", mode: "", severity: "" });
@@ -64,18 +68,22 @@ export function SafetyPage({
       return;
     }
     try {
-      const [nextHazards, nextMatrix, nextSettings, nextCoverage, nextDrawings] = await Promise.all([
+      const [nextHazards, nextMatrix, nextSettings, nextCoverage, nextDrawings, nextVolumes, nextAnalyses] = await Promise.all([
         api.listHazards(projectId),
         api.getHazardMatrix(projectId),
         api.getSafetySettings(projectId),
         api.getRequirementCoverage(projectId).catch(() => null),
-        api.listDrawings(projectId).catch(() => [])
+        api.listDrawings(projectId).catch(() => []),
+        api.listProjectVolumes(projectId).catch(() => []),
+        api.listAnalyses(projectId).catch(() => [])
       ]);
       setHazards(nextHazards);
       setMatrix(nextMatrix);
       setSettings(nextSettings.settings);
       setCoverage(nextCoverage);
       setDrawings(nextDrawings);
+      setVolumes(nextVolumes);
+      setAnalyses(nextAnalyses);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load the safety data.");
@@ -159,6 +167,8 @@ export function SafetyPage({
             <SummaryCard title="Accepted" value={hazards.filter((hazard) => hazard.status === "accepted").length} detail="Residual risk signed off" />
             <SummaryCard title="Safety reqs verified" value={verifiedSafety.length} detail={`of ${safetyRequirements.length} safety requirements`} />
             <SummaryCard title="Critical without evidence" value={withoutEvidence.length} detail="Safety-critical requirements still planned" />
+            <SummaryCard title="Volumes without relief" value={volumes.filter((volume) => volume.isolable && !volume.relieved).length} detail={`of ${volumes.filter((volume) => volume.isolable).length} isolable volumes on saved sheets`} />
+            <SummaryCard title="Single-point failures" value={analyses.filter((analysis) => analysis.kind === "single_point_failure").reduce((total, analysis) => total + (((analysis.result?.single_points as unknown[] | undefined)?.length) ?? 0), 0)} detail={`${analyses.filter((analysis) => analysis.outdated).length} analysis(es) outdated`} />
             <SummaryCard title="Hazards without controls" value={coverage?.hazards_without_controls.length ?? 0} detail="No requirement or hardware control yet" />
             <SummaryCard title="Uncovered hardware controls" value={coverage?.uncovered_hardware_controls.length ?? 0} detail="Items no requirement applies to" />
           </div>
@@ -345,15 +355,9 @@ export function SafetyPage({
         <FmeaTab projectId={project.id} drawings={drawings} hazards={hazards} requirements={requirements} settings={settings} canWrite={canWrite} onHazardsChanged={() => void reload()} />
       )}
       {tab === "analyses" && (
-        <Panel title="Analyses">
-          <p className="hint">Trapped-volume, relief-scenario, single-point-failure, and fault-tolerance analyses derived from saved sheets arrive after the FMEA phase.</p>
-        </Panel>
+        <AnalysesTab projectId={project.id} drawings={drawings} hazards={hazards} requirements={requirements} canWrite={canWrite} onRequirementsChanged={() => { onRequirementsChanged(); void reload(); }} />
       )}
-      {tab === "rules" && (
-        <Panel title="Design rules">
-          <p className="hint">Open the Drafting page to run and waive design rule checks on a sheet. A project-wide view of findings and waivers arrives with the analyses phase.</p>
-        </Panel>
-      )}
+      {tab === "rules" && <DrcTab projectId={project.id} />}
     </PageLayout>
   );
 }

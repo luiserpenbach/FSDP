@@ -23,6 +23,8 @@ import { renderFrame, renderItem, renderJunctions, pathFromPoints, type PartBadg
 import { frameRect, sheetSize } from "../../engine/sheet";
 import { itemBounds } from "../../engine/spatial";
 import type { Item, Point, Rect } from "../../engine/types";
+import type { SheetOverlay } from "../../types";
+import type * as React from "react";
 
 export type Viewport = { x: number; y: number; zoom: number };
 
@@ -88,6 +90,7 @@ function SchematicCanvasInner(
     context,
     connectorTargets,
     partBadges,
+    safety,
     onCursor,
     onViewport
   }: {
@@ -99,6 +102,8 @@ function SchematicCanvasInner(
     connectorTargets?: Record<string, string>;
     /** Assigned-part badges per item id (canvas only). */
     partBadges?: Record<string, PartBadge>;
+    /** Safety overlay: hazards per volume and FMEA rows per item (canvas only). */
+    safety?: SheetOverlay | null;
     onCursor?: (point: Point | null) => void;
     onViewport?: (viewport: Viewport) => void;
   },
@@ -333,6 +338,7 @@ function SchematicCanvasInner(
 
           {/* ---- overlays ---- */}
           <g className="overlays" pointerEvents="none">
+            {safety && renderSafetyLayer(safety, doc.items, overlayStroke)}
             {showPorts &&
               doc.items.map((item) =>
                 item.kind === "symbol" || item.kind === "equipment"
@@ -425,3 +431,37 @@ function SchematicCanvasInner(
 }
 
 export const SchematicCanvas = forwardRef(SchematicCanvasInner);
+
+
+const RISK_COLORS: Record<string, string> = { high: "#b3261e", serious: "#c2410c", medium: "#b45309", low: "#15803d" };
+
+/** Volume lines tinted by their hazards' residual risk; items badged with their FMEA row counts. */
+function renderSafetyLayer(safety: SheetOverlay, items: Item[], stroke: number) {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const marks: React.ReactNode[] = [];
+  for (const volume of safety.volumes) {
+    if (!volume.hazard_keys.length && volume.relieved) continue;
+    const color = volume.hazard_keys.length ? RISK_COLORS[volume.highest_risk ?? "low"] ?? "#64748b" : "#b45309";
+    for (const lineId of volume.line_ids) {
+      const line = byId.get(lineId);
+      if (!line || line.kind !== "line") continue;
+      marks.push(<path key={`vol-${volume.key}-${lineId}`} d={pathFromPoints(line.points)} fill="none" stroke={color} strokeOpacity={0.28} strokeWidth={3.2} strokeLinecap="round" strokeLinejoin="round" />);
+    }
+  }
+  for (const entry of safety.items) {
+    const item = byId.get(entry.item_id);
+    if (!item || (item.kind !== "symbol" && item.kind !== "equipment")) continue;
+    const anchor = item.kind === "symbol" ? item.position : { x: item.position.x + item.size.width / 2, y: item.position.y + item.size.height / 2 };
+    const color = entry.stale_rows ? "#b45309" : entry.hazard_keys.length ? RISK_COLORS[entry.highest_risk ?? "low"] ?? "#64748b" : "#2257c4";
+    const label = entry.stale_rows ? `!${entry.open_rows}` : String(entry.open_rows || entry.hazard_keys.length);
+    marks.push(
+      <g key={`badge-${entry.item_id}`} transform={`translate(${anchor.x + 5}, ${anchor.y - 5})`}>
+        <circle r={2.4} fill={color} stroke="#ffffff" strokeWidth={stroke * 0.6} />
+        <text y={0.9} textAnchor="middle" fontSize={2.6} fontWeight={700} fill="#ffffff" fontFamily="Inter, Arial, sans-serif">
+          {label}
+        </text>
+      </g>
+    );
+  }
+  return <g className="safetyLayer">{marks}</g>;
+}

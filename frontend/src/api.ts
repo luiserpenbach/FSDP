@@ -1,4 +1,8 @@
 import type {
+  Analysis,
+  ProjectDrc,
+  SheetOverlay,
+  SheetVolume,
   FailureMode,
   FmeaComment,
   FmeaDiff,
@@ -413,6 +417,21 @@ export const api = {
   addRowComment: (rowId: string, body: string) => request<FmeaComment>(`/fmea/rows/${rowId}/comments`, { method: "POST", body: JSON.stringify({ body }) }),
   updateRowComment: (commentId: string, body: { resolved?: boolean; body?: string }) =>
     request<FmeaComment>(`/fmea/comments/${commentId}`, { method: "PUT", body: JSON.stringify(body) }),
+  listSheetVolumes: (sheetId: string) => request<SheetVolume[]>(`/sheets/${sheetId}/volumes`),
+  listDrawingVolumes: (drawingId: string) => request<SheetVolume[]>(`/drawings/${drawingId}/volumes`),
+  listProjectVolumes: (projectId: string) => request<SheetVolume[]>(`/projects/${projectId}/volumes`),
+  getSheetOverlay: (sheetId: string) => request<SheetOverlay>(`/sheets/${sheetId}/safety-overlay`),
+  getProjectDrc: (projectId: string) => request<ProjectDrc>(`/projects/${projectId}/drc`),
+  listAnalyses: (projectId: string) => request<Analysis[]>(`/projects/${projectId}/analyses`),
+  createAnalysis: (projectId: string, body: { kind: string; title?: string | null; sheet_id?: string | null; scope?: Record<string, unknown> | null; assumptions?: Record<string, unknown> | null }) =>
+    request<Analysis>(`/projects/${projectId}/analyses`, { method: "POST", body: JSON.stringify(body) }),
+  getAnalysis: (analysisId: string) => request<Analysis>(`/analyses/${analysisId}`),
+  updateAnalysis: (analysisId: string, body: { title?: string; scope?: Record<string, unknown> | null; assumptions?: Record<string, unknown> | null; result?: Record<string, unknown> | null; verdict?: string | null }) =>
+    request<Analysis>(`/analyses/${analysisId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteAnalysis: (analysisId: string) => requestNoContent(`/analyses/${analysisId}`, { method: "DELETE" }),
+  runAnalysis: (analysisId: string) => request<Analysis>(`/analyses/${analysisId}/run`, { method: "POST" }),
+  attachAnalysisEvidence: (analysisId: string, requirementId: string) =>
+    request<Analysis>(`/analyses/${analysisId}/attach-evidence`, { method: "POST", body: JSON.stringify({ requirement_id: requirementId }) }),
   listSheetItems: (projectId: string, params?: { q?: string; category?: string; limit?: number }) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params ?? {})) {

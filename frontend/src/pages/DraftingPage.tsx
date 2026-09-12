@@ -32,7 +32,9 @@ import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, validateTag, type TagSc
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
-import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, Requirement, User } from "../types";
+import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, Requirement, SheetOverlay, User } from "../types";
+import { SafetyPanel } from "../components/schematic/SafetyPanel";
+import { describeVolumes } from "../engine/volumes";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
@@ -211,6 +213,7 @@ function DrawingCanvas({
   sheetNo,
   otherSheets,
   parts,
+  safety,
   canvasRef,
   onCursor,
   onViewport
@@ -224,6 +227,7 @@ function DrawingCanvas({
   sheetNo: number;
   otherSheets: SheetDoc[];
   parts: Part[];
+  safety: SheetOverlay | null;
   canvasRef: React.RefObject<SchematicCanvasHandle | null>;
   onCursor: (point: Point | null) => void;
   onViewport: (viewport: Viewport) => void;
@@ -245,7 +249,7 @@ function DrawingCanvas({
     () => (baseContext ? withLegends(baseContext, doc, registry, scheme, flags, connectorTargets) : undefined),
     [baseContext, doc, registry, scheme, flags, connectorTargets]
   );
-  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} onCursor={onCursor} onViewport={onViewport} />;
+  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} safety={safety} onCursor={onCursor} onViewport={onViewport} />;
 }
 
 export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify }: Props) {
@@ -256,6 +260,21 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
+  const [showSafety, setShowSafety] = useState(false);
+  const [overlay, setOverlay] = useState<SheetOverlay | null>(null);
+  const reloadOverlay = useCallback((id: string) => {
+    api
+      .getSheetOverlay(id)
+      .then(setOverlay)
+      .catch(() => setOverlay(null));
+  }, []);
+  useEffect(() => {
+    if (!sheetId) {
+      setOverlay(null);
+      return;
+    }
+    reloadOverlay(sheetId);
+  }, [sheetId, reloadOverlay]);
   const [showDrawingPanel, setShowDrawingPanel] = useState(false);
   const [creating, setCreating] = useState<null | { mode: "new" | "convert" }>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
@@ -343,7 +362,6 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     }
     setDrawingId(targetDrawing);
     if (targetSheet) setSheetId(targetSheet);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.search, drawings]);
 
   // Project tag scheme (defaults when none is stored).
@@ -510,12 +528,13 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       editor.store.markSaved();
       const drcSummary = drc.counts.error || drc.counts.warning ? `; DRC: ${drc.counts.error} error(s), ${drc.counts.warning} warning(s)` : "; DRC clean";
       notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed${drcSummary}).`);
+      reloadOverlay(sheetId);
       return true;
     } catch (error) {
       notify(error instanceof Error ? error.message : "Save failed.", true);
       return false;
     }
-  }, [editor, sheetId, drawing, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify]);
+  }, [editor, sheetId, drawing, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify, reloadOverlay]);
 
   async function waiveFinding(key: string, reason: string) {
     if (!sheetId) return;
@@ -591,6 +610,25 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     setBom(null);
     setBomReadiness(null);
   }, [drawing?.id]);
+
+  async function createHazardFromFinding(finding: { key: string; itemId: string | null; message: string }) {
+    if (!editor || !projectId || !sheetId) return;
+    try {
+      const volumes = describeVolumes(editor.store.doc, registry, editor.connectivity);
+      const volume = volumes.find((entry) => finding.itemId !== null && entry.line_ids.includes(finding.itemId));
+      const hazard = await api.createHazard(projectId, {
+        title: `Overpressure of isolable volume ${volume?.line_numbers.join(", ") || finding.itemId || ""} (${volume?.service ?? "process"})`.trim(),
+        description: `${finding.message}. Created from a relief-coverage design rule finding on ${drawing?.number ?? "the drawing"}.`,
+        category: "trapped_fluid",
+        operating_modes: ["hold", "abort_safe"],
+        volume_keys: volume ? [volume.key] : null
+      });
+      notify(`Created hazard ${hazard.key}. Add its controls on the Safety page.`);
+      reloadOverlay(sheetId);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not create the hazard.", true);
+    }
+  }
 
   const focusItem = useCallback(
     (itemId: string) => {
@@ -899,6 +937,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 sheetNo={sheetSummary?.sheet_no ?? 1}
                 otherSheets={otherSheets}
                 parts={parts}
+                safety={showSafety ? overlay : null}
                 canvasRef={canvasRef}
                 onCursor={setCursor}
                 onViewport={setViewport}
@@ -971,6 +1010,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                     onWaive={(key, reason) => void waiveFinding(key, reason)}
                     onUnwaive={(key) => void unwaiveFinding(key)}
                     onRunDrc={reportDrc}
+                    onCreateHazard={(finding) => void createHazardFromFinding(finding)}
+                    safety={{ projectId, drawingId: drawing?.id ?? "", sheetId, overlay, showOverlay: showSafety, onToggleOverlay: () => setShowSafety((current) => !current), notify }}
                   />
                 )}
               </div>
@@ -1529,7 +1570,9 @@ function Inspector({
   onLocate,
   onWaive,
   onUnwaive,
-  onRunDrc
+  onRunDrc,
+  onCreateHazard,
+  safety
 }: {
   editor: Editor;
   registry: SymbolRegistry;
@@ -1543,6 +1586,8 @@ function Inspector({
   onWaive: (key: string, reason: string) => void;
   onUnwaive: (key: string) => void;
   onRunDrc: (result: DrcResult) => void;
+  onCreateHazard: (finding: { key: string; itemId: string | null; message: string }) => void;
+  safety: { projectId: string; drawingId: string; sheetId: string; overlay: SheetOverlay | null; showOverlay: boolean; onToggleOverlay: () => void; notify: (text: string, isError?: boolean) => void };
 }) {
   const { state, connectivity, doc } = useEditorSnapshot(editor);
   const connectorResolution = useMemo(() => resolveConnectorTargets({ sheetNo, doc }, otherSheets), [doc, sheetNo, otherSheets]);
@@ -2021,7 +2066,36 @@ function Inspector({
           </>
         )}
       </article>
-      <DrcPanel editor={editor} inputs={drcInputs} canWrite={canWrite} onLocate={onLocate} onWaive={onWaive} onUnwaive={onUnwaive} onRun={onRunDrc} />
+      <DrcPanel
+        editor={editor}
+        inputs={drcInputs}
+        canWrite={canWrite}
+        onLocate={onLocate}
+        onWaive={onWaive}
+        onUnwaive={onUnwaive}
+        onRun={onRunDrc}
+        onCreateHazard={onCreateHazard}
+        hazardsByLine={Object.fromEntries((safety.overlay?.volumes ?? []).flatMap((volume) => volume.line_ids.map((lineId) => [lineId, volume.hazard_keys])))}
+      />
+      {safety.sheetId && safety.drawingId && (
+        <>
+          <label className="checkRow safetyToggle">
+            <input type="checkbox" checked={safety.showOverlay} onChange={safety.onToggleOverlay} />
+            <span>Show safety overlay on the sheet</span>
+          </label>
+          <SafetyPanel
+            projectId={safety.projectId}
+            drawingId={safety.drawingId}
+            sheetId={safety.sheetId}
+            itemId={item && (item.kind === "symbol" || item.kind === "equipment") ? item.id : null}
+            itemTag={item ? (item.kind === "symbol" ? (item.tag ?? item.label ?? null) : item.kind === "equipment" ? (item.tag ?? item.name) : null) : null}
+            overlay={safety.overlay}
+            canWrite={canWrite}
+            onLocate={onLocate}
+            notify={safety.notify}
+          />
+        </>
+      )}
       <article className="panel">
         <div className="panelHead">
           <h2>Checks</h2>
