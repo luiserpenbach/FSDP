@@ -580,6 +580,154 @@ class Hazard(TimestampMixin, Base):
     system: Mapped[FluidSystem | None] = relationship()
 
 
+class FailureMode(TimestampMixin, Base):
+    """Organisation-wide failure-mode library entry for a symbol category or key."""
+
+    __tablename__ = "failure_modes"
+    __table_args__ = (UniqueConstraint("category", "symbol_key", "name", name="uq_failure_mode"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    category: Mapped[str] = mapped_column(String(40), nullable=False)
+    symbol_key: Mapped[str | None] = mapped_column(String(120))
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    # Template with {tag}, {name}, {service} placeholders.
+    default_local_effect: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # Instrument tag letters that typically detect this mode, e.g. ["PT", "PDT"].
+    default_detection_hint: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    default_severity: Mapped[int | None] = mapped_column(Integer)
+    # None = every operating mode.
+    applicable_modes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Symbol-level entries add to the category's unless this is set.
+    replaces_category: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class FmeaWorksheet(TimestampMixin, Base):
+    __tablename__ = "fmea_worksheets"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    system_id: Mapped[str | None] = mapped_column(
+        ForeignKey("fluid_systems.id", ondelete="SET NULL"), nullable=True
+    )
+    drawing_id: Mapped[str | None] = mapped_column(
+        ForeignKey("drawings.id", ondelete="SET NULL"), nullable=True
+    )
+    # Drawing revision the rows were generated against / released at.
+    drawing_revision_label: Mapped[str | None] = mapped_column(String(16))
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    method: Mapped[str] = mapped_column(String(10), nullable=False, default="fmea")
+    operating_modes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # draft | in_review | released | superseded
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    rows: Mapped[list[FmeaRow]] = relationship(
+        back_populates="worksheet", cascade="all, delete-orphan", order_by="FmeaRow.position"
+    )
+    releases: Mapped[list[FmeaRelease]] = relationship(
+        back_populates="worksheet", cascade="all, delete-orphan", order_by="FmeaRelease.revision"
+    )
+
+
+class FmeaRow(TimestampMixin, Base):
+    """One failure mode of one drawing item. The item is referenced by
+    ``(sheet_id, item_id)``; ``*_seen`` columns remember what the item looked like
+    when the row was last confirmed so a save can mark the row stale."""
+
+    __tablename__ = "fmea_rows"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    worksheet_id: Mapped[str] = mapped_column(
+        ForeignKey("fmea_worksheets.id", ondelete="CASCADE"), nullable=False
+    )
+    sheet_id: Mapped[str | None] = mapped_column(
+        ForeignKey("drawing_sheets.id", ondelete="SET NULL"), nullable=True
+    )
+    item_id: Mapped[str | None] = mapped_column(String(80))
+    # Rows about things not on a drawing (procedures, operators).
+    subject_text: Mapped[str | None] = mapped_column(String(200))
+    item_tag_seen: Mapped[str | None] = mapped_column(String(80))
+    part_id_seen: Mapped[str | None] = mapped_column(String(36))
+    volume_key_seen: Mapped[str | None] = mapped_column(String(80))
+    failure_mode_id: Mapped[str | None] = mapped_column(
+        ForeignKey("failure_modes.id", ondelete="SET NULL"), nullable=True
+    )
+    failure_mode_text: Mapped[str | None] = mapped_column(String(160))
+    operating_modes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    cause: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    local_effect: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    next_effect: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    end_effect: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    detected_by_item_id: Mapped[str | None] = mapped_column(String(80))
+    # instrument | procedure | inspection | none
+    detection_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="none")
+    detection_reason: Mapped[str | None] = mapped_column(Text)
+    severity: Mapped[int | None] = mapped_column(Integer)
+    occurrence: Mapped[int | None] = mapped_column(Integer)
+    detection: Mapped[int | None] = mapped_column(Integer)
+    rpn: Mapped[int | None] = mapped_column(Integer)
+    hazard_id: Mapped[str | None] = mapped_column(
+        ForeignKey("hazards.id", ondelete="SET NULL"), nullable=True
+    )
+    recommended_action: Mapped[str | None] = mapped_column(Text)
+    action_owner: Mapped[str | None] = mapped_column(String(160))
+    action_due: Mapped[str | None] = mapped_column(String(32))
+    # not_required | open | in_progress | done
+    action_status: Mapped[str] = mapped_column(String(20), nullable=False, default="not_required")
+    severity_residual: Mapped[int | None] = mapped_column(Integer)
+    occurrence_residual: Mapped[int | None] = mapped_column(Integer)
+    detection_residual: Mapped[int | None] = mapped_column(Integer)
+    notes: Mapped[str | None] = mapped_column(Text)
+    not_applicable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # retagged | part_changed | moved_volume | deleted | drawing_revised
+    stale_reason: Mapped[str | None] = mapped_column(String(40))
+    stale_detail: Mapped[str | None] = mapped_column(Text)
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    worksheet: Mapped[FmeaWorksheet] = relationship(back_populates="rows")
+    failure_mode: Mapped[FailureMode | None] = relationship()
+    comments: Mapped[list[FmeaRowComment]] = relationship(
+        back_populates="row", cascade="all, delete-orphan", order_by="FmeaRowComment.created_at"
+    )
+
+
+class FmeaRelease(TimestampMixin, Base):
+    """Frozen rows of a worksheet at a release, pinned to a drawing revision."""
+
+    __tablename__ = "fmea_releases"
+    __table_args__ = (UniqueConstraint("worksheet_id", "revision", name="uq_fmea_release"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    worksheet_id: Mapped[str] = mapped_column(
+        ForeignKey("fmea_worksheets.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    drawing_revision_label: Mapped[str | None] = mapped_column(String(16))
+    rows: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    released_by: Mapped[str | None] = mapped_column(String(160))
+    note: Mapped[str | None] = mapped_column(Text)
+
+    worksheet: Mapped[FmeaWorksheet] = relationship(back_populates="releases")
+
+
+class FmeaRowComment(TimestampMixin, Base):
+    __tablename__ = "fmea_row_comments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    row_id: Mapped[str] = mapped_column(
+        ForeignKey("fmea_rows.id", ondelete="CASCADE"), nullable=False
+    )
+    author: Mapped[str | None] = mapped_column(String(160))
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    row: Mapped[FmeaRow] = relationship(back_populates="comments")
+
+
 class SafetySettings(TimestampMixin, Base):
     """Per-project safety settings (scales, risk matrix, policy, modes)."""
 

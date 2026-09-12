@@ -1593,6 +1593,328 @@ class HazardMatrixRead(BaseModel):
     unrated: int
 
 
+# ---- FMEA ----
+
+FMEA_METHODS = {"fmea", "fmeca"}
+FMEA_STATUSES = {"draft", "in_review", "released", "superseded"}
+DETECTION_KINDS = {"instrument", "procedure", "inspection", "none"}
+ACTION_STATUSES = {"not_required", "open", "in_progress", "done"}
+
+
+class FailureModeCreate(BaseModel):
+    category: str
+    symbol_key: str | None = None
+    name: str
+    title: str
+    default_local_effect: str = ""
+    default_detection_hint: list[str] | None = None
+    default_severity: int | None = None
+    applicable_modes: list[str] | None = None
+    replaces_category: bool = False
+    active: bool = True
+
+    @field_validator("category", "name", "title")
+    @classmethod
+    def _required(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("symbol_key")
+    @classmethod
+    def _symbol(cls, value: str | None) -> str | None:
+        return clean_optional_text(value) if value else None
+
+
+class FailureModeUpdate(BaseModel):
+    title: str | None = None
+    default_local_effect: str | None = None
+    default_detection_hint: list[str] | None = None
+    default_severity: int | None = None
+    applicable_modes: list[str] | None = None
+    replaces_category: bool | None = None
+    active: bool | None = None
+
+
+class FailureModeRead(OrmModel):
+    id: str
+    category: str
+    symbol_key: str | None
+    name: str
+    title: str
+    default_local_effect: str
+    default_detection_hint: list[str] | None
+    default_severity: int | None
+    applicable_modes: list[str] | None
+    replaces_category: bool
+    active: bool
+
+
+class FmeaWorksheetCreate(BaseModel):
+    title: str
+    system_id: str | None = None
+    drawing_id: str | None = None
+    method: str = "fmea"
+    operating_modes: list[str] | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("method")
+    @classmethod
+    def _method(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in FMEA_METHODS:
+            raise ValueError("method must be fmea or fmeca")
+        return cleaned
+
+
+class FmeaWorksheetUpdate(BaseModel):
+    title: str | None = None
+    system_id: str | None = None
+    drawing_id: str | None = None
+    method: str | None = None
+    operating_modes: list[str] | None = None
+    status: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().lower()
+        if cleaned not in FMEA_STATUSES:
+            raise ValueError("status must be one of: " + ", ".join(sorted(FMEA_STATUSES)))
+        return cleaned
+
+
+class FmeaWorksheetRead(BaseModel):
+    id: str
+    project_id: str
+    system_id: str | None
+    drawing_id: str | None
+    drawing_number: str | None = None
+    drawing_revision_label: str | None
+    drawing_current_revision_label: str | None = None
+    revision_drift: bool = False
+    title: str
+    method: str
+    operating_modes: list[str] | None
+    status: str
+    revision: int
+    row_count: int = 0
+    stale_count: int = 0
+    open_actions: int = 0
+    above_threshold: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class FmeaRowIn(BaseModel):
+    """Create/update payload; every field optional so bulk patches can be partial."""
+
+    sheet_id: str | None = None
+    item_id: str | None = None
+    subject_text: str | None = None
+    failure_mode_id: str | None = None
+    failure_mode_text: str | None = None
+    operating_modes: list[str] | None = None
+    cause: str | None = None
+    local_effect: str | None = None
+    next_effect: str | None = None
+    end_effect: str | None = None
+    detected_by_item_id: str | None = None
+    detection_kind: str | None = None
+    detection_reason: str | None = None
+    severity: int | None = None
+    occurrence: int | None = None
+    detection: int | None = None
+    hazard_id: str | None = None
+    recommended_action: str | None = None
+    action_owner: str | None = None
+    action_due: str | None = None
+    action_status: str | None = None
+    severity_residual: int | None = None
+    occurrence_residual: int | None = None
+    detection_residual: int | None = None
+    notes: str | None = None
+    not_applicable: bool | None = None
+    position: int | None = None
+
+    @field_validator("detection_kind")
+    @classmethod
+    def _detection(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().lower()
+        if cleaned not in DETECTION_KINDS:
+            raise ValueError("detection_kind must be one of: " + ", ".join(sorted(DETECTION_KINDS)))
+        return cleaned
+
+    @field_validator("action_status")
+    @classmethod
+    def _action(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().lower()
+        if cleaned not in ACTION_STATUSES:
+            raise ValueError("action_status must be one of: " + ", ".join(sorted(ACTION_STATUSES)))
+        return cleaned
+
+
+class FmeaRowPatch(FmeaRowIn):
+    id: str
+
+
+class FmeaBulkIn(BaseModel):
+    rows: list[FmeaRowPatch]
+
+
+class FmeaControlRead(BaseModel):
+    link_id: str
+    type: str
+    id: str
+    label: str
+
+
+class FmeaRowRead(BaseModel):
+    id: str
+    worksheet_id: str
+    sheet_id: str | None
+    item_id: str | None
+    subject_text: str | None
+    item_tag: str | None = None
+    item_category: str | None = None
+    item_symbol: str | None = None
+    item_zone: str | None = None
+    item_exists: bool = True
+    part_id: str | None = None
+    part_number: str | None = None
+    sheet_no: int | None = None
+    drawing_id: str | None = None
+    drawing_number: str | None = None
+    failure_mode_id: str | None
+    failure_mode_text: str | None
+    failure_mode_name: str | None = None
+    failure_mode_title: str | None = None
+    operating_modes: list[str] | None
+    cause: str
+    local_effect: str
+    next_effect: str
+    end_effect: str
+    detected_by_item_id: str | None
+    detected_by_tag: str | None = None
+    detection_kind: str
+    detection_reason: str | None
+    severity: int | None
+    occurrence: int | None
+    detection: int | None
+    rpn: int | None
+    hazard_id: str | None
+    hazard_key: str | None = None
+    recommended_action: str | None
+    action_owner: str | None
+    action_due: str | None
+    action_status: str
+    severity_residual: int | None
+    occurrence_residual: int | None
+    detection_residual: int | None
+    rpn_residual: int | None = None
+    notes: str | None
+    not_applicable: bool
+    stale_reason: str | None
+    stale_detail: str | None
+    position: int
+    controls: list[FmeaControlRead] = Field(default_factory=list)
+    comment_count: int = 0
+    open_comment_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class FmeaGenerateIn(BaseModel):
+    drawing_id: str | None = None
+    sheet_ids: list[str] | None = None
+    categories: list[str] | None = None
+    operating_modes: list[str] | None = None
+
+
+class FmeaGenerateRead(BaseModel):
+    added: int
+    kept: int
+    stale: int
+    items_without_modes: list[str]
+
+
+class FmeaReleaseIn(BaseModel):
+    note: str | None = None
+
+
+class FmeaReleaseRead(OrmModel):
+    id: str
+    worksheet_id: str
+    revision: int
+    drawing_revision_label: str | None
+    released_by: str | None
+    note: str | None
+    row_count: int = 0
+    created_at: datetime
+
+
+class FmeaGateRead(BaseModel):
+    ready: bool
+    blockers: list[dict[str, Any]]
+
+
+class FmeaDiffRead(BaseModel):
+    worksheet_id: str
+    against_revision: int
+    added: list[dict[str, Any]]
+    removed: list[dict[str, Any]]
+    changed: list[dict[str, Any]]
+
+
+class FmeaRowControlIn(BaseModel):
+    type: str
+    id: str
+
+    @field_validator("type")
+    @classmethod
+    def _type(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in {"requirement", "sheet_item"}:
+            raise ValueError("type must be 'requirement' or 'sheet_item'")
+        return cleaned
+
+
+class FmeaCommentCreate(BaseModel):
+    body: str
+
+    @field_validator("body")
+    @classmethod
+    def _body(cls, value: str) -> str:
+        return clean_required_text(value)
+
+
+class FmeaCommentUpdate(BaseModel):
+    resolved: bool | None = None
+    body: str | None = None
+
+
+class FmeaCommentRead(OrmModel):
+    id: str
+    row_id: str
+    author: str | None
+    body: str
+    resolved: bool
+    created_at: datetime
+
+
 class SheetItemRefRead(BaseModel):
     """A sheet item as a pick-list entry (hazard controls, FMEA rows)."""
 

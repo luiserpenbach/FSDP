@@ -23,6 +23,7 @@ from app.models import (
     Drawing,
     DrawingSheet,
     FluidSystem,
+    FmeaRow,
     Hazard,
     Part,
     PidSymbolDef,
@@ -1527,6 +1528,7 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
     "component": ComponentInstance,
     "requirement": Requirement,
     "hazard": Hazard,
+    "fmea_row": FmeaRow,
 }
 
 # Semantics of a link, source -> target. Hazard controls use mitigates
@@ -1540,6 +1542,7 @@ TRACE_LINK_TYPES = {
     "derives",
     "mitigates",
     "controls",
+    "controlled_by",
     "causes",
     "evidenced_by",
     "verifies",

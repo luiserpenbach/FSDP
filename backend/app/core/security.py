@@ -3,6 +3,7 @@ import datetime as dt
 import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -63,3 +64,31 @@ def require_writer(user: User = Depends(get_current_user)) -> User:
         detail = "This account is read-only; an engineer or admin role is required to make changes."
         raise HTTPException(status_code=403, detail=detail)
     return user
+
+
+def require_safety_approver(
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> User:
+    """Admins always; engineers only when they are on the project's approver list
+    (or when no approver list is configured anywhere, so small teams are not
+    locked out). Project scope is checked by the route when it knows the project."""
+    if user.role == "admin":
+        return user
+    if user.role not in WRITER_ROLES:
+        raise HTTPException(status_code=403, detail="Engineer or admin role required.")
+    from app.models import SafetySettings  # local import: avoid a cycle at module load
+
+    configured = [
+        row
+        for row in db.scalars(select(SafetySettings))
+        if (row.settings or {}).get("approvers")
+    ]
+    if not configured:
+        return user
+    if any(user.id in (row.settings or {}).get("approvers", []) or
+           user.email in (row.settings or {}).get("approvers", []) for row in configured):
+        return user
+    raise HTTPException(
+        status_code=403,
+        detail="Only a safety approver can accept hazards or release worksheets.",
+    )

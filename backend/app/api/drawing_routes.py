@@ -67,6 +67,7 @@ from app.services.lists import (
     rows_to_xlsx,
 )
 from app.services.requirements_io import MATRIX_COLUMNS, matrix_rows
+from app.services.safety_sync import sync_fmea_rows
 from app.services.sheet_index import replace_sheet_index
 from app.services.verification import sync_drc_evidence
 
@@ -315,6 +316,7 @@ def update_sheet(
         sheet.document = data["document"]
     if payload.index is not None:
         replace_sheet_index(db, sheet, payload.index)
+        sync_fmea_rows(db, sheet)
     if payload.drc is not None:
         replace_sheet_drc(db, sheet, payload.drc)
         sync_drc_evidence(db, sheet)

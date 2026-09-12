@@ -74,6 +74,45 @@ OPERATING_MODES = [
     "abort_safe",
 ]
 
+FMEA_RATING_DESCRIPTIONS = {
+    "severity": [
+        "No effect",
+        "Very minor: cosmetic",
+        "Minor: slight degradation",
+        "Low: noticeable degradation",
+        "Moderate: reduced performance",
+        "Significant: loss of secondary function",
+        "Major: loss of primary function",
+        "High: hazardous with warning",
+        "Very high: hazardous without warning",
+        "Catastrophic: injury or loss of system",
+    ],
+    "occurrence": [
+        "Remote: failure eliminated",
+        "Very low: isolated failures",
+        "Low: few failures",
+        "Low-moderate",
+        "Moderate: occasional failures",
+        "Moderate-high",
+        "High: repeated failures",
+        "High: frequent failures",
+        "Very high: almost inevitable",
+        "Certain",
+    ],
+    "detection": [
+        "Certain: detected before effect",
+        "Very high: automatic trip",
+        "High: alarmed and acted on",
+        "Moderately high: alarmed",
+        "Moderate: indicated, monitored",
+        "Low: indicated, not monitored",
+        "Very low: inspection only",
+        "Remote: post-event inspection",
+        "Very remote: not inspectable",
+        "None: no detection",
+    ],
+}
+
 DEFAULT_SAFETY_SETTINGS: dict[str, Any] = {
     "severity_scale": SEVERITY_SCALE,
     "likelihood_scale": LIKELIHOOD_SCALE,
@@ -82,6 +121,11 @@ DEFAULT_SAFETY_SETTINGS: dict[str, Any] = {
     # Independent controls required before a hazard counts as controlled.
     "fault_tolerance": {"I": 2, "II": 2, "III": 1, "IV": 1},
     "rpn_threshold": 100,
+    # FMEA rating scales run 1..fmea_scale_max; rows rated at or above
+    # fmea_hazard_severity_min must link a hazard before release.
+    "fmea_scale_max": 10,
+    "fmea_hazard_severity_min": 8,
+    "fmea_rating_descriptions": FMEA_RATING_DESCRIPTIONS,
     "operating_modes": OPERATING_MODES,
     "hazard_categories": HAZARD_CATEGORIES,
     "auto_hazard": False,

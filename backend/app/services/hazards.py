@@ -11,11 +11,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
     DrcRequirementCheck,
+    FmeaRow,
     Hazard,
     Project,
     Requirement,
@@ -157,7 +158,12 @@ def hazard_view(db: Session, hazard: Hazard, settings: dict[str, Any]) -> dict[s
             "controls_verified": len(verified),
             "independent_controls": independent,
             "controls": controls,
-            "causes": 0,
+            "causes": int(
+                db.scalar(
+                    select(func.count(FmeaRow.id)).where(FmeaRow.hazard_id == hazard.id)
+                )
+                or 0
+            ),
         }
     )
     return view
