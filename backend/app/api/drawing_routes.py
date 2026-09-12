@@ -18,8 +18,10 @@ from app.models import (
     Drawing,
     DrawingRevision,
     DrawingSheet,
+    DrcResult,
     DrcWaiver,
     FluidSystem,
+    Hazard,
     LineClass,
     Project,
     SheetItem,
@@ -67,7 +69,8 @@ from app.services.lists import (
     rows_to_xlsx,
 )
 from app.services.requirements_io import MATRIX_COLUMNS, matrix_rows
-from app.services.safety_sync import sync_fmea_rows
+from app.services.safety_settings import get_settings as get_safety_settings
+from app.services.safety_sync import auto_hazards, refresh_document_hash, sync_fmea_rows
 from app.services.sheet_index import replace_sheet_index
 from app.services.verification import sync_drc_evidence
 
@@ -314,13 +317,17 @@ def update_sheet(
         sheet.title = data["title"]
     if data.get("document") is not None:
         sheet.document = data["document"]
+        refresh_document_hash(db, sheet)
     if payload.index is not None:
         replace_sheet_index(db, sheet, payload.index)
         sync_fmea_rows(db, sheet)
+    drawing = require_model(db, Drawing, sheet.drawing_id)
     if payload.drc is not None:
         replace_sheet_drc(db, sheet, payload.drc)
         sync_drc_evidence(db, sheet)
-    drawing = require_model(db, Drawing, sheet.drawing_id)
+        auto_hazards(
+            db, sheet, get_safety_settings(db, require_model(db, Project, drawing.project_id))
+        )
     item_count = len((sheet.document or {}).get("items", []))
     record_change(
         db,
@@ -460,8 +467,22 @@ def waive_finding(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> DrcWaiver:
-    """Waive a finding by key with a reason; re-runs keep the waiver."""
+    """Waive a finding by key with a reason; re-runs keep the waiver. A finding
+    that created a hazard can only be waived once that hazard is accepted or closed."""
     sheet = require_model(db, DrawingSheet, sheet_id)
+    linked = db.scalar(
+        select(DrcResult).where(DrcResult.sheet_id == sheet.id, DrcResult.key == payload.key)
+    )
+    if linked is not None and linked.hazard_id:
+        hazard = db.get(Hazard, linked.hazard_id)
+        if hazard is not None and hazard.status not in {"accepted", "closed"}:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Hazard {hazard.key} was created from this finding; "
+                    "accept or close it first"
+                ),
+            )
     waiver = db.scalar(
         select(DrcWaiver).where(DrcWaiver.sheet_id == sheet.id, DrcWaiver.key == payload.key)
     )

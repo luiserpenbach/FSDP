@@ -12,6 +12,7 @@ import type { SymbolRegistry } from "./library";
 import { pointAlong } from "./lines";
 import { zoneAt } from "./sheet";
 import type { EquipmentItem, FieldValue, LineItem, SchematicDocument, SymbolItem } from "./types";
+import { describeVolumes, type SheetIndexVolume } from "./volumes";
 
 export type SheetIndexItem = {
   item_id: string;
@@ -56,7 +57,7 @@ export type SheetIndexLine = {
   fields: Record<string, FieldValue>;
 };
 
-export type SheetIndex = { items: SheetIndexItem[]; lines: SheetIndexLine[] };
+export type SheetIndex = { items: SheetIndexItem[]; lines: SheetIndexLine[]; volumes: SheetIndexVolume[] };
 
 export type IndexOptions = {
   connectivity?: Connectivity;
@@ -138,6 +139,10 @@ export function buildSheetIndex(doc: SchematicDocument, registry: SymbolRegistry
     return null;
   };
 
+  const volumes = describeVolumes(doc, registry, connectivity);
+  const volumeOfItem = new Map<string, string>();
+  for (const volume of volumes) for (const itemId of volume.item_ids) if (!volumeOfItem.has(itemId)) volumeOfItem.set(itemId, volume.key);
+
   const items: SheetIndexItem[] = [];
   for (const item of doc.items) {
     if (item.kind === "symbol") {
@@ -167,6 +172,7 @@ export function buildSheetIndex(doc: SchematicDocument, registry: SymbolRegistry
           mounting: blank(item.fields.mounting),
           ref: blank(item.fields.ref),
           target: options.connectorTargets?.[item.id] ?? null,
+          volume_key: volumeOfItem.get(item.id) ?? null,
           notes: blank(item.fields.notes)
         }
       });
@@ -192,6 +198,7 @@ export function buildSheetIndex(doc: SchematicDocument, registry: SymbolRegistry
           service: pick(item.id, "service"),
           size: pick(item.id, "size"),
           line_number: pick(item.id, "lineNumber"),
+          volume_key: volumeOfItem.get(item.id) ?? null,
           notes: blank(item.fields.notes)
         }
       });
@@ -234,5 +241,5 @@ export function buildSheetIndex(doc: SchematicDocument, registry: SymbolRegistry
       fields: { ...item.fields }
     });
   }
-  return { items, lines };
+  return { items, lines, volumes };
 }

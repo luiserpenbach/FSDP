@@ -251,6 +251,8 @@ class DrawingSheet(TimestampMixin, Base):
         ForeignKey("diagrams.id", ondelete="SET NULL")
     )
     document: Mapped[dict] = mapped_column(JSON, default=dict)
+    # SHA-256 of the saved document; analyses remember the hash they ran against.
+    document_hash: Mapped[str | None] = mapped_column(String(64))
 
     drawing: Mapped[Drawing] = relationship(back_populates="sheets")
 
@@ -367,6 +369,58 @@ class DrcResult(TimestampMixin, Base):
     requirement_id: Mapped[str | None] = mapped_column(
         ForeignKey("requirements.id", ondelete="SET NULL")
     )
+    # Hazard created from a relief-coverage finding (auto-hazard setting).
+    hazard_id: Mapped[str | None] = mapped_column(
+        ForeignKey("hazards.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class SheetVolume(TimestampMixin, Base):
+    """Isolable volume on a sheet, derived by the engine and stored with the index."""
+
+    __tablename__ = "sheet_volumes"
+    __table_args__ = (UniqueConstraint("sheet_id", "key", name="uq_sheet_volume"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    sheet_id: Mapped[str] = mapped_column(
+        ForeignKey("drawing_sheets.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(80), nullable=False)
+    isolable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    relieved: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    service: Mapped[str | None] = mapped_column(String(80))
+    design_pressure: Mapped[str | None] = mapped_column(String(80))
+    design_temperature: Mapped[str | None] = mapped_column(String(80))
+    length_m: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    # line_ids, item_ids, relief_item_ids, isolating_item_ids, line_numbers
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+
+
+class Analysis(TimestampMixin, Base):
+    """A safety analysis run against a sheet: inputs derived from the index,
+    assumptions, result, verdict, and the sheet hash it was computed for."""
+
+    __tablename__ = "analyses"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    # trapped_volume | relief_scenario | single_point_failure | fault_tolerance | manual
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    sheet_id: Mapped[str | None] = mapped_column(
+        ForeignKey("drawing_sheets.id", ondelete="SET NULL"), nullable=True
+    )
+    scope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    assumptions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # pass | fail | no_data | info
+    verdict: Mapped[str | None] = mapped_column(String(10))
+    sheet_hash: Mapped[str | None] = mapped_column(String(64))
+    outdated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    run_by: Mapped[str | None] = mapped_column(String(160))
+    run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DrcWaiver(TimestampMixin, Base):
@@ -575,6 +629,8 @@ class Hazard(TimestampMixin, Base):
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     acceptance_justification: Mapped[str | None] = mapped_column(Text)
     fault_tolerance_required: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Isolable volume keys (from sheet_volumes) this hazard is scoped to.
+    volume_keys: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     project: Mapped[Project] = relationship()
     system: Mapped[FluidSystem | None] = relationship()

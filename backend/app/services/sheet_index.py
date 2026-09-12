@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Drawing, DrawingSheet, Part, SheetItem, SheetLine
+from app.models import Drawing, DrawingSheet, Part, SheetItem, SheetLine, SheetVolume
 from app.schemas import SheetIndexIn
 
 ItemRow = tuple[SheetItem, DrawingSheet, Drawing]
@@ -70,6 +70,39 @@ def replace_sheet_index(db: Session, sheet: DrawingSheet, index: SheetIndexIn) -
                 setattr(row, field, value)
     for row in existing_lines.values():
         db.delete(row)
+    if index.volumes is not None:
+        existing_volumes = {
+            row.key: row
+            for row in db.scalars(select(SheetVolume).where(SheetVolume.sheet_id == sheet.id))
+        }
+        for volume in index.volumes:
+            data = volume.model_dump()
+            columns = {
+                "isolable": data["isolable"],
+                "relieved": data["relieved"],
+                "service": data["service"],
+                "design_pressure": data["design_pressure"],
+                "design_temperature": data["design_temperature"],
+                "length_m": data["length_m"],
+                "payload": {
+                    key: data[key]
+                    for key in (
+                        "line_ids",
+                        "item_ids",
+                        "relief_item_ids",
+                        "isolating_item_ids",
+                        "line_numbers",
+                    )
+                },
+            }
+            row = existing_volumes.pop(volume.key, None)
+            if row is None:
+                db.add(SheetVolume(sheet_id=sheet.id, key=volume.key, **columns))
+            else:
+                for field, value in columns.items():
+                    setattr(row, field, value)
+        for row in existing_volumes.values():
+            db.delete(row)
     db.flush()
 
 

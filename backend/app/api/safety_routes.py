@@ -13,6 +13,7 @@ from app.api.routes import record_change, require_model
 from app.core.security import require_admin, require_safety_approver, require_writer
 from app.db import get_db
 from app.models import (
+    Analysis,
     Drawing,
     DrawingSheet,
     FailureMode,
@@ -24,11 +25,17 @@ from app.models import (
     Hazard,
     Project,
     Requirement,
+    RequirementEvidence,
     SheetItem,
+    SheetVolume,
     TraceLink,
     User,
 )
 from app.schemas import (
+    AnalysisAttachIn,
+    AnalysisCreate,
+    AnalysisRead,
+    AnalysisUpdate,
     FailureModeCreate,
     FailureModeRead,
     FailureModeUpdate,
@@ -59,7 +66,11 @@ from app.schemas import (
     SafetySettingsRead,
     SafetySettingsUpdate,
     SheetItemRefRead,
+    SheetOverlayRead,
+    SheetVolumeRead,
 )
+from app.services.analyses import analysis_view, default_title
+from app.services.analyses import run as run_analysis
 from app.services.export import svg_to_pdf
 from app.services.failure_modes import library
 from app.services.fmea import (
@@ -93,6 +104,7 @@ from app.services.lists import list_filename, rows_to_csv, rows_to_xlsx
 from app.services.safety_settings import get_settings, save_settings
 from app.services.svg_tables import table_pages
 from app.services.traceability import delete_trace_links_for, delete_trace_links_for_many
+from app.services.verification import rollup_verification
 
 safety_router = APIRouter(tags=["safety"])
 
@@ -1093,3 +1105,405 @@ def update_row_comment(
     db.commit()
     db.refresh(comment)
     return comment
+
+
+# ---- Volumes, overlay, analyses (phase C) ----
+
+
+def _volume_views(db: Session, volumes: list[SheetVolume]) -> list[dict]:
+    sheet_ids = {volume.sheet_id for volume in volumes}
+    sheets: dict[str, tuple[DrawingSheet, Drawing]] = {}
+    items: dict[tuple[str, str], SheetItem] = {}
+    if sheet_ids:
+        for sheet, drawing in db.execute(
+            select(DrawingSheet, Drawing)
+            .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+            .where(DrawingSheet.id.in_(sheet_ids))
+        ).all():
+            sheets[sheet.id] = (sheet, drawing)
+        for item in db.scalars(select(SheetItem).where(SheetItem.sheet_id.in_(sheet_ids))):
+            items[(item.sheet_id, item.item_id)] = item
+    project_ids = {drawing.project_id for _, drawing in sheets.values()}
+    hazards_by_volume: dict[str, list[str]] = {}
+    if project_ids:
+        for hazard in db.scalars(select(Hazard).where(Hazard.project_id.in_(project_ids))):
+            for key in hazard.volume_keys or []:
+                hazards_by_volume.setdefault(key, []).append(hazard.key)
+
+    def tags(sheet_id: str, ids: list[str]) -> list[str]:
+        return [
+            (items[(sheet_id, item_id)].tag or item_id) if (sheet_id, item_id) in items else item_id
+            for item_id in ids
+        ]
+
+    views = []
+    for volume in volumes:
+        sheet, drawing = sheets.get(volume.sheet_id, (None, None))
+        payload = volume.payload or {}
+        views.append(
+            {
+                "id": volume.id,
+                "sheet_id": volume.sheet_id,
+                "sheet_no": sheet.sheet_no if sheet else None,
+                "drawing_id": drawing.id if drawing else None,
+                "drawing_number": drawing.number if drawing else None,
+                "key": volume.key,
+                "isolable": volume.isolable,
+                "relieved": volume.relieved,
+                "service": volume.service,
+                "design_pressure": volume.design_pressure,
+                "design_temperature": volume.design_temperature,
+                "length_m": volume.length_m,
+                "line_ids": payload.get("line_ids", []),
+                "item_ids": payload.get("item_ids", []),
+                "item_tags": tags(volume.sheet_id, payload.get("item_ids", [])),
+                "relief_tags": tags(volume.sheet_id, payload.get("relief_item_ids", [])),
+                "isolating_tags": tags(volume.sheet_id, payload.get("isolating_item_ids", [])),
+                "line_numbers": payload.get("line_numbers", []),
+                "hazard_keys": sorted(hazards_by_volume.get(volume.key, [])),
+            }
+        )
+    return views
+
+
+@safety_router.get("/sheets/{sheet_id}/volumes", response_model=list[SheetVolumeRead])
+def sheet_volumes(sheet_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    sheet = require_model(db, DrawingSheet, sheet_id)
+    return _volume_views(
+        db, list(db.scalars(select(SheetVolume).where(SheetVolume.sheet_id == sheet.id)))
+    )
+
+
+@safety_router.get("/drawings/{drawing_id}/volumes", response_model=list[SheetVolumeRead])
+def drawing_volumes(drawing_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    drawing = require_model(db, Drawing, drawing_id)
+    return _volume_views(
+        db,
+        list(
+            db.scalars(
+                select(SheetVolume)
+                .join(DrawingSheet, SheetVolume.sheet_id == DrawingSheet.id)
+                .where(DrawingSheet.drawing_id == drawing.id)
+                .order_by(DrawingSheet.sheet_no)
+            )
+        ),
+    )
+
+
+@safety_router.get("/projects/{project_id}/volumes", response_model=list[SheetVolumeRead])
+def project_volumes(project_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    project = require_model(db, Project, project_id)
+    return _volume_views(
+        db,
+        list(
+            db.scalars(
+                select(SheetVolume)
+                .join(DrawingSheet, SheetVolume.sheet_id == DrawingSheet.id)
+                .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+                .where(Drawing.project_id == project.id)
+                .order_by(Drawing.number, DrawingSheet.sheet_no)
+            )
+        ),
+    )
+
+
+RISK_ORDER = {"high": 4, "serious": 3, "medium": 2, "low": 1}
+
+
+def _highest(risks: list[str | None]) -> str | None:
+    ranked = [risk for risk in risks if risk]
+    return max(ranked, key=lambda risk: RISK_ORDER.get(risk, 0)) if ranked else None
+
+
+@safety_router.get("/sheets/{sheet_id}/safety-overlay", response_model=SheetOverlayRead)
+def sheet_safety_overlay(sheet_id: str, db: Session = Depends(get_db)) -> dict:
+    """Per item: open and stale FMEA rows, max RPN, hazards; per volume: hazards and risk."""
+    sheet = require_model(db, DrawingSheet, sheet_id)
+    drawing = require_model(db, Drawing, sheet.drawing_id)
+    project = require_model(db, Project, drawing.project_id)
+    settings = get_settings(db, project)
+    items = list(db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id)))
+    rows = list(db.scalars(select(FmeaRow).where(FmeaRow.sheet_id == sheet.id)))
+    hazards = {
+        hazard.id: hazard
+        for hazard in db.scalars(select(Hazard).where(Hazard.project_id == project.id))
+    }
+    from app.services.safety_settings import risk_class
+
+    def residual(hazard: Hazard) -> str | None:
+        return risk_class(
+            settings,
+            hazard.severity_residual or hazard.severity_initial,
+            hazard.likelihood_residual or hazard.likelihood_initial,
+        )
+
+    item_hazards: dict[str, set[str]] = {}
+    for item in items:
+        for link in db.scalars(
+            select(TraceLink).where(
+                TraceLink.source_type == "sheet_item",
+                TraceLink.source_id == item.id,
+                TraceLink.target_type == "hazard",
+            )
+        ):
+            if link.target_id in hazards:
+                item_hazards.setdefault(item.item_id, set()).add(link.target_id)
+    for row in rows:
+        if row.item_id and row.hazard_id and row.hazard_id in hazards:
+            item_hazards.setdefault(row.item_id, set()).add(row.hazard_id)
+    item_views = []
+    for item in items:
+        item_rows = [row for row in rows if row.item_id == item.item_id and not row.not_applicable]
+        hazard_ids = item_hazards.get(item.item_id, set())
+        if not item_rows and not hazard_ids:
+            continue
+        item_views.append(
+            {
+                "item_id": item.item_id,
+                "tag": item.tag,
+                "open_rows": len(item_rows),
+                "stale_rows": sum(1 for row in item_rows if row.stale_reason),
+                "max_rpn": max((row.rpn or 0 for row in item_rows), default=None) or None,
+                "hazard_keys": sorted(hazards[h].key for h in hazard_ids),
+                "highest_risk": _highest([residual(hazards[h]) for h in hazard_ids]),
+            }
+        )
+    volume_views = []
+    for volume in db.scalars(select(SheetVolume).where(SheetVolume.sheet_id == sheet.id)):
+        scoped = [hazard for hazard in hazards.values() if volume.key in (hazard.volume_keys or [])]
+        volume_views.append(
+            {
+                "key": volume.key,
+                "line_ids": (volume.payload or {}).get("line_ids", []),
+                "isolable": volume.isolable,
+                "relieved": volume.relieved,
+                "hazard_keys": sorted(hazard.key for hazard in scoped),
+                "highest_risk": _highest([residual(hazard) for hazard in scoped]),
+            }
+        )
+    return {"sheet_id": sheet.id, "items": item_views, "volumes": volume_views}
+
+
+@safety_router.get("/projects/{project_id}/drc")
+def project_drc(project_id: str, db: Session = Depends(get_db)) -> dict:
+    """Findings and waivers across every drawing of the project."""
+    from app.services.drc import drawing_drc
+
+    project = require_model(db, Project, project_id)
+    drawings = list(
+        db.scalars(
+            select(Drawing)
+            .where(Drawing.project_id == project.id)
+            .options(selectinload(Drawing.sheets))
+            .order_by(Drawing.number)
+        )
+    )
+    entries = []
+    totals = {"error": 0, "warning": 0, "info": 0, "waived": 0}
+    for drawing in drawings:
+        summary = drawing_drc(db, drawing)
+        for key in totals:
+            totals[key] += summary["counts"].get(key, 0)
+        for sheet in summary["sheets"]:
+            for finding in sheet["findings"]:
+                entries.append(
+                    {
+                        "drawing_id": drawing.id,
+                        "drawing_number": drawing.number,
+                        "sheet_id": sheet["sheet_id"],
+                        "sheet_no": sheet["sheet_no"],
+                        "key": finding.key,
+                        "rule": finding.rule,
+                        "severity": finding.severity,
+                        "message": finding.message,
+                        "item_id": finding.item_id,
+                        "subject": finding.subject,
+                        "zone": finding.zone,
+                        "requirement_id": finding.requirement_id,
+                        "hazard_id": finding.hazard_id,
+                        "waived": any(w.key == finding.key for w in sheet["waivers"]),
+                        "waiver_reason": next(
+                            (w.reason for w in sheet["waivers"] if w.key == finding.key), None
+                        ),
+                    }
+                )
+    hazard_keys = {
+        hazard.id: hazard.key
+        for hazard in db.scalars(select(Hazard).where(Hazard.project_id == project.id))
+    }
+    for entry in entries:
+        entry["hazard_key"] = hazard_keys.get(entry["hazard_id"]) if entry["hazard_id"] else None
+    return {"project_id": project.id, "counts": totals, "findings": entries}
+
+
+@safety_router.get("/projects/{project_id}/analyses", response_model=list[AnalysisRead])
+def list_analyses(project_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    project = require_model(db, Project, project_id)
+    return [
+        analysis_view(db, analysis)
+        for analysis in db.scalars(
+            select(Analysis).where(Analysis.project_id == project.id).order_by(Analysis.created_at)
+        )
+    ]
+
+
+@safety_router.post("/projects/{project_id}/analyses", response_model=AnalysisRead, status_code=201)
+def create_analysis(
+    project_id: str,
+    payload: AnalysisCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> dict:
+    project = require_model(db, Project, project_id)
+    sheet = require_model(db, DrawingSheet, payload.sheet_id) if payload.sheet_id else None
+    drawing = require_model(db, Drawing, sheet.drawing_id) if sheet else None
+    if drawing and drawing.project_id != project.id:
+        raise HTTPException(status_code=422, detail="sheet belongs to another project")
+    analysis = Analysis(
+        project_id=project.id,
+        kind=payload.kind,
+        title=payload.title or default_title(payload.kind, sheet, drawing),
+        sheet_id=sheet.id if sheet else None,
+        scope=payload.scope or {},
+        assumptions=payload.assumptions or {},
+    )
+    db.add(analysis)
+    db.flush()
+    if payload.kind != "manual":
+        run_analysis(db, analysis, user.email)
+    record_change(
+        db,
+        "analysis",
+        analysis.id,
+        "created",
+        f"Created analysis {analysis.title}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(analysis)
+    return analysis_view(db, analysis)
+
+
+@safety_router.get("/analyses/{analysis_id}", response_model=AnalysisRead)
+def get_analysis(analysis_id: str, db: Session = Depends(get_db)) -> dict:
+    return analysis_view(db, require_model(db, Analysis, analysis_id))
+
+
+@safety_router.put("/analyses/{analysis_id}", response_model=AnalysisRead)
+def update_analysis(
+    analysis_id: str,
+    payload: AnalysisUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> dict:
+    analysis = require_model(db, Analysis, analysis_id)
+    data = payload.model_dump(exclude_unset=True)
+    if analysis.kind != "manual":
+        data.pop("result", None)
+        data.pop("verdict", None)
+    for field, value in data.items():
+        setattr(analysis, field, value)
+    if analysis.kind == "manual" and ("result" in data or "verdict" in data):
+        run_analysis(db, analysis, user.email)
+    db.commit()
+    db.refresh(analysis)
+    return analysis_view(db, analysis)
+
+
+@safety_router.delete("/analyses/{analysis_id}", status_code=204)
+def delete_analysis(
+    analysis_id: str, db: Session = Depends(get_db), user: User = Depends(require_writer)
+) -> Response:
+    analysis = require_model(db, Analysis, analysis_id)
+    for evidence in db.scalars(
+        select(RequirementEvidence).where(
+            RequirementEvidence.kind == "analysis", RequirementEvidence.ref_id == analysis.id
+        )
+    ):
+        requirement = db.get(Requirement, evidence.requirement_id)
+        db.delete(evidence)
+        db.flush()
+        if requirement:
+            rollup_verification(db, requirement)
+    record_change(
+        db,
+        "analysis",
+        analysis.id,
+        "deleted",
+        f"Deleted analysis {analysis.title}",
+        actor=user.email,
+    )
+    db.delete(analysis)
+    db.commit()
+    return Response(status_code=204)
+
+
+@safety_router.post("/analyses/{analysis_id}/run", response_model=AnalysisRead)
+def rerun_analysis(
+    analysis_id: str, db: Session = Depends(get_db), user: User = Depends(require_writer)
+) -> dict:
+    analysis = require_model(db, Analysis, analysis_id)
+    run_analysis(db, analysis, user.email)
+    for evidence in db.scalars(
+        select(RequirementEvidence).where(
+            RequirementEvidence.kind == "analysis", RequirementEvidence.ref_id == analysis.id
+        )
+    ):
+        requirement = db.get(Requirement, evidence.requirement_id)
+        if requirement:
+            rollup_verification(db, requirement)
+    record_change(
+        db, "analysis", analysis.id, "updated", f"Ran analysis {analysis.title}", actor=user.email
+    )
+    db.commit()
+    db.refresh(analysis)
+    return analysis_view(db, analysis)
+
+
+@safety_router.post("/analyses/{analysis_id}/attach-evidence", response_model=AnalysisRead)
+def attach_analysis_evidence(
+    analysis_id: str,
+    payload: AnalysisAttachIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> dict:
+    analysis = require_model(db, Analysis, analysis_id)
+    requirement = require_model(db, Requirement, payload.requirement_id)
+    if requirement.project_id != analysis.project_id:
+        raise HTTPException(status_code=422, detail="Requirement belongs to another project")
+    if analysis.outdated:
+        raise HTTPException(
+            status_code=409, detail="Re-run the analysis before attaching it as evidence"
+        )
+    existing = db.scalar(
+        select(RequirementEvidence).where(
+            RequirementEvidence.requirement_id == requirement.id,
+            RequirementEvidence.kind == "analysis",
+            RequirementEvidence.ref_id == analysis.id,
+        )
+    )
+    if existing is None:
+        db.add(
+            RequirementEvidence(
+                requirement_id=requirement.id,
+                kind="analysis",
+                ref_type="analysis",
+                ref_id=analysis.id,
+                status={"pass": "pass", "fail": "fail"}.get(analysis.verdict or "", "pending"),
+                note=analysis.title,
+                recorded_by=user.email,
+            )
+        )
+        db.flush()
+    rollup_verification(db, requirement)
+    record_change(
+        db,
+        "requirement",
+        requirement.id,
+        "updated",
+        f"Attached analysis {analysis.title} as evidence for {requirement.key}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(analysis)
+    return analysis_view(db, analysis)

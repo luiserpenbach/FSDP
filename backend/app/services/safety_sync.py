@@ -75,3 +75,109 @@ def sync_fmea_rows(db: Session, sheet: DrawingSheet) -> int:
         marked += 1
     db.flush()
     return marked
+
+
+def document_hash(document: dict[str, Any] | None) -> str:
+    """Stable hash of a sheet document (sorted keys)."""
+    import hashlib
+    import json
+
+    payload = json.dumps(document or {}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def refresh_document_hash(db: Session, sheet: DrawingSheet) -> bool:
+    """Store the document hash; when it changed, mark the sheet's analyses outdated."""
+    from app.models import Analysis
+
+    digest = document_hash(sheet.document)
+    if sheet.document_hash == digest:
+        return False
+    sheet.document_hash = digest
+    for analysis in db.scalars(select(Analysis).where(Analysis.sheet_id == sheet.id)):
+        if analysis.sheet_hash and analysis.sheet_hash != digest:
+            analysis.outdated = True
+    db.flush()
+    return True
+
+
+def auto_hazards(db: Session, sheet: DrawingSheet, settings: dict[str, Any]) -> int:
+    """With ``auto_hazard`` on, every open relief-coverage finding gets a draft
+    trapped-fluid hazard scoped to its volume (once per volume). Returns the
+    number of hazards created."""
+    from app.models import Drawing, DrcResult, Hazard, SheetVolume
+    from app.services.hazards import next_hazard_key
+    from app.services.safety_settings import fault_tolerance_for
+
+    if not settings.get("auto_hazard"):
+        return 0
+    drawing = db.get(Drawing, sheet.drawing_id)
+    if drawing is None:
+        return 0
+    findings = list(
+        db.scalars(
+            select(DrcResult).where(
+                DrcResult.sheet_id == sheet.id, DrcResult.rule == "relief_coverage"
+            )
+        )
+    )
+    if not findings:
+        return 0
+    volumes = {
+        row.key: row
+        for row in db.scalars(select(SheetVolume).where(SheetVolume.sheet_id == sheet.id))
+    }
+    existing = list(db.scalars(select(Hazard).where(Hazard.project_id == drawing.project_id)))
+    by_volume: dict[str, Hazard] = {}
+    for hazard in existing:
+        for key in hazard.volume_keys or []:
+            by_volume.setdefault(key, hazard)
+    created = 0
+    for finding in findings:
+        # The finding's subject is a line id of the volume (engine convention).
+        volume = next(
+            (
+                row
+                for row in volumes.values()
+                if finding.item_id in (row.payload or {}).get("line_ids", [])
+            ),
+            None,
+        )
+        if volume is None or volume.relieved:
+            continue
+        hazard = by_volume.get(volume.key)
+        if hazard is None:
+            severity = settings.get("default_hazard_severity") or "I"
+            line_numbers = ", ".join((volume.payload or {}).get("line_numbers") or []) or (
+                f"{len((volume.payload or {}).get('line_ids', []))} line(s)"
+            )
+            hazard = Hazard(
+                project_id=drawing.project_id,
+                system_id=drawing.system_id,
+                key=next_hazard_key(db, drawing.project_id),
+                title=(
+                    f"Overpressure of isolable volume {line_numbers} "
+                    f"({volume.service or 'process'})"
+                ),
+                description=(
+                    f"Isolable volume on {drawing.number} sheet {sheet.sheet_no} "
+                    f"({line_numbers}) has no relief device. Created from a relief-coverage "
+                    "design rule finding."
+                ),
+                category="trapped_fluid",
+                operating_modes=[
+                    m for m in settings.get("operating_modes", []) if m in {"hold", "abort_safe"}
+                ]
+                or None,
+                severity_initial=severity,
+                likelihood_initial=settings.get("default_hazard_likelihood") or "C",
+                fault_tolerance_required=fault_tolerance_for(settings, severity),
+                volume_keys=[volume.key],
+            )
+            db.add(hazard)
+            db.flush()
+            by_volume[volume.key] = hazard
+            created += 1
+        finding.hazard_id = hazard.id
+    db.flush()
+    return created

@@ -815,9 +815,47 @@ class SheetIndexLineIn(BaseModel):
     fields: dict[str, Any] = Field(default_factory=dict)
 
 
+class SheetIndexVolumeIn(BaseModel):
+    key: str
+    line_ids: list[str] = Field(default_factory=list)
+    item_ids: list[str] = Field(default_factory=list)
+    isolable: bool = False
+    relieved: bool = False
+    relief_item_ids: list[str] = Field(default_factory=list)
+    isolating_item_ids: list[str] = Field(default_factory=list)
+    service: str | None = None
+    design_pressure: str | None = None
+    design_temperature: str | None = None
+    line_numbers: list[str] = Field(default_factory=list)
+    length_m: float = 0.0
+
+
 class SheetIndexIn(BaseModel):
     items: list[SheetIndexItemIn] = Field(default_factory=list)
     lines: list[SheetIndexLineIn] = Field(default_factory=list)
+    volumes: list[SheetIndexVolumeIn] | None = None
+
+
+class SheetVolumeRead(BaseModel):
+    id: str
+    sheet_id: str
+    sheet_no: int | None = None
+    drawing_id: str | None = None
+    drawing_number: str | None = None
+    key: str
+    isolable: bool
+    relieved: bool
+    service: str | None
+    design_pressure: str | None
+    design_temperature: str | None
+    length_m: float
+    line_ids: list[str] = Field(default_factory=list)
+    item_ids: list[str] = Field(default_factory=list)
+    item_tags: list[str] = Field(default_factory=list)
+    relief_tags: list[str] = Field(default_factory=list)
+    isolating_tags: list[str] = Field(default_factory=list)
+    line_numbers: list[str] = Field(default_factory=list)
+    hazard_keys: list[str] = Field(default_factory=list)
 
 
 class SheetItemRead(SheetIndexItemIn, OrmModel):
@@ -1444,6 +1482,7 @@ class HazardCreate(BaseModel):
     likelihood_residual: str | None = None
     owner: str | None = None
     fault_tolerance_required: int | None = None
+    volume_keys: list[str] | None = None
 
     @field_validator("title")
     @classmethod
@@ -1476,6 +1515,7 @@ class HazardUpdate(BaseModel):
     status: str | None = None
     owner: str | None = None
     fault_tolerance_required: int | None = None
+    volume_keys: list[str] | None = None
 
     @field_validator("title")
     @classmethod
@@ -1530,6 +1570,7 @@ class HazardRead(OrmModel):
     accepted_at: datetime | None
     acceptance_justification: str | None
     fault_tolerance_required: int
+    volume_keys: list[str] | None = None
     created_at: datetime
     updated_at: datetime
     # Computed from controls and the project's policy.
@@ -1915,6 +1956,93 @@ class FmeaCommentRead(OrmModel):
     created_at: datetime
 
 
+# ---- Analyses ----
+
+ANALYSIS_KINDS = {
+    "trapped_volume",
+    "relief_scenario",
+    "single_point_failure",
+    "fault_tolerance",
+    "manual",
+}
+
+
+class AnalysisCreate(BaseModel):
+    kind: str
+    title: str | None = None
+    sheet_id: str | None = None
+    scope: dict[str, Any] | None = None
+    assumptions: dict[str, Any] | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in ANALYSIS_KINDS:
+            raise ValueError("kind must be one of: " + ", ".join(sorted(ANALYSIS_KINDS)))
+        return cleaned
+
+
+class AnalysisUpdate(BaseModel):
+    title: str | None = None
+    scope: dict[str, Any] | None = None
+    assumptions: dict[str, Any] | None = None
+    # Manual analyses record their own result and verdict.
+    result: dict[str, Any] | None = None
+    verdict: str | None = None
+
+
+class AnalysisRead(BaseModel):
+    id: str
+    project_id: str
+    kind: str
+    title: str
+    sheet_id: str | None
+    sheet_no: int | None = None
+    drawing_id: str | None = None
+    drawing_number: str | None = None
+    scope: dict[str, Any] | None
+    assumptions: dict[str, Any] | None
+    result: dict[str, Any] | None
+    verdict: str | None
+    sheet_hash: str | None
+    outdated: bool
+    run_by: str | None
+    run_at: datetime | None
+    evidence_for: list[str] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AnalysisAttachIn(BaseModel):
+    requirement_id: str
+
+
+class OverlayItemRead(BaseModel):
+    item_id: str
+    tag: str | None
+    open_rows: int = 0
+    stale_rows: int = 0
+    max_rpn: int | None = None
+    hazard_keys: list[str] = Field(default_factory=list)
+    highest_risk: str | None = None
+
+
+class OverlayVolumeRead(BaseModel):
+    key: str
+    line_ids: list[str]
+    isolable: bool
+    relieved: bool
+    hazard_keys: list[str] = Field(default_factory=list)
+    highest_risk: str | None = None
+
+
+class SheetOverlayRead(BaseModel):
+    sheet_id: str
+    items: list[OverlayItemRead]
+    volumes: list[OverlayVolumeRead]
+
+
 class SheetItemRefRead(BaseModel):
     """A sheet item as a pick-list entry (hazard controls, FMEA rows)."""
 
@@ -2026,3 +2154,8 @@ class ImpactRead(BaseModel):
     direct_links: list[TraceLinkRead]
     affected_bom_snapshots: list[BomSnapshotRead]
     affected_components: list[ComponentInstanceRead]
+    affected_items: list[dict[str, Any]] = Field(default_factory=list)
+    affected_fmea_rows: list[dict[str, Any]] = Field(default_factory=list)
+    affected_hazards: list[dict[str, Any]] = Field(default_factory=list)
+    affected_requirements: list[dict[str, Any]] = Field(default_factory=list)
+    affected_analyses: list[dict[str, Any]] = Field(default_factory=list)
