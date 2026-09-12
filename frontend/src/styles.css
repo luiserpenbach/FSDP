@@ -4625,3 +4625,13 @@ table.fmeaGrid td {
   margin: 10px 0 6px;
   text-transform: uppercase;
 }
+
+/* Safety phase D: review packages and certification evidence */
+.packageForm { display: grid; gap: 0.6rem; margin-bottom: 0.8rem; }
+.checkList { border: 1px solid var(--border, #d6dbe2); border-radius: 6px; padding: 0.5rem 0.7rem; display: grid; gap: 0.3rem; min-width: 0; }
+.checkList legend { font-size: 0.82rem; color: var(--muted, #5b6470); padding: 0 0.3rem; }
+.packageList { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.packageList li { display: flex; justify-content: space-between; gap: 0.8rem; align-items: flex-start; border: 1px solid var(--border, #d6dbe2); border-radius: 6px; padding: 0.5rem 0.7rem; flex-wrap: wrap; }
+.packageList li p { margin: 0.2rem 0 0; }
+.gapList { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+.gapList li { display: grid; grid-template-columns: auto 1fr auto; gap: 0.6rem; align-items: center; }

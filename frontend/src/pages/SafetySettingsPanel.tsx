@@ -5,7 +5,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { api } from "../api";
 import { FormError, Panel } from "../components/ui";
-import type { Project, SafetySettings } from "../types";
+import type { Project, SafetySettings, User } from "../types";
 
 function linesOf(values: string[]): string {
   return values.join("\n");
@@ -18,10 +18,11 @@ function toLines(text: string): string[] {
     .filter(Boolean);
 }
 
-export function SafetySettingsPanel({ project, canWrite }: { project: Project | null; canWrite: boolean }) {
+export function SafetySettingsPanel({ project, canWrite, users = null }: { project: Project | null; canWrite: boolean; users?: User[] | null }) {
   const [settings, setSettings] = useState<SafetySettings | null>(null);
   const [modesText, setModesText] = useState("");
   const [categoriesText, setCategoriesText] = useState("");
+  const [approversText, setApproversText] = useState("");
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -36,6 +37,7 @@ export function SafetySettingsPanel({ project, canWrite }: { project: Project | 
         setSettings(read.settings);
         setModesText(linesOf(read.settings.operating_modes));
         setCategoriesText(linesOf(read.settings.hazard_categories));
+        setApproversText((read.settings.approvers ?? []).join("\n"));
       })
       .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not load safety settings."));
   }, [project]);
@@ -49,11 +51,13 @@ export function SafetySettingsPanel({ project, canWrite }: { project: Project | 
       const saved = await api.updateSafetySettings(project.id, {
         ...settings,
         operating_modes: toLines(modesText),
-        hazard_categories: toLines(categoriesText)
+        hazard_categories: toLines(categoriesText),
+        approvers: users ? settings.approvers : approversText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
       });
       setSettings(saved.settings);
       setModesText(linesOf(saved.settings.operating_modes));
       setCategoriesText(linesOf(saved.settings.hazard_categories));
+      setApproversText((saved.settings.approvers ?? []).join("\n"));
       setStatus("Safety settings saved.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save safety settings.");
@@ -137,6 +141,37 @@ export function SafetySettingsPanel({ project, canWrite }: { project: Project | 
           <input type="checkbox" checked={settings.auto_hazard} disabled={!canWrite} onChange={(event) => setSettings({ ...settings, auto_hazard: event.target.checked })} />
           <span>Create a trapped-fluid hazard for every relief-coverage finding (takes effect when engine analyses ship)</span>
         </label>
+        <fieldset className="checkList">
+          <legend>Safety approvers (may accept hazards and release worksheets; admins always may)</legend>
+          {users ? (
+            users.length ? (
+              users.map((entry) => (
+                <label key={entry.id} className="checkRow">
+                  <input
+                    type="checkbox"
+                    disabled={!canWrite}
+                    checked={settings.approvers.includes(entry.email) || settings.approvers.includes(entry.id)}
+                    onChange={(event) => {
+                      const without = settings.approvers.filter((value) => value !== entry.email && value !== entry.id);
+                      setSettings({ ...settings, approvers: event.target.checked ? [...without, entry.email] : without });
+                    }}
+                  />
+                  <span>
+                    {entry.name} <span className="hint">{entry.email} · {entry.role}</span>
+                  </span>
+                </label>
+              ))
+            ) : (
+              <span className="hint">No users yet.</span>
+            )
+          ) : (
+            <label>
+              Approver e-mails (one per line)
+              <textarea rows={4} value={approversText} disabled={!canWrite} onChange={(event) => setApproversText(event.target.value)} />
+            </label>
+          )}
+          <p className="hint">With no approvers listed, any engineer may accept hazards and release worksheets.</p>
+        </fieldset>
         <p className="hint">
           Risk classes follow the MIL-STD-882 style matrix: severity {settings.severity_scale.map((entry) => entry.code).join("/")} against likelihood {settings.likelihood_scale.map((entry) => entry.code).join("/")}.
         </p>

@@ -49,7 +49,10 @@ import type {
   SchematicRead,
   TagSchemeRead,
   TraceLink,
-  User
+  User,
+  CertificationEvidence,
+  SafetyPackage,
+  SafetyPackageInput
 } from "./types";
 
 // Production builds default to same-origin "/api" (served behind nginx or a
@@ -467,6 +470,16 @@ export const api = {
   getBomReadiness: (snapshotId: string) => request<BomReadiness>(`/bom/${snapshotId}/readiness`),
   getBomDiff: (snapshotId: string, againstId: string) =>
     request<BomDiff>(`/bom/${snapshotId}/diff?against_id=${againstId}`),
+  listPackages: (projectId: string) => request<SafetyPackage[]>(`/projects/${projectId}/safety/packages`),
+  createPackage: (projectId: string, body: SafetyPackageInput) =>
+    request<SafetyPackage>(`/projects/${projectId}/safety/packages`, { method: "POST", body: JSON.stringify(body) }),
+  deletePackage: (packageId: string) => requestNoContent(`/safety/packages/${packageId}`, { method: "DELETE" }),
+  downloadPackage: async (pkg: SafetyPackage, kind: "pdf" | "xlsx") => {
+    const response = await rawRequest(kind === "pdf" ? pkg.pdf_url : pkg.xlsx_url);
+    const match = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "");
+    return { blob: await response.blob(), filename: match?.[1] ?? `safety-package.${kind}` };
+  },
+  getCertificationEvidence: (projectId: string) => request<CertificationEvidence>(`/projects/${projectId}/certification/evidence`),
   listUsers: () => request<User[]>("/auth/users"),
   createUser: (body: { email: string; name: string; password: string; role: string }) =>
     request<User>("/auth/users", { method: "POST", body: JSON.stringify(body) }),

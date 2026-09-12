@@ -66,7 +66,7 @@ import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
 import { LoginPage } from "./pages/LoginPage";
 import { CatalogSettingsPanel } from "./pages/CatalogSettingsPanel";
-import { PageLayout, PlaceholderCard, PlaceholderPage } from "./pages/PageLayout";
+import { PageLayout } from "./pages/PageLayout";
 import { PartsCatalog } from "./pages/PartsCatalog";
 import { DraftingPage } from "./pages/DraftingPage";
 import { TagSchemePanel } from "./pages/TagSchemePanel";
@@ -74,6 +74,8 @@ import { LineClassPanel } from "./pages/LineClassPanel";
 import { RequirementsPage } from "./pages/RequirementsPage";
 import { SafetyPage } from "./pages/SafetyPage";
 import { SafetySettingsPanel } from "./pages/SafetySettingsPanel";
+import { CertificationPage } from "./pages/CertificationPage";
+import { PackagesPanel } from "./components/reviews/PackagesPanel";
 import { FailureModePanel } from "./pages/FailureModePanel";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, User } from "./types";
 
@@ -2113,7 +2115,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                     ]}
                   />
                 </Panel>
-                <PlaceholderCard title="Review Workflows" body="Design review packages, comments, decisions, and approval routing will live here." />
+                <PackagesPanel projectId={selectedProjectId} canWrite={user.role !== "viewer"} />
               </section>
             </PageLayout>
           }
@@ -2151,7 +2153,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
             />
           }
         />
-        <Route path="/certification" element={<PlaceholderPage title="Certification" body="Compliance packages, evidence status, and generated certification artifacts will live here." />} />
+        <Route path="/certification" element={<CertificationPage project={selectedProject} />} />
         <Route
           path="/settings"
           element={
@@ -2210,7 +2212,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                 />
                 <TagSchemePanel project={selectedProject} canWrite={user.role !== "viewer"} />
                 <LineClassPanel project={selectedProject} canWrite={user.role !== "viewer"} />
-                <SafetySettingsPanel project={selectedProject} canWrite={user.role !== "viewer"} />
+                <SafetySettingsPanel project={selectedProject} canWrite={user.role !== "viewer"} users={isAdmin ? users : null} />
                 <FailureModePanel isAdmin={isAdmin} />
               </section>
             </PageLayout>

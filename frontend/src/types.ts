@@ -748,3 +748,33 @@ export type ImpactRow = { id: string; worksheet_id: string; worksheet_title: str
 export type ImpactHazard = { id: string; key: string; title: string; severity_initial: string | null; status: string };
 export type ImpactRequirement = { id: string; key: string; title: string; verification_status: string; safety_critical: boolean };
 export type ImpactAnalysis = { id: string; kind: string; title: string; verdict: string | null; outdated: boolean };
+
+export type SafetyPackage = {
+  id: string;
+  project_id: string;
+  title: string;
+  scope: { systems: { id: string; name: string }[]; drawings: { id: string; number: string; title: string; revision: string | null; sheets: number }[]; worksheets: { id: string; title: string; revision: number; status: string; drawing_revision: string | null; rows: number }[] } | null;
+  summary: Record<string, number> | null;
+  generated_by: string | null;
+  generated_at: string | null;
+  change_log_from: string | null;
+  pdf_url: string;
+  xlsx_url: string;
+  created_at: string;
+};
+
+export type SafetyPackageInput = { title?: string | null; drawing_ids?: string[] | null; worksheet_ids?: string[] | null; system_ids?: string[] | null };
+
+export type CertificationGap = { kind: string; ref_type: string; ref_id: string; key: string | null; title: string; detail: string };
+
+export type CertificationEvidence = {
+  project_id: string;
+  ready: boolean;
+  counts: Record<string, number>;
+  released_worksheets: { id: string; title: string; revision: number; released_by: string | null; released_at: string | null; drawing_number: string | null; drawing_revision: string | null; current_drawing_revision: string | null; behind_drawing: boolean; status: string }[];
+  accepted_hazards: { id: string; key: string; title: string; severity_initial: string | null; risk_residual: string | null; accepted_by: string | null; accepted_at: string | null; status: string }[];
+  verified_requirements: { id: string; key: string; title: string; verification_method: string | null; verification_status: string; safety_critical: boolean }[];
+  analyses: { id: string; kind: string; title: string; verdict: string | null; outdated: boolean; drawing_number: string | null; evidence_for: string[] }[];
+  packages: SafetyPackage[];
+  gaps: CertificationGap[];
+};
