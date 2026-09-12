@@ -71,9 +71,10 @@ import { PartsCatalog } from "./pages/PartsCatalog";
 import { DraftingPage } from "./pages/DraftingPage";
 import { TagSchemePanel } from "./pages/TagSchemePanel";
 import { LineClassPanel } from "./pages/LineClassPanel";
+import { RequirementsPage } from "./pages/RequirementsPage";
 import { SafetyPage } from "./pages/SafetyPage";
 import { SafetySettingsPanel } from "./pages/SafetySettingsPanel";
-import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, Drawing, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, RequirementConstraintRead, TraceLink, User, VerificationMatrix } from "./types";
+import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, User } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
 type CanvasNodeData = {
@@ -370,10 +371,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [diagrams, setDiagrams] = useState<Diagram[]>([]);
   const [parts, setParts] = useState<Part[]>([]);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
-  const [drawings, setDrawings] = useState<Drawing[]>([]);
-  const [selectedDrawingId, setSelectedDrawingId] = useState("");
-  const [verificationMatrix, setVerificationMatrix] = useState<VerificationMatrix | null>(null);
-  const [constraintForm, setConstraintForm] = useState<{ kind: "" | RequirementConstraintRead["kind"]; values: string; services: string; categories: string }>({ kind: "", values: "", services: "", categories: "" });
   const [components, setComponents] = useState<ComponentInstance[]>([]);
   const [bomSnapshots, setBomSnapshots] = useState<BomSnapshot[]>([]);
   const [selectedBomId, setSelectedBomId] = useState("");
@@ -381,7 +378,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [diffAgainstId, setDiffAgainstId] = useState("");
   const [bomDiff, setBomDiff] = useState<BomDiff | null>(null);
   const [projectBoms, setProjectBoms] = useState<ProjectBom[]>([]);
-  const [traceLinks, setTraceLinks] = useState<TraceLink[]>([]);
   const [impact, setImpact] = useState<Impact | null>(null);
   const [changes, setChanges] = useState<ChangeLogEvent[]>([]);
   const [users, setUsers] = useState<User[]>([]);
@@ -406,7 +402,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const [systemForm, setSystemForm] = useState({ name: "Helium Pressurization", fluid: "GHe", description: "Pressurization system MVP workspace." });
   const [diagramName, setDiagramName] = useState("MVP P&ID");
   const [componentTag, setComponentTag] = useState("V-1");
-  const [requirementForm, setRequirementForm] = useState({ key: "FSDP-REQ-1", title: "Maintain pressure boundary compatibility", text: "All pressurized components shall be compatible with maximum expected operating pressure.", requirement_type: "safety", verification_method: "analysis" });
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("Ready");
@@ -603,35 +598,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       .catch(() => setBomReadiness(null));
   }, [selectedBomId]);
 
-  useEffect(() => {
-    if (!selectedRequirementId) {
-      setTraceLinks([]);
-      return;
-    }
-    api
-      .listTraceLinks("requirement", selectedRequirementId)
-      .then(setTraceLinks)
-      .catch(() => setTraceLinks([]));
-  }, [selectedRequirementId]);
-
-  // Drawings of the project (trace-link targets) and the verification matrix.
-  const refreshVerification = useCallback(async (projectId: string) => {
-    const [nextDrawings, matrix] = await Promise.all([api.listDrawings(projectId), api.getVerificationMatrix(projectId)]);
-    setDrawings(nextDrawings);
-    setVerificationMatrix(matrix);
-  }, []);
-  useEffect(() => {
-    if (!selectedProjectId) {
-      setDrawings([]);
-      setVerificationMatrix(null);
-      return;
-    }
-    refreshVerification(selectedProjectId).catch(() => {
-      setDrawings([]);
-      setVerificationMatrix(null);
-    });
-  }, [selectedProjectId, requirements, refreshVerification]);
-
   // Mark nodes that have a placed component with a badge.
   useEffect(() => {
     const bound = new Set(
@@ -697,25 +663,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSystemForm({ name: selectedSystem.name, fluid: selectedSystem.fluid ?? "", description: selectedSystem.description ?? "" });
     }
   }, [selectedSystem]);
-
-  useEffect(() => {
-    if (selectedRequirement) {
-      setRequirementForm({
-        key: selectedRequirement.key,
-        title: selectedRequirement.title,
-        text: selectedRequirement.text,
-        requirement_type: selectedRequirement.requirement_type,
-        verification_method: selectedRequirement.verification_method ?? ""
-      });
-      const constraint = selectedRequirement.constraint;
-      setConstraintForm({
-        kind: constraint?.kind ?? "",
-        values: constraint?.values.join(", ") ?? "",
-        services: constraint?.scope?.services?.join(", ") ?? "",
-        categories: constraint?.scope?.categories?.join(", ") ?? ""
-      });
-    }
-  }, [selectedRequirement]);
 
   useEffect(() => {
     if (selectedComponent) {
@@ -1632,83 +1579,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     }, "component");
   }
 
-  /** Requirement constraint from the form: kind plus comma-separated values and scope. */
-  function constraintPayload(): RequirementConstraintRead | null {
-    if (!constraintForm.kind) return null;
-    const split = (text: string) => text.split(",").map((entry) => entry.trim()).filter(Boolean);
-    const scope: RequirementConstraintRead["scope"] = {};
-    if (split(constraintForm.services).length) scope.services = split(constraintForm.services);
-    if (split(constraintForm.categories).length) scope.categories = split(constraintForm.categories);
-    return { kind: constraintForm.kind, values: split(constraintForm.values), scope };
-  }
-
-  function submitRequirement(event: FormEvent) {
-    event.preventDefault();
-    if (!selectedProject) return;
-    void runAction("Created requirement.", async () => {
-      const requirement = await api.createRequirement({ ...requirementForm, project_id: selectedProject.id, status: "draft", constraint: constraintPayload() });
-      setRequirements(await api.listRequirements(selectedProject.id));
-      setSelectedRequirementId(requirement.id);
-    }, "requirement");
-  }
-
-  function updateRequirement() {
-    if (!selectedProject || !selectedRequirement) return;
-    void runAction("Updated requirement.", async () => {
-      await api.updateRequirement(selectedRequirement.id, { ...requirementForm, constraint: constraintPayload() });
-      setRequirements(await api.listRequirements(selectedProject.id));
-    }, "requirement");
-  }
-
-  function deleteRequirement() {
-    if (!selectedProject || !selectedRequirement || !window.confirm(`Delete requirement "${selectedRequirement.key}"?`)) return;
-    void runAction("Deleted requirement.", async () => {
-      await api.deleteRequirement(selectedRequirement.id);
-      const next = await api.listRequirements(selectedProject.id);
-      setRequirements(next);
-      setSelectedRequirementId(next[0]?.id || "");
-    });
-  }
-
-  function updateComponent() {
-    if (!selectedComponent) return;
-    void runAction("Updated component.", async () => {
-      const updated = await api.updateComponent(selectedComponent.id, { tag: componentTag });
-      setComponents((current) => current.map((component) => (component.id === updated.id ? updated : component)));
-    }, "component");
-  }
-
-  function deleteComponent() {
-    if (!selectedDiagram || !selectedComponent || !window.confirm(`Delete component "${selectedComponent.tag}"?`)) return;
-    const diagramId = selectedDiagram.id;
-    const componentId = selectedComponent.id;
-    void runAction("Deleted component.", async () => {
-      await api.deleteComponent(componentId);
-      if (selectedDiagramIdRef.current !== diagramId) return;
-      const next = await api.listComponents(diagramId);
-      if (selectedDiagramIdRef.current !== diagramId) return;
-      setComponents(next);
-      setSelectedComponentId(next[0]?.id || "");
-    });
-  }
-
-  function linkRequirementToComponent() {
-    if (!selectedRequirement || !selectedComponent) return;
-    void runAction("Linked requirement.", async () => {
-      await api.createTraceLink({ source_type: "requirement", source_id: selectedRequirement.id, target_type: "component", target_id: selectedComponent.id, link_type: "satisfied_by" });
-      setTraceLinks(await api.listTraceLinks("requirement", selectedRequirement.id));
-    }, "traceLink");
-  }
-
-  function linkRequirementToDrawing() {
-    if (!selectedRequirement || !selectedDrawingId) return;
-    void runAction("Linked requirement to drawing.", async () => {
-      await api.createTraceLink({ source_type: "requirement", source_id: selectedRequirement.id, target_type: "drawing", target_id: selectedDrawingId, link_type: "verified_by" });
-      setTraceLinks(await api.listTraceLinks("requirement", selectedRequirement.id));
-      await refreshVerification(selectedRequirement.project_id);
-    }, "traceLink");
-  }
-
   function submitUser(event: FormEvent) {
     event.preventDefault();
     void runAction("Created user.", async () => {
@@ -1749,14 +1619,6 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     if (!bom || !diffAgainstId) return;
     void runAction("Compared BoM revisions.", async () => {
       setBomDiff(await api.getBomDiff(bom.id, diffAgainstId));
-    });
-  }
-
-  function removeTraceLink(linkId: string) {
-    if (!selectedRequirement) return;
-    void runAction("Removed trace link.", async () => {
-      await api.deleteTraceLink(linkId);
-      setTraceLinks(await api.listTraceLinks("requirement", selectedRequirement.id));
     });
   }
 
@@ -2144,82 +2006,15 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         <Route
           path="/requirements"
           element={
-            <PageLayout title="Requirements" description="Traceable requirements">
-              <section className="grid">
-                <Panel title="Requirement Editor">
-                  <form onSubmit={submitRequirement}>
-                    <TextInput label="Key" value={requirementForm.key} onChange={(key) => setRequirementForm({ ...requirementForm, key })} />
-                    <TextInput label="Title" value={requirementForm.title} onChange={(title) => setRequirementForm({ ...requirementForm, title })} />
-                    <TextInput label="Type" value={requirementForm.requirement_type} onChange={(requirementType) => setRequirementForm({ ...requirementForm, requirement_type: requirementType })} />
-                    <TextInput label="Verification" value={requirementForm.verification_method} onChange={(verificationMethod) => setRequirementForm({ ...requirementForm, verification_method: verificationMethod })} />
-                    <TextArea label="Text" value={requirementForm.text} onChange={(text) => setRequirementForm({ ...requirementForm, text })} />
-                    <Select
-                      label="Constraint (checked by the drawing DRC)"
-                      value={constraintForm.kind}
-                      options={[
-                        { value: "material_in", label: "Part material must be one of…" },
-                        { value: "material_not_in", label: "Part material must not be…" },
-                        { value: "pressure_rating_min", label: "Part rating at least (bar)" },
-                        { value: "part_qualified", label: "Parts must be qualified or preferred" },
-                        { value: "line_class_in", label: "Line class must be one of…" },
-                        { value: "relief_required", label: "Every isolable volume has relief" }
-                      ]}
-                      onChange={(kind) => setConstraintForm({ ...constraintForm, kind: kind as typeof constraintForm.kind })}
-                    />
-                    {constraintForm.kind && constraintForm.kind !== "part_qualified" && constraintForm.kind !== "relief_required" && (
-                      <TextInput label="Constraint values (comma separated)" value={constraintForm.values} onChange={(values) => setConstraintForm({ ...constraintForm, values })} />
-                    )}
-                    {constraintForm.kind && constraintForm.kind !== "relief_required" && (
-                      <TextInput label="Scope: services (comma separated, blank = all)" value={constraintForm.services} onChange={(services) => setConstraintForm({ ...constraintForm, services })} />
-                    )}
-                    {constraintForm.kind && constraintForm.kind !== "relief_required" && constraintForm.kind !== "line_class_in" && (
-                      <TextInput label="Scope: symbol categories (blank = valves, regulators, inline, instruments, equipment)" value={constraintForm.categories} onChange={(categories) => setConstraintForm({ ...constraintForm, categories })} />
-                    )}
-                    <FormError message={formErrors.requirement} />
-                    <button disabled={busy || !selectedProject || !requirementForm.key}>Create requirement</button>
-                  </form>
-                  <div className="buttonRow"><button disabled={!selectedRequirement} onClick={updateRequirement}>Update selected</button><button className="danger" disabled={!selectedRequirement} onClick={deleteRequirement}>Delete selected</button></div>
-                </Panel>
-                <Panel title="Requirements">
-                  <DataTable rows={requirements} selectedKey={selectedRequirementId} getKey={(requirement) => requirement.id} onSelect={(requirement) => setSelectedRequirementId(requirement.id)} columns={[{ header: "Key", render: (requirement) => <span className="mono">{requirement.key}</span> }, { header: "Title", render: (requirement) => requirement.title }, { header: "Type", render: (requirement) => requirement.requirement_type }, { header: "Check", render: (requirement) => (requirement.constraint ? <span className="mono">{requirement.constraint.kind}{requirement.constraint.values.length ? ` ${requirement.constraint.values.join("|")}` : ""}</span> : <span className="hint">manual</span>) }, { header: "Status", render: (requirement) => <StatusPill value={requirement.status} /> }]} />
-                </Panel>
-                <Panel title="Verification Matrix">
-                  {verificationMatrix?.rows.length ? (
-                    <DataTable
-                      rows={verificationMatrix.rows}
-                      selectedKey={selectedRequirementId}
-                      getKey={(row) => row.requirement_id}
-                      onSelect={(row) => setSelectedRequirementId(row.requirement_id)}
-                      columns={[
-                        { header: "Key", render: (row) => <span className="mono">{row.key}</span> },
-                        { header: "Verdict", render: (row) => <span className={`pill ${row.verdict === "pass" ? "pill-good" : row.verdict === "fail" ? "pill-bad" : "pill-muted"}`}>{row.verdict.replace("_", " ")}</span> },
-                        { header: "Checked", render: (row) => <span className="mono">{row.constraint ? `${row.passed} pass / ${row.failed} fail` : "—"}</span> },
-                        { header: "Drawings", render: (row) => (row.drawings.length ? row.drawings.map((entry) => `${entry.drawing_number} (sheets ${entry.sheets.join(", ")})`).join("; ") : "—") },
-                        { header: "Links", render: (row) => <span className="mono">{row.linked_drawings} drawing(s) · {row.linked_components} component(s)</span> },
-                        { header: "Failures", render: (row) => (row.failures.length ? <span className="mono">{row.failures.map((failure) => `${failure.subject ?? failure.item_id}${failure.zone ? ` @ ${failure.zone}` : ""}`).join(", ")}</span> : "—") }
-                      ]}
-                    />
-                  ) : (
-                    <p className="hint">Requirements with a constraint are checked against every saved drawing sheet; open a drawing on the Drafting page and save it to populate the matrix.</p>
-                  )}
-                </Panel>
-                <Panel title="Trace Links">
-                  <Select label="Drawing" value={selectedDrawingId} options={drawings.map((drawing) => ({ value: drawing.id, label: `${drawing.number} · ${drawing.title.split("\n")[0]}` }))} onChange={setSelectedDrawingId} />
-                  <button className="primary" disabled={!selectedRequirement || !selectedDrawingId} onClick={linkRequirementToDrawing}>Link requirement to drawing</button>
-                  <Select label="Component" value={selectedComponentId} options={components.map((component) => ({ value: component.id, label: component.tag }))} onChange={setSelectedComponentId} />
-                  <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
-                  <FormError message={formErrors.component} />
-                  <div className="buttonRow"><button disabled={!selectedComponent} onClick={updateComponent}>Update component</button><button className="danger" disabled={!selectedComponent} onClick={deleteComponent}>Delete component</button></div>
-                  <button className="primary" disabled={!selectedRequirement || !selectedComponent} onClick={linkRequirementToComponent}>Link requirement to component</button>
-                  <FormError message={formErrors.traceLink} />
-                  {selectedRequirement && (
-                    traceLinks.length
-                      ? <DataTable rows={traceLinks} getKey={(link) => link.id} columns={[{ header: "Link", render: (link) => <span className="mono">{link.link_type}</span> }, { header: "Target", render: (link) => <span className="mono">{link.target_type === "drawing" ? (drawings.find((drawing) => drawing.id === link.target_id)?.number ?? "drawing") : (components.find((component) => component.id === link.target_id)?.tag ?? `${link.target_type} ${link.target_id.slice(0, 8)}`)}</span> }, { header: "", render: (link) => <button className="danger" disabled={busy} onClick={() => removeTraceLink(link.id)}>Remove</button> }]} />
-                      : <p className="hint">No trace links for {selectedRequirement.key} yet.</p>
-                  )}
-                </Panel>
-              </section>
-            </PageLayout>
+            <RequirementsPage
+              project={selectedProject}
+              requirements={requirements}
+              components={components}
+              selectedRequirementId={selectedRequirementId}
+              canWrite={user.role !== "viewer"}
+              onSelectRequirement={setSelectedRequirementId}
+              onRequirementsChanged={setRequirements}
+            />
           }
         />
         <Route

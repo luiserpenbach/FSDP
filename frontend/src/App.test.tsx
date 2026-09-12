@@ -451,8 +451,7 @@ describe("App", () => {
       screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/requirements"]')!
     );
     expect(await screen.findByRole("heading", { level: 1, name: "Requirements" })).toBeInTheDocument();
-    expect(screen.getByText("V-B")).toBeInTheDocument();
-    expect(screen.queryByText("V-A")).not.toBeInTheDocument();
+    expect(screen.getByText("Requirements · 0 of 0")).toBeInTheDocument();
   });
 
   it("keeps the diagram dirty when the canvas is edited after graph load but before components finish", async () => {
