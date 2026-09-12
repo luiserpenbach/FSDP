@@ -30,11 +30,12 @@ import type {
   User
 } from "./types";
 
-// Production builds default to same-origin "/api" (served behind nginx or a
-// Vercel rewrite); dev talks to the local backend directly. Override with
-// VITE_API_BASE_URL at build time when needed.
+// Browser builds call same-origin "/api" (Vite proxy in dev, nginx/Vercel in
+// prod). Tests keep the historical absolute URL so existing fetch stubs match.
+// Override with VITE_API_BASE_URL when the API is on another origin.
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.PROD ? "/api" : "http://localhost:8000");
+  import.meta.env.VITE_API_BASE_URL ??
+  (import.meta.env.MODE === "test" ? "http://localhost:8000" : "/api");
 
 let unauthorizedHandler: (() => void) | null = null;
 

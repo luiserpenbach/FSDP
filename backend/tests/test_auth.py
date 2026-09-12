@@ -22,6 +22,10 @@ def test_api_requires_authentication(client: TestClient) -> None:
     assert unauthenticated.status_code == 401
     assert unauthenticated_write.status_code == 401
     assert health.status_code == 200
+    assert anonymous.get("/api/health").status_code == 200
+    root = anonymous.get("/")
+    assert root.status_code == 200
+    assert "FSDP" in root.text
 
 
 def test_login_rejects_bad_credentials(client: TestClient) -> None:
