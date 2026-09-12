@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi.responses import FileResponse
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -26,6 +27,7 @@ from app.models import (
     Project,
     Requirement,
     RequirementEvidence,
+    SafetyPackage,
     SheetItem,
     SheetVolume,
     TraceLink,
@@ -36,6 +38,7 @@ from app.schemas import (
     AnalysisCreate,
     AnalysisRead,
     AnalysisUpdate,
+    CertificationEvidenceRead,
     FailureModeCreate,
     FailureModeRead,
     FailureModeUpdate,
@@ -63,6 +66,8 @@ from app.schemas import (
     HazardRead,
     HazardUpdate,
     RequirementRead,
+    SafetyPackageIn,
+    SafetyPackageRead,
     SafetySettingsRead,
     SafetySettingsUpdate,
     SheetItemRefRead,
@@ -71,6 +76,8 @@ from app.schemas import (
 )
 from app.services.analyses import analysis_view, default_title
 from app.services.analyses import run as run_analysis
+from app.services.certification import evidence as certification_evidence
+from app.services.drc import project_findings
 from app.services.export import svg_to_pdf
 from app.services.failure_modes import library
 from app.services.fmea import (
@@ -101,6 +108,8 @@ from app.services.hazards import (
     refresh_safety_critical,
 )
 from app.services.lists import list_filename, rows_to_csv, rows_to_xlsx
+from app.services.safety_package import generate as generate_package
+from app.services.safety_package import package_file, package_view
 from app.services.safety_settings import get_settings, save_settings
 from app.services.svg_tables import table_pages
 from app.services.traceability import delete_trace_links_for, delete_trace_links_for_many
@@ -464,7 +473,7 @@ def accept_hazard(
     hazard_id: str,
     payload: HazardAcceptIn,
     db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
+    user: User = Depends(require_safety_approver),
 ) -> dict:
     hazard = require_model(db, Hazard, hazard_id)
     project = require_model(db, Project, hazard.project_id)
@@ -1287,53 +1296,8 @@ def sheet_safety_overlay(sheet_id: str, db: Session = Depends(get_db)) -> dict:
 @safety_router.get("/projects/{project_id}/drc")
 def project_drc(project_id: str, db: Session = Depends(get_db)) -> dict:
     """Findings and waivers across every drawing of the project."""
-    from app.services.drc import drawing_drc
-
     project = require_model(db, Project, project_id)
-    drawings = list(
-        db.scalars(
-            select(Drawing)
-            .where(Drawing.project_id == project.id)
-            .options(selectinload(Drawing.sheets))
-            .order_by(Drawing.number)
-        )
-    )
-    entries = []
-    totals = {"error": 0, "warning": 0, "info": 0, "waived": 0}
-    for drawing in drawings:
-        summary = drawing_drc(db, drawing)
-        for key in totals:
-            totals[key] += summary["counts"].get(key, 0)
-        for sheet in summary["sheets"]:
-            for finding in sheet["findings"]:
-                entries.append(
-                    {
-                        "drawing_id": drawing.id,
-                        "drawing_number": drawing.number,
-                        "sheet_id": sheet["sheet_id"],
-                        "sheet_no": sheet["sheet_no"],
-                        "key": finding.key,
-                        "rule": finding.rule,
-                        "severity": finding.severity,
-                        "message": finding.message,
-                        "item_id": finding.item_id,
-                        "subject": finding.subject,
-                        "zone": finding.zone,
-                        "requirement_id": finding.requirement_id,
-                        "hazard_id": finding.hazard_id,
-                        "waived": any(w.key == finding.key for w in sheet["waivers"]),
-                        "waiver_reason": next(
-                            (w.reason for w in sheet["waivers"] if w.key == finding.key), None
-                        ),
-                    }
-                )
-    hazard_keys = {
-        hazard.id: hazard.key
-        for hazard in db.scalars(select(Hazard).where(Hazard.project_id == project.id))
-    }
-    for entry in entries:
-        entry["hazard_key"] = hazard_keys.get(entry["hazard_id"]) if entry["hazard_id"] else None
-    return {"project_id": project.id, "counts": totals, "findings": entries}
+    return project_findings(db, project)
 
 
 @safety_router.get("/projects/{project_id}/analyses", response_model=list[AnalysisRead])
@@ -1507,3 +1471,99 @@ def attach_analysis_evidence(
     db.commit()
     db.refresh(analysis)
     return analysis_view(db, analysis)
+
+
+# ---------------------------------------------------------------------------
+# Phase D: safety review packages and certification evidence
+
+
+@safety_router.get("/projects/{project_id}/safety/packages", response_model=list[SafetyPackageRead])
+def list_packages(project_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    project = require_model(db, Project, project_id)
+    return [
+        package_view(package)
+        for package in db.scalars(
+            select(SafetyPackage)
+            .where(SafetyPackage.project_id == project.id)
+            .order_by(SafetyPackage.generated_at.desc())
+        )
+    ]
+
+
+@safety_router.post(
+    "/projects/{project_id}/safety/packages", response_model=SafetyPackageRead, status_code=201
+)
+def create_package(
+    project_id: str,
+    payload: SafetyPackageIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> dict:
+    project = require_model(db, Project, project_id)
+    package = generate_package(
+        db,
+        project,
+        title=payload.title,
+        drawing_ids=payload.drawing_ids,
+        worksheet_ids=payload.worksheet_ids,
+        system_ids=payload.system_ids,
+        actor=user.email,
+    )
+    record_change(
+        db,
+        "safety_package",
+        package.id,
+        "created",
+        f"Generated safety review package '{package.title}'",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(package)
+    return package_view(package)
+
+
+@safety_router.get("/safety/packages/{package_id}/{kind}")
+def download_package(package_id: str, kind: str, db: Session = Depends(get_db)) -> FileResponse:
+    if kind not in {"pdf", "xlsx"}:
+        raise HTTPException(status_code=400, detail="kind must be pdf or xlsx")
+    package = require_model(db, SafetyPackage, package_id)
+    path = package_file(package, kind)
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=404, detail="Package file is missing")
+    slug = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in package.title).strip("-")
+    media = (
+        "application/pdf"
+        if kind == "pdf"
+        else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    return FileResponse(path, filename=f"{slug or 'safety-package'}.{kind}", media_type=media)
+
+
+@safety_router.delete("/safety/packages/{package_id}", status_code=204)
+def delete_package(
+    package_id: str, db: Session = Depends(get_db), user: User = Depends(require_writer)
+) -> Response:
+    package = require_model(db, SafetyPackage, package_id)
+    for kind in ("pdf", "xlsx"):
+        path = package_file(package, kind)
+        if path is not None and path.is_file():
+            path.unlink()
+    record_change(
+        db,
+        "safety_package",
+        package.id,
+        "deleted",
+        f"Deleted safety review package '{package.title}'",
+        actor=user.email,
+    )
+    db.delete(package)
+    db.commit()
+    return Response(status_code=204)
+
+
+@safety_router.get(
+    "/projects/{project_id}/certification/evidence", response_model=CertificationEvidenceRead
+)
+def certification(project_id: str, db: Session = Depends(get_db)) -> dict:
+    project = require_model(db, Project, project_id)
+    return certification_evidence(db, project)

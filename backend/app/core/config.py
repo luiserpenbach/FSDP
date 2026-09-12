@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     expose_docs: bool = True
     catalog_files_dir: str = "var/catalog-files"
+    safety_files_dir: str = "var/safety-packages"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="FSDP_")
 

@@ -839,6 +839,26 @@ class BomSnapshot(TimestampMixin, Base):
         return "drawing" if self.drawing_id else "diagram"
 
 
+class SafetyPackage(TimestampMixin, Base):
+    """A generated safety review package: the scope it covered, summary counts,
+    and where its PDF and XLSX files live."""
+
+    __tablename__ = "safety_packages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    scope: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    summary: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    generated_by: Mapped[str | None] = mapped_column(String(160))
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    change_log_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pdf_path: Mapped[str | None] = mapped_column(String(400))
+    xlsx_path: Mapped[str | None] = mapped_column(String(400))
+
+
 class ChangeEvent(TimestampMixin, Base):
     __tablename__ = "change_events"
 

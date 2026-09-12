@@ -8,6 +8,7 @@ Also creates the bootstrap admin when FSDP_ADMIN_EMAIL/FSDP_ADMIN_PASSWORD are s
 """
 
 import logging
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.bootstrap import ensure_bootstrap_admin
 from app.db import SessionLocal
 from app.models import (
+    Analysis,
     ComponentInstance,
     Diagram,
     DiagramEdge,
@@ -374,13 +376,40 @@ def seed_safety(
                 )
             )
     # AMPH-REQ-001 and -002 carry analysis evidence, so HZ-001 shows as controlled.
-    for key, reference in (("AMPH-REQ-001", "AMPH-AN-014"), ("AMPH-REQ-002", "AMPH-AN-021")):
+    # AMPH-AN-014 is stored as a manual analysis on the Safety page; AMPH-AN-021
+    # is an external report reference.
+    analysis = Analysis(
+        project_id=project.id,
+        kind="manual",
+        title="AMPH-AN-014 Trapped GHe volume thermal expansion",
+        scope={"volumes": ["PV-101 to RV-101 interstage"], "reference": "AMPH-AN-014 rev B"},
+        assumptions={
+            "fill_temperature_c": -20,
+            "max_temperature_c": 45,
+            "relief_set_bar": 310,
+            "method": "isochoric warm-up, ideal gas",
+        },
+        result={
+            "summary": "Pressure rise from 250 bar to 314 bar at 45 C; relief at 310 bar "
+            "limits the volume to the design pressure.",
+            "verdict_reason": "relief device covers the worst-case warm-up",
+        },
+        verdict="pass",
+        run_by="seed",
+        run_at=datetime.now(UTC),
+    )
+    db.add(analysis)
+    db.flush()
+    for key, kind, ref_type, reference in (
+        ("AMPH-REQ-001", "analysis", "analysis", analysis.id),
+        ("AMPH-REQ-002", "analysis", "report", "AMPH-AN-021"),
+    ):
         requirement = requirements[key]
         db.add(
             RequirementEvidence(
                 requirement_id=requirement.id,
-                kind="analysis",
-                ref_type="report",
+                kind=kind,
+                ref_type=ref_type,
                 ref_id=reference,
                 status="pass",
                 note="Seeded demo evidence",

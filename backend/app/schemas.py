@@ -2159,3 +2159,49 @@ class ImpactRead(BaseModel):
     affected_hazards: list[dict[str, Any]] = Field(default_factory=list)
     affected_requirements: list[dict[str, Any]] = Field(default_factory=list)
     affected_analyses: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Safety phase D: review packages and certification evidence
+
+
+class SafetyPackageIn(BaseModel):
+    title: str | None = None
+    drawing_ids: list[str] | None = None
+    worksheet_ids: list[str] | None = None
+    system_ids: list[str] | None = None
+
+
+class SafetyPackageRead(OrmModel):
+    id: str
+    project_id: str
+    title: str
+    scope: dict[str, Any] | None = None
+    summary: dict[str, Any] | None = None
+    generated_by: str | None = None
+    generated_at: datetime | None = None
+    change_log_from: datetime | None = None
+    pdf_url: str
+    xlsx_url: str
+    created_at: datetime
+
+
+class CertificationGapRead(BaseModel):
+    kind: str
+    ref_type: str
+    ref_id: str
+    key: str | None = None
+    title: str
+    detail: str
+
+
+class CertificationEvidenceRead(BaseModel):
+    project_id: str
+    ready: bool
+    counts: dict[str, int]
+    released_worksheets: list[dict[str, Any]]
+    accepted_hazards: list[dict[str, Any]]
+    verified_requirements: list[dict[str, Any]]
+    analyses: list[dict[str, Any]]
+    packages: list[SafetyPackageRead]
+    gaps: list[CertificationGapRead]

@@ -6,7 +6,7 @@ from __future__ import annotations
 from collections import Counter
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     Drawing,
@@ -206,3 +206,52 @@ def verification_matrix(db: Session, project: Project) -> dict:
             }
         )
     return {"project_id": project.id, "rows": rows}
+
+
+def project_findings(db: Session, project: Project) -> dict:
+    """Findings and waivers across every drawing of the project, flat, with the
+    hazard key a relief finding created."""
+    drawings = list(
+        db.scalars(
+            select(Drawing)
+            .where(Drawing.project_id == project.id)
+            .options(selectinload(Drawing.sheets))
+            .order_by(Drawing.number)
+        )
+    )
+    entries = []
+    totals = {"error": 0, "warning": 0, "info": 0, "waived": 0}
+    for drawing in drawings:
+        summary = drawing_drc(db, drawing)
+        for key in totals:
+            totals[key] += summary["counts"].get(key, 0)
+        for sheet in summary["sheets"]:
+            for finding in sheet["findings"]:
+                entries.append(
+                    {
+                        "drawing_id": drawing.id,
+                        "drawing_number": drawing.number,
+                        "sheet_id": sheet["sheet_id"],
+                        "sheet_no": sheet["sheet_no"],
+                        "key": finding.key,
+                        "rule": finding.rule,
+                        "severity": finding.severity,
+                        "message": finding.message,
+                        "item_id": finding.item_id,
+                        "subject": finding.subject,
+                        "zone": finding.zone,
+                        "requirement_id": finding.requirement_id,
+                        "hazard_id": finding.hazard_id,
+                        "waived": any(w.key == finding.key for w in sheet["waivers"]),
+                        "waiver_reason": next(
+                            (w.reason for w in sheet["waivers"] if w.key == finding.key), None
+                        ),
+                    }
+                )
+    hazard_keys = {
+        hazard.id: hazard.key
+        for hazard in db.scalars(select(Hazard).where(Hazard.project_id == project.id))
+    }
+    for entry in entries:
+        entry["hazard_key"] = hazard_keys.get(entry["hazard_id"]) if entry["hazard_id"] else None
+    return {"project_id": project.id, "counts": totals, "findings": entries}
