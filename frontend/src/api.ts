@@ -1,4 +1,13 @@
 import type {
+  FailureMode,
+  FmeaComment,
+  FmeaDiff,
+  FmeaGate,
+  FmeaGenerateResult,
+  FmeaRelease,
+  FmeaRow,
+  FmeaRowPatch,
+  FmeaWorksheet,
   Evidence,
   RequirementCoverage,
   RequirementImportResult,
@@ -366,6 +375,44 @@ export const api = {
     request<Requirement>(`/hazards/${hazardId}/derive-requirement`, { method: "POST", body: JSON.stringify(body) }),
   acceptHazard: (hazardId: string, justification: string) =>
     request<Hazard>(`/hazards/${hazardId}/accept`, { method: "POST", body: JSON.stringify({ justification }) }),
+  listFailureModes: () => request<FailureMode[]>("/failure-modes"),
+  createFailureMode: (body: Omit<FailureMode, "id">) => request<FailureMode>("/failure-modes", { method: "POST", body: JSON.stringify(body) }),
+  updateFailureMode: (modeId: string, body: Partial<Omit<FailureMode, "id" | "category" | "symbol_key" | "name">>) =>
+    request<FailureMode>(`/failure-modes/${modeId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteFailureMode: (modeId: string) => requestNoContent(`/failure-modes/${modeId}`, { method: "DELETE" }),
+  listWorksheets: (projectId: string) => request<FmeaWorksheet[]>(`/projects/${projectId}/fmea`),
+  createWorksheet: (projectId: string, body: { title: string; drawing_id?: string | null; system_id?: string | null; method?: string; operating_modes?: string[] | null }) =>
+    request<FmeaWorksheet>(`/projects/${projectId}/fmea`, { method: "POST", body: JSON.stringify(body) }),
+  getWorksheet: (worksheetId: string) => request<FmeaWorksheet>(`/fmea/${worksheetId}`),
+  updateWorksheet: (worksheetId: string, body: Partial<Pick<FmeaWorksheet, "title" | "drawing_id" | "system_id" | "method" | "operating_modes" | "status">>) =>
+    request<FmeaWorksheet>(`/fmea/${worksheetId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteWorksheet: (worksheetId: string) => requestNoContent(`/fmea/${worksheetId}`, { method: "DELETE" }),
+  generateWorksheet: (worksheetId: string, body: { drawing_id?: string | null; sheet_ids?: string[] | null; categories?: string[] | null; operating_modes?: string[] | null }) =>
+    request<FmeaGenerateResult>(`/fmea/${worksheetId}/generate`, { method: "POST", body: JSON.stringify(body) }),
+  listWorksheetRows: (worksheetId: string) => request<FmeaRow[]>(`/fmea/${worksheetId}/rows`),
+  createWorksheetRow: (worksheetId: string, body: FmeaRowPatch) => request<FmeaRow>(`/fmea/${worksheetId}/rows`, { method: "POST", body: JSON.stringify(body) }),
+  updateWorksheetRow: (rowId: string, body: FmeaRowPatch) => request<FmeaRow>(`/fmea/rows/${rowId}`, { method: "PUT", body: JSON.stringify(body) }),
+  bulkUpdateRows: (worksheetId: string, rows: Array<FmeaRowPatch & { id: string }>) =>
+    request<FmeaRow[]>(`/fmea/${worksheetId}/rows/bulk`, { method: "POST", body: JSON.stringify({ rows }) }),
+  deleteWorksheetRow: (rowId: string) => requestNoContent(`/fmea/rows/${rowId}`, { method: "DELETE" }),
+  confirmRow: (rowId: string) => request<FmeaRow>(`/fmea/rows/${rowId}/confirm`, { method: "POST" }),
+  confirmAllRows: (worksheetId: string) => request<FmeaWorksheet>(`/fmea/${worksheetId}/confirm-all`, { method: "POST" }),
+  addRowControl: (rowId: string, body: { type: "requirement" | "sheet_item"; id: string }) =>
+    request<FmeaRow>(`/fmea/rows/${rowId}/controls`, { method: "POST", body: JSON.stringify(body) }),
+  removeRowControl: (rowId: string, linkId: string) => request<FmeaRow>(`/fmea/rows/${rowId}/controls/${linkId}`, { method: "DELETE" }),
+  getWorksheetGate: (worksheetId: string) => request<FmeaGate>(`/fmea/${worksheetId}/gate`),
+  releaseWorksheet: (worksheetId: string, note?: string) => request<FmeaRelease>(`/fmea/${worksheetId}/release`, { method: "POST", body: JSON.stringify({ note: note ?? null }) }),
+  listWorksheetReleases: (worksheetId: string) => request<FmeaRelease[]>(`/fmea/${worksheetId}/releases`),
+  getWorksheetDiff: (worksheetId: string, against?: number) => request<FmeaDiff>(`/fmea/${worksheetId}/diff${against ? `?against=${against}` : ""}`),
+  downloadWorksheet: async (worksheetId: string, format: "xlsx" | "csv" | "pdf") => {
+    const response = await rawRequest(`/fmea/${worksheetId}/export?format=${format}`);
+    const match = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "");
+    return { blob: await response.blob(), filename: match?.[1] ?? `fmea.${format}` };
+  },
+  listRowComments: (rowId: string) => request<FmeaComment[]>(`/fmea/rows/${rowId}/comments`),
+  addRowComment: (rowId: string, body: string) => request<FmeaComment>(`/fmea/rows/${rowId}/comments`, { method: "POST", body: JSON.stringify({ body }) }),
+  updateRowComment: (commentId: string, body: { resolved?: boolean; body?: string }) =>
+    request<FmeaComment>(`/fmea/comments/${commentId}`, { method: "PUT", body: JSON.stringify(body) }),
   listSheetItems: (projectId: string, params?: { q?: string; category?: string; limit?: number }) => {
     const query = new URLSearchParams();
     for (const [key, value] of Object.entries(params ?? {})) {

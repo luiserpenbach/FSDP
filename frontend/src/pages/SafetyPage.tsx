@@ -4,10 +4,11 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { FmeaTab } from "../components/safety/FmeaTab";
 import { HazardDrawer } from "../components/safety/HazardDrawer";
 import { RiskMatrix, type MatrixCell, type MatrixMode } from "../components/safety/RiskMatrix";
 import { DataTable, Panel, StatusPill, SummaryCard } from "../components/ui";
-import type { FluidSystem, Hazard, HazardMatrix, Project, Requirement, RequirementCoverage, SafetySettings } from "../types";
+import type { Drawing, FluidSystem, Hazard, HazardMatrix, Project, Requirement, RequirementCoverage, SafetySettings } from "../types";
 import { PageLayout } from "./PageLayout";
 
 type Tab = "overview" | "hazards" | "fmea" | "analyses" | "rules";
@@ -44,6 +45,7 @@ export function SafetyPage({
   const [matrix, setMatrix] = useState<HazardMatrix | null>(null);
   const [settings, setSettings] = useState<SafetySettings | null>(null);
   const [coverage, setCoverage] = useState<RequirementCoverage | null>(null);
+  const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [matrixMode, setMatrixMode] = useState<MatrixMode>("residual");
   const [cell, setCell] = useState<MatrixCell | null>(null);
   const [filters, setFilters] = useState({ category: "", computed: "", mode: "", severity: "" });
@@ -62,11 +64,18 @@ export function SafetyPage({
       return;
     }
     try {
-      const [nextHazards, nextMatrix, nextSettings, nextCoverage] = await Promise.all([api.listHazards(projectId), api.getHazardMatrix(projectId), api.getSafetySettings(projectId), api.getRequirementCoverage(projectId).catch(() => null)]);
+      const [nextHazards, nextMatrix, nextSettings, nextCoverage, nextDrawings] = await Promise.all([
+        api.listHazards(projectId),
+        api.getHazardMatrix(projectId),
+        api.getSafetySettings(projectId),
+        api.getRequirementCoverage(projectId).catch(() => null),
+        api.listDrawings(projectId).catch(() => [])
+      ]);
       setHazards(nextHazards);
       setMatrix(nextMatrix);
       setSettings(nextSettings.settings);
       setCoverage(nextCoverage);
+      setDrawings(nextDrawings);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load the safety data.");
@@ -332,10 +341,8 @@ export function SafetyPage({
         </section>
       )}
 
-      {tab === "fmea" && (
-        <Panel title="FMEA worksheets">
-          <p className="hint">Worksheets bound to drawing items, generated from the failure-mode library, arrive in the next phase. Until then, record failure causes as hazards and link the controlling requirements.</p>
-        </Panel>
+      {tab === "fmea" && settings && (
+        <FmeaTab projectId={project.id} drawings={drawings} hazards={hazards} requirements={requirements} settings={settings} canWrite={canWrite} onHazardsChanged={() => void reload()} />
       )}
       {tab === "analyses" && (
         <Panel title="Analyses">

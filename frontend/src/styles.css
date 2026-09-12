@@ -4359,3 +4359,256 @@ button.drawerClose {
   font-size: 12px;
   padding: 5px 8px;
 }
+
+/* ---------- FMEA ---------- */
+
+.fmeaTab {
+  display: grid;
+  gap: 12px;
+}
+
+.fmeaHeader {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
+.worksheetPicker {
+  min-width: 260px;
+}
+
+.fmeaMeta {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-bottom: 8px;
+}
+
+.fmeaActions {
+  margin-left: auto;
+  padding-bottom: 6px;
+}
+
+.banner {
+  align-items: center;
+  background: var(--amber-soft);
+  border-left: 4px solid var(--amber);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 8px 16px;
+  padding: 8px 12px;
+}
+
+.gridToolbar {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gateList {
+  font-size: 13px;
+}
+
+.gateList summary {
+  color: var(--amber-deep);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.gateList ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.fmeaGridWrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  max-height: calc(100vh - 260px);
+  min-width: 0;
+  overflow: auto;
+}
+
+.gridMessage {
+  margin: 6px 12px 0;
+}
+
+table.fmeaGrid {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+  min-width: max-content;
+}
+
+table.fmeaGrid:focus {
+  outline: none;
+}
+
+table.fmeaGrid th {
+  border-right: 1px solid var(--line-soft);
+  padding: 6px 8px;
+}
+
+table.fmeaGrid th.rowTools {
+  left: 0;
+  position: sticky;
+  z-index: 3;
+}
+
+table.fmeaGrid td {
+  border-bottom: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line-soft);
+  cursor: cell;
+  max-width: 260px;
+  overflow: hidden;
+  padding: 4px 8px;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+table.fmeaGrid td.rowTools {
+  background: var(--surface);
+  left: 0;
+  position: sticky;
+  white-space: nowrap;
+  z-index: 2;
+}
+
+table.fmeaGrid td.rowTools input {
+  margin: 0 4px 0 0;
+  width: auto;
+}
+
+table.fmeaGrid tbody tr {
+  cursor: default;
+}
+
+table.fmeaGrid tbody tr:hover {
+  background: transparent;
+}
+
+table.fmeaGrid td.activeCell {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+table.fmeaGrid td.rating,
+table.fmeaGrid td.readonly .mono {
+  text-align: center;
+}
+
+table.fmeaGrid td input,
+table.fmeaGrid td select {
+  font-size: 12.5px;
+  margin: 0;
+  min-width: 120px;
+  padding: 2px 6px;
+}
+
+table.fmeaGrid tr.stale td {
+  background: var(--amber-soft);
+}
+
+table.fmeaGrid tr.stale td:first-child {
+  box-shadow: inset 3px 0 0 var(--amber);
+}
+
+table.fmeaGrid tr.over td.readonly .overThreshold {
+  color: var(--red-deep);
+  font-weight: 700;
+}
+
+table.fmeaGrid tr.notApplicable td {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+table.fmeaGrid tr.rowSelected td {
+  background: var(--accent-soft);
+}
+
+.gridItem {
+  display: grid;
+  line-height: 1.2;
+}
+
+.gridItem small {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.ref {
+  color: var(--accent-strong);
+}
+
+.ratingCell {
+  font-weight: 600;
+}
+
+button.rowMenu {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.commentDot {
+  background: var(--accent-soft);
+  border-radius: 999px;
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 5px;
+}
+
+.staleFlag {
+  color: var(--amber-deep) !important;
+  font-size: 11px !important;
+  margin-left: 4px;
+}
+
+.refPicker {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-1);
+  display: grid;
+  gap: 4px;
+  min-width: 260px;
+  padding: 6px;
+  position: absolute;
+  z-index: 20;
+}
+
+.refPicker input {
+  margin: 0;
+}
+
+.refPicker .pickList button.active {
+  background: var(--accent-soft);
+}
+
+.pickEmpty {
+  display: block;
+  padding: 6px 8px;
+}
+
+.rowDrawer {
+  position: sticky;
+  top: 8px;
+}
+
+.historyList li.resolved {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+table.fmeaGrid td {
+  position: relative;
+}

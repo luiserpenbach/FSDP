@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SafetyPage } from "./SafetyPage";
 import type { Hazard, HazardMatrix, Requirement, SafetySettings } from "../types";
@@ -88,6 +89,8 @@ const requirements: Requirement[] = [
 ];
 
 function stubFetch(calls: Array<{ path: string; init?: RequestInit }>) {
+  const worksheets: Array<Record<string, unknown>> = [];
+  const fmeaRows: Array<Record<string, unknown>> = [];
   const hazards = [hazard({}), hazard({ id: "h2", key: "HZ-015", title: "Backflow of LOX into transfer pump on trip", category: "backflow", severity_initial: "II", severity_residual: "II", likelihood_residual: "C", operating_modes: ["fast_fill"], controls_total: 2, controls_verified: 2, independent_controls: 2, computed_status: "controlled", risk_residual: "medium" })];
   vi.stubGlobal(
     "fetch",
@@ -112,6 +115,20 @@ function stubFetch(calls: Array<{ path: string; init?: RequestInit }>) {
       if (path === "/hazards/h1/derive-requirement" && init?.method === "POST") {
         return jsonResponse({ id: "r3", project_id: "p1", key: "REQ-SAF-040", title: "New", text: "Shall.", requirement_type: "safety", status: "draft" }, 201);
       }
+      if (path === "/projects/p1/drawings") return jsonResponse([{ id: "d1", project_id: "p1", number: "GSE-LOX-001", title: "LOX fill and drain", sheets: [{ id: "s1", sheet_no: 1 }], revisions: [{ id: "rv1", label: "B", sequence: 1 }] }]);
+      if (path === "/projects/p1/fmea" && init?.method === "POST") {
+        worksheets.push({ id: "w1", project_id: "p1", system_id: null, drawing_id: "d1", drawing_number: "GSE-LOX-001", drawing_revision_label: "B", drawing_current_revision_label: "B", revision_drift: false, title: JSON.parse(String(init.body)).title, method: "fmea", operating_modes: ["hold", "fast_fill"], status: "draft", revision: 0, row_count: 0, stale_count: 0, open_actions: 0, above_threshold: 0, created_at: "2026-09-12T00:00:00Z", updated_at: "2026-09-12T00:00:00Z" });
+        return jsonResponse(worksheets[0], 201);
+      }
+      if (path === "/projects/p1/fmea") return jsonResponse(worksheets);
+      if (path === "/fmea/w1") return jsonResponse({ ...worksheets[0], row_count: fmeaRows.length });
+      if (path === "/fmea/w1/generate" && init?.method === "POST") {
+        fmeaRows.push({ id: "fr1", worksheet_id: "w1", sheet_id: "s1", item_id: "fv201", subject_text: null, item_tag: "FV-201", item_category: "valve", item_symbol: "Pneumatic valve", item_zone: "C-4", item_exists: true, part_id: null, part_number: null, sheet_no: 1, drawing_id: "d1", drawing_number: "GSE-LOX-001", failure_mode_id: "m1", failure_mode_text: null, failure_mode_name: "fails_closed", failure_mode_title: "Fails closed / fails to open", operating_modes: ["fast_fill"], cause: "", local_effect: "FV-201 blocks LOX; no flow downstream", next_effect: "", end_effect: "", detected_by_item_id: "pt205", detected_by_tag: "PT-205", detection_kind: "instrument", detection_reason: null, severity: 6, occurrence: null, detection: null, rpn: null, hazard_id: null, hazard_key: null, recommended_action: null, action_owner: null, action_due: null, action_status: "not_required", severity_residual: null, occurrence_residual: null, detection_residual: null, rpn_residual: null, notes: null, not_applicable: false, stale_reason: null, stale_detail: null, position: 1, controls: [], comment_count: 0, open_comment_count: 0, created_at: "2026-09-12T00:00:00Z", updated_at: "2026-09-12T00:00:00Z" });
+        return jsonResponse({ added: 1, kept: 0, stale: 0, items_without_modes: ["QD-201"] });
+      }
+      if (path === "/fmea/w1/rows") return jsonResponse(fmeaRows);
+      if (path === "/fmea/w1/gate") return jsonResponse({ ready: false, blockers: [{ row_id: "fr1", item: "FV-201", reason: "no detection and no reason recorded" }] });
+      if (path === "/fmea/w1/releases") return jsonResponse([]);
       if (path === "/hazards/h1") return jsonResponse(hazard({ controls_total: 3 }));
       if (path === "/hazards/h1/accept" && init?.method === "POST") {
         return jsonResponse(hazard({ status: "accepted", computed_status: "accepted", accepted_by: "sma@fsdp.test", acceptance_justification: "Agreed" }));
@@ -129,7 +146,7 @@ describe("SafetyPage", () => {
 
   it("shows the overview tiles, the risk matrix, and the hazards needing attention", async () => {
     stubFetch([]);
-    render(<SafetyPage project={{ id: "p1", name: "LOX GSE" }} systems={[]} requirements={requirements} canWrite onRequirementsChanged={() => undefined} />);
+    render(<MemoryRouter><SafetyPage project={{ id: "p1", name: "LOX GSE" }} systems={[]} requirements={requirements} canWrite onRequirementsChanged={() => undefined} /></MemoryRouter>);
     expect(await screen.findByText("Uncontrolled I–II")).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("grid", { name: "residual risk matrix" })).toBeInTheDocument());
     expect(screen.getByRole("gridcell", { name: "I-D: 1 hazard, serious" })).toBeInTheDocument();
@@ -144,7 +161,7 @@ describe("SafetyPage", () => {
     const calls: Array<{ path: string; init?: RequestInit }> = [];
     stubFetch(calls);
     const onRequirementsChanged = vi.fn();
-    render(<SafetyPage project={{ id: "p1", name: "LOX GSE" }} systems={[]} requirements={requirements} canWrite onRequirementsChanged={onRequirementsChanged} />);
+    render(<MemoryRouter><SafetyPage project={{ id: "p1", name: "LOX GSE" }} systems={[]} requirements={requirements} canWrite onRequirementsChanged={onRequirementsChanged} /></MemoryRouter>);
     await waitFor(() => expect(screen.getByRole("grid", { name: "residual risk matrix" })).toBeInTheDocument());
 
     fireEvent.click(screen.getByRole("gridcell", { name: "II-C: 1 hazard, serious" }));
@@ -178,9 +195,34 @@ describe("SafetyPage", () => {
     await waitFor(() => expect(within(drawer).getByText(/Accepted by sma@fsdp.test/)).toBeInTheDocument());
   });
 
+  it("creates a worksheet, generates rows from the drawing, and shows the release gate", async () => {
+    const calls: Array<{ path: string; init?: RequestInit }> = [];
+    stubFetch(calls);
+    render(<MemoryRouter><SafetyPage project={{ id: "p1", name: "LOX GSE" }} systems={[]} requirements={requirements} canWrite onRequirementsChanged={() => undefined} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByRole("grid", { name: "residual risk matrix" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "FMEA" }));
+    expect(await screen.findByText(/Create a worksheet for a drawing/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New worksheet" }));
+    const dialog = await screen.findByRole("dialog", { name: "New worksheet" });
+    fireEvent.change(within(dialog).getByLabelText("Title"), { target: { value: "LOX fill and drain" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create worksheet" }));
+    await waitFor(() => expect(calls.some((call) => call.path === "/projects/p1/fmea" && call.init?.method === "POST")).toBe(true));
+    expect(await screen.findByText(/generated against/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Generate rows…" }));
+    const generate = await screen.findByRole("dialog", { name: "Generate rows" });
+    fireEvent.click(within(generate).getByRole("button", { name: "Generate" }));
+    await waitFor(() => expect(calls.some((call) => call.path === "/fmea/w1/generate")).toBe(true));
+    const grid = await screen.findByRole("grid", { name: "FMEA worksheet" });
+    await waitFor(() => expect(within(grid).getByText("FV-201")).toBeInTheDocument());
+    expect(within(grid).getByText("PT-205")).toBeInTheDocument();
+    expect(await screen.findByText(/No library modes for: QD-201/)).toBeInTheDocument();
+    expect(await screen.findByText(/1 thing blocks release/)).toBeInTheDocument();
+  });
+
   it("asks for a project when none is selected", () => {
     stubFetch([]);
-    render(<SafetyPage project={null} systems={[]} requirements={[]} canWrite={false} onRequirementsChanged={() => undefined} />);
+    render(<MemoryRouter><SafetyPage project={null} systems={[]} requirements={[]} canWrite={false} onRequirementsChanged={() => undefined} /></MemoryRouter>);
     expect(screen.getByText(/Select a project on the Systems page/)).toBeInTheDocument();
   });
 });

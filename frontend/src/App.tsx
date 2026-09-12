@@ -74,6 +74,7 @@ import { LineClassPanel } from "./pages/LineClassPanel";
 import { RequirementsPage } from "./pages/RequirementsPage";
 import { SafetyPage } from "./pages/SafetyPage";
 import { SafetySettingsPanel } from "./pages/SafetySettingsPanel";
+import { FailureModePanel } from "./pages/FailureModePanel";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, User } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
@@ -2197,6 +2198,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                 <TagSchemePanel project={selectedProject} canWrite={user.role !== "viewer"} />
                 <LineClassPanel project={selectedProject} canWrite={user.role !== "viewer"} />
                 <SafetySettingsPanel project={selectedProject} canWrite={user.role !== "viewer"} />
+                <FailureModePanel isAdmin={isAdmin} />
               </section>
             </PageLayout>
           }

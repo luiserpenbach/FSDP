@@ -334,6 +334,9 @@ export type SafetySettings = {
   risk_matrix: Record<string, Record<string, string>>;
   fault_tolerance: Record<string, number>;
   rpn_threshold: number;
+  fmea_scale_max?: number;
+  fmea_hazard_severity_min?: number;
+  fmea_rating_descriptions?: Record<string, string[]>;
   operating_modes: string[];
   hazard_categories: string[];
   auto_hazard: boolean;
@@ -521,3 +524,143 @@ export type PidSymbolDef = {
   created_at?: string;
   updated_at?: string;
 };
+
+// ---- FMEA ----
+
+export type FailureMode = {
+  id: string;
+  category: string;
+  symbol_key: string | null;
+  name: string;
+  title: string;
+  default_local_effect: string;
+  default_detection_hint: string[] | null;
+  default_severity: number | null;
+  applicable_modes: string[] | null;
+  replaces_category: boolean;
+  active: boolean;
+};
+
+export type FmeaWorksheet = {
+  id: string;
+  project_id: string;
+  system_id: string | null;
+  drawing_id: string | null;
+  drawing_number: string | null;
+  drawing_revision_label: string | null;
+  drawing_current_revision_label: string | null;
+  revision_drift: boolean;
+  title: string;
+  method: "fmea" | "fmeca" | string;
+  operating_modes: string[] | null;
+  status: "draft" | "in_review" | "released" | "superseded" | string;
+  revision: number;
+  row_count: number;
+  stale_count: number;
+  open_actions: number;
+  above_threshold: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FmeaControl = { link_id: string; type: "requirement" | "sheet_item" | string; id: string; label: string };
+
+export type FmeaRow = {
+  id: string;
+  worksheet_id: string;
+  sheet_id: string | null;
+  item_id: string | null;
+  subject_text: string | null;
+  item_tag: string | null;
+  item_category: string | null;
+  item_symbol: string | null;
+  item_zone: string | null;
+  item_exists: boolean;
+  part_id: string | null;
+  part_number: string | null;
+  sheet_no: number | null;
+  drawing_id: string | null;
+  drawing_number: string | null;
+  failure_mode_id: string | null;
+  failure_mode_text: string | null;
+  failure_mode_name: string | null;
+  failure_mode_title: string | null;
+  operating_modes: string[] | null;
+  cause: string;
+  local_effect: string;
+  next_effect: string;
+  end_effect: string;
+  detected_by_item_id: string | null;
+  detected_by_tag: string | null;
+  detection_kind: "instrument" | "procedure" | "inspection" | "none" | string;
+  detection_reason: string | null;
+  severity: number | null;
+  occurrence: number | null;
+  detection: number | null;
+  rpn: number | null;
+  hazard_id: string | null;
+  hazard_key: string | null;
+  recommended_action: string | null;
+  action_owner: string | null;
+  action_due: string | null;
+  action_status: "not_required" | "open" | "in_progress" | "done" | string;
+  severity_residual: number | null;
+  occurrence_residual: number | null;
+  detection_residual: number | null;
+  rpn_residual: number | null;
+  notes: string | null;
+  not_applicable: boolean;
+  stale_reason: string | null;
+  stale_detail: string | null;
+  position: number;
+  controls: FmeaControl[];
+  comment_count: number;
+  open_comment_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type FmeaRowPatch = Partial<
+  Pick<
+    FmeaRow,
+    | "sheet_id"
+    | "item_id"
+    | "subject_text"
+    | "failure_mode_id"
+    | "failure_mode_text"
+    | "operating_modes"
+    | "cause"
+    | "local_effect"
+    | "next_effect"
+    | "end_effect"
+    | "detected_by_item_id"
+    | "detection_kind"
+    | "detection_reason"
+    | "severity"
+    | "occurrence"
+    | "detection"
+    | "hazard_id"
+    | "recommended_action"
+    | "action_owner"
+    | "action_due"
+    | "action_status"
+    | "severity_residual"
+    | "occurrence_residual"
+    | "detection_residual"
+    | "notes"
+    | "not_applicable"
+    | "position"
+  >
+>;
+
+export type FmeaGenerateResult = { added: number; kept: number; stale: number; items_without_modes: string[] };
+export type FmeaGate = { ready: boolean; blockers: Array<{ row_id: string; item: string; reason: string }> };
+export type FmeaRelease = { id: string; worksheet_id: string; revision: number; drawing_revision_label: string | null; released_by: string | null; note: string | null; row_count: number; created_at: string };
+export type FmeaDiff = {
+  worksheet_id: string;
+  against_revision: number;
+  added: Array<Record<string, unknown>>;
+  removed: Array<Record<string, unknown>>;
+  changed: Array<{ item_tag: string | null; failure_mode_title: string | null; fields: Record<string, { from: unknown; to: unknown }> }>;
+};
+export type FmeaComment = { id: string; row_id: string; author: string | null; body: string; resolved: boolean; created_at: string };

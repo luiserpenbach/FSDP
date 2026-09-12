@@ -7,7 +7,7 @@
  * renderer and lets the server turn the SVG into PDF or PNG.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { api } from "../api";
 import { AssignPartModal } from "../components/schematic/AssignPartModal";
 import { DrcPanel, useDrc, type DrcInputs } from "../components/schematic/DrcPanel";
@@ -329,6 +329,22 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
+
+  // Open a drawing, sheet, and item named in the query string (locate from the FMEA grid).
+  const location = useLocation();
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const targetDrawing = params.get("drawing");
+    const targetSheet = params.get("sheet");
+    const targetItem = params.get("item");
+    if (!targetDrawing || !drawings.some((entry) => entry.id === targetDrawing)) return;
+    if (targetSheet && targetItem) {
+      pendingLocate.current = { drawingId: targetDrawing, sheetId: targetSheet, itemId: targetItem };
+    }
+    setDrawingId(targetDrawing);
+    if (targetSheet) setSheetId(targetSheet);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.search, drawings]);
 
   // Project tag scheme (defaults when none is stored).
   useEffect(() => {
