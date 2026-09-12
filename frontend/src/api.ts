@@ -1,4 +1,11 @@
 import type {
+  Evidence,
+  Hazard,
+  HazardInput,
+  HazardMatrix,
+  RequirementHistoryEntry,
+  SafetySettings,
+  SheetItemRef,
   BomDiff,
   BomReadiness,
   BomSnapshot,
@@ -291,7 +298,56 @@ export const api = {
     }),
   deleteComponent: (componentId: string) =>
     requestNoContent(`/components/${componentId}`, { method: "DELETE" }),
-  listRequirements: (projectId: string) => request<Requirement[]>(`/projects/${projectId}/requirements`),
+  listRequirements: (projectId: string, params?: { category?: string; verification_status?: string; safety_critical?: boolean; parent_id?: string; q?: string }) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value !== undefined && value !== "" && value !== null) query.set(key, String(value));
+    }
+    const suffix = query.toString();
+    return request<Requirement[]>(`/projects/${projectId}/requirements${suffix ? `?${suffix}` : ""}`);
+  },
+  getRequirement: (requirementId: string) => request<Requirement>(`/requirements/${requirementId}`),
+  getRequirementHistory: (requirementId: string) => request<RequirementHistoryEntry[]>(`/requirements/${requirementId}/history`),
+  listEvidence: (requirementId: string) => request<Evidence[]>(`/requirements/${requirementId}/evidence`),
+  addEvidence: (requirementId: string, body: { kind: string; status: string; ref_type?: string | null; ref_id?: string | null; note?: string | null }) =>
+    request<Evidence>(`/requirements/${requirementId}/evidence`, { method: "POST", body: JSON.stringify(body) }),
+  updateEvidence: (evidenceId: string, body: { status?: string; note?: string | null; ref_type?: string | null; ref_id?: string | null }) =>
+    request<Evidence>(`/evidence/${evidenceId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteEvidence: (evidenceId: string) => requestNoContent(`/evidence/${evidenceId}`, { method: "DELETE" }),
+  getSafetySettings: (projectId: string) => request<{ project_id: string; settings: SafetySettings }>(`/projects/${projectId}/safety-settings`),
+  updateSafetySettings: (projectId: string, settings: SafetySettings) =>
+    request<{ project_id: string; settings: SafetySettings }>(`/projects/${projectId}/safety-settings`, { method: "PUT", body: JSON.stringify({ settings }) }),
+  listHazards: (projectId: string, params?: { category?: string; status?: string; computed_status?: string; system_id?: string; severity?: string; mode?: string }) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value) query.set(key, value);
+    }
+    const suffix = query.toString();
+    return request<Hazard[]>(`/projects/${projectId}/hazards${suffix ? `?${suffix}` : ""}`);
+  },
+  getHazardMatrix: (projectId: string) => request<HazardMatrix>(`/projects/${projectId}/hazards/matrix`),
+  createHazard: (projectId: string, body: HazardInput & { title: string }) =>
+    request<Hazard>(`/projects/${projectId}/hazards`, { method: "POST", body: JSON.stringify(body) }),
+  getHazard: (hazardId: string) => request<Hazard>(`/hazards/${hazardId}`),
+  updateHazard: (hazardId: string, body: HazardInput) =>
+    request<Hazard>(`/hazards/${hazardId}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteHazard: (hazardId: string) => requestNoContent(`/hazards/${hazardId}`, { method: "DELETE" }),
+  addHazardControl: (hazardId: string, body: { type: "requirement" | "sheet_item"; id: string }) =>
+    request<Hazard>(`/hazards/${hazardId}/controls`, { method: "POST", body: JSON.stringify(body) }),
+  removeHazardControl: (hazardId: string, linkId: string) =>
+    request<Hazard>(`/hazards/${hazardId}/controls/${linkId}`, { method: "DELETE" }),
+  deriveRequirement: (hazardId: string, body: { key: string; title: string; text: string; verification_method?: string | null; category?: string }) =>
+    request<Requirement>(`/hazards/${hazardId}/derive-requirement`, { method: "POST", body: JSON.stringify(body) }),
+  acceptHazard: (hazardId: string, justification: string) =>
+    request<Hazard>(`/hazards/${hazardId}/accept`, { method: "POST", body: JSON.stringify({ justification }) }),
+  listSheetItems: (projectId: string, params?: { q?: string; category?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    const suffix = query.toString();
+    return request<SheetItemRef[]>(`/projects/${projectId}/sheet-items${suffix ? `?${suffix}` : ""}`);
+  },
   createRequirement: (body: Omit<Requirement, "id">) =>
     request<Requirement>("/requirements", { method: "POST", body: JSON.stringify(body) }),
   updateRequirement: (requirementId: string, body: Partial<Requirement>) =>

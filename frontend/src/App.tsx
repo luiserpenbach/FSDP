@@ -71,6 +71,8 @@ import { PartsCatalog } from "./pages/PartsCatalog";
 import { DraftingPage } from "./pages/DraftingPage";
 import { TagSchemePanel } from "./pages/TagSchemePanel";
 import { LineClassPanel } from "./pages/LineClassPanel";
+import { SafetyPage } from "./pages/SafetyPage";
+import { SafetySettingsPanel } from "./pages/SafetySettingsPanel";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, Drawing, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, RequirementConstraintRead, TraceLink, User, VerificationMatrix } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
@@ -2326,7 +2328,20 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
             />
           }
         />
-        <Route path="/safety" element={<PlaceholderPage title="Safety" body="Hazards, trapped-volume checks, relief scenarios, and FMEA/FHA workflows will be added after the navigation foundation." />} />
+        <Route
+          path="/safety"
+          element={
+            <SafetyPage
+              project={selectedProject}
+              systems={systems}
+              requirements={requirements}
+              canWrite={user.role !== "viewer"}
+              onRequirementsChanged={() => {
+                if (selectedProjectId) void api.listRequirements(selectedProjectId).then(setRequirements).catch(() => undefined);
+              }}
+            />
+          }
+        />
         <Route path="/certification" element={<PlaceholderPage title="Certification" body="Compliance packages, evidence status, and generated certification artifacts will live here." />} />
         <Route
           path="/settings"
@@ -2386,6 +2401,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
                 />
                 <TagSchemePanel project={selectedProject} canWrite={user.role !== "viewer"} />
                 <LineClassPanel project={selectedProject} canWrite={user.role !== "viewer"} />
+                <SafetySettingsPanel project={selectedProject} canWrite={user.role !== "viewer"} />
               </section>
             </PageLayout>
           }

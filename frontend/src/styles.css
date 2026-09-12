@@ -3872,3 +3872,366 @@ button.ribbonButton.active {
   gap: 6px 10px;
   margin: 0;
 }
+
+/* ---------- Safety ---------- */
+
+.safetyTabs {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 2px;
+  margin-bottom: 14px;
+}
+
+.safetyTabs button {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: -1px;
+  padding: 8px 12px;
+}
+
+.safetyTabs button:hover:not(:disabled) {
+  background: var(--nav-hover);
+  color: var(--text);
+}
+
+.safetyTabs button.active {
+  border-bottom-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.tileRow {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin-bottom: 16px;
+}
+
+.safetyLayout {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.safetyLayout.withDrawer {
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 400px);
+}
+
+@media (max-width: 960px) {
+  .safetyLayout.withDrawer {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.filterRow select {
+  width: auto;
+}
+
+.segmented {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  overflow: hidden;
+}
+
+.segmented button {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 11.5px;
+  padding: 4px 10px;
+}
+
+.segmented button.active {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.riskMatrix {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.riskHead,
+.riskRowLabel {
+  color: var(--text-3);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  align-self: center;
+}
+
+.riskCell {
+  aspect-ratio: 1.7;
+  border: none;
+  border-radius: var(--radius-sm);
+  box-shadow: none;
+  display: grid;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 0;
+  place-items: center;
+}
+
+.riskCell.empty {
+  opacity: 0.55;
+}
+
+.riskCell.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.riskCell.risk-high,
+.pill.risk-high {
+  background: var(--red-soft);
+  color: var(--red-deep);
+}
+
+.riskCell.risk-serious,
+.pill.risk-serious {
+  background: #fde4cf;
+  color: #8a3b00;
+}
+
+.riskCell.risk-medium,
+.pill.risk-medium {
+  background: var(--amber-soft);
+  color: var(--amber-deep);
+}
+
+.riskCell.risk-low,
+.pill.risk-low {
+  background: var(--green-soft);
+  color: var(--green-deep);
+}
+
+.attentionList {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.attentionList li {
+  display: grid;
+  gap: 2px;
+}
+
+button.linkButton {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: var(--accent-strong);
+  font-size: 13px;
+  padding: 0;
+  text-align: left;
+}
+
+button.linkButton:hover:not(:disabled) {
+  background: transparent;
+  text-decoration: underline;
+}
+
+.drawer {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px 16px 18px;
+}
+
+.drawerHead {
+  align-items: center;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding-bottom: 8px;
+}
+
+.drawerHead .mono {
+  font-weight: 600;
+}
+
+.drawerStatus {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 10px;
+}
+
+button.drawerClose {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+
+.drawerForm {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 0;
+}
+
+.drawerSection {
+  border-top: 1px solid var(--line-soft);
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+}
+
+.drawerSection h3 {
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.drawerSection h3 .hint {
+  font-weight: 500;
+  letter-spacing: 0;
+  margin-left: 8px;
+  text-transform: none;
+}
+
+.controlList {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.controlList li {
+  align-items: center;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  display: grid;
+  font-size: 12.5px;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  padding: 6px 8px;
+}
+
+.controlTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.addControl {
+  display: grid;
+  gap: 6px;
+}
+
+.pickList {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  list-style: none;
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  padding: 0;
+}
+
+.pickList button {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
+  box-shadow: none;
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.pickList li:last-child button {
+  border-bottom: none;
+}
+
+.modeSet {
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+.modeSet legend {
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  padding: 0;
+}
+
+.modeChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  gap: 4px;
+  padding: 2px 10px;
+}
+
+.chip input {
+  margin: 0;
+  width: auto;
+}
+
+.chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.policyGrid {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  margin: 0 0 10px;
+  padding: 8px 10px 10px;
+}
+
+.policyGrid legend {
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 0 4px;
+}

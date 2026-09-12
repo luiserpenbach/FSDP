@@ -6,13 +6,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.api.routes import record_change, require_model
 from app.core.security import require_writer
 from app.db import get_db
 from app.models import (
+    Drawing,
+    DrawingSheet,
     FluidSystem,
     Hazard,
     Project,
@@ -32,6 +34,7 @@ from app.schemas import (
     RequirementRead,
     SafetySettingsRead,
     SafetySettingsUpdate,
+    SheetItemRefRead,
 )
 from app.services.hazards import (
     default_fault_tolerance,
@@ -83,6 +86,57 @@ def update_safety_settings(
     )
     db.commit()
     return {"project_id": project.id, "settings": settings}
+
+
+@safety_router.get("/projects/{project_id}/sheet-items", response_model=list[SheetItemRefRead])
+def list_sheet_items(
+    project_id: str,
+    q: str | None = None,
+    category: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Tagged items across the project's drawings, for pickers."""
+    require_model(db, Project, project_id)
+    query = (
+        select(SheetItem, DrawingSheet, Drawing)
+        .join(DrawingSheet, SheetItem.sheet_id == DrawingSheet.id)
+        .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+        .where(Drawing.project_id == project_id, SheetItem.dnp.is_(False))
+    )
+    if category:
+        query = query.where(SheetItem.category == category)
+    if q:
+        pattern = f"%{q.strip()}%"
+        query = query.where(
+            or_(
+                SheetItem.tag.ilike(pattern),
+                SheetItem.label.ilike(pattern),
+                SheetItem.symbol_name.ilike(pattern),
+            )
+        )
+    rows = db.execute(
+        query.order_by(Drawing.number, DrawingSheet.sheet_no, SheetItem.tag).limit(
+            max(1, min(limit, 500))
+        )
+    ).all()
+    return [
+        {
+            "id": item.id,
+            "sheet_id": sheet.id,
+            "item_id": item.item_id,
+            "tag": item.tag,
+            "label": item.label,
+            "category": item.category,
+            "symbol_name": item.symbol_name,
+            "zone": item.zone,
+            "part_id": item.part_id,
+            "drawing_id": drawing.id,
+            "drawing_number": drawing.number,
+            "sheet_no": sheet.sheet_no,
+        }
+        for item, sheet, drawing in rows
+    ]
 
 
 @safety_router.get("/projects/{project_id}/hazards", response_model=list[HazardRead])

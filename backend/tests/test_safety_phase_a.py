@@ -263,8 +263,12 @@ def test_hardware_control_counts_only_when_covered_by_a_requirement(client: Test
     _, sheet_id = _drawing_with_sheet(client, project_id)
     # Save with no checks: the relief valve exists on the sheet but no requirement applies to it.
     _save_checks(client, sheet_id, material["id"], "pass")
+    picks = client.get(f"/projects/{project_id}/sheet-items", params={"q": "trv"}).json()
+    assert [pick["tag"] for pick in picks] == ["TRV-201"]
+    assert picks[0]["sheet_no"] == 1 and picks[0]["category"] == "relief"
     items = client.get(f"/sheets/{sheet_id}/index").json()["items"]
     trv = next(item for item in items if item["tag"] == "TRV-201")
+    assert trv["id"] == picks[0]["id"]
 
     view = client.post(
         f"/hazards/{hazard['id']}/controls", json={"type": "sheet_item", "id": trv["id"]}

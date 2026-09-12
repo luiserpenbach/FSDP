@@ -1593,6 +1593,23 @@ class HazardMatrixRead(BaseModel):
     unrated: int
 
 
+class SheetItemRefRead(BaseModel):
+    """A sheet item as a pick-list entry (hazard controls, FMEA rows)."""
+
+    id: str
+    sheet_id: str
+    item_id: str
+    tag: str | None
+    label: str | None
+    category: str | None
+    symbol_name: str | None
+    zone: str | None
+    part_id: str | None
+    drawing_id: str
+    drawing_number: str
+    sheet_no: int
+
+
 class SafetySettingsRead(BaseModel):
     project_id: str
     settings: dict[str, Any]

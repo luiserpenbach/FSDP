@@ -209,6 +209,9 @@ export type RequirementConstraintRead = {
   scope?: { categories?: string[]; services?: string[] };
 };
 
+export type RequirementCategory = "functional" | "performance" | "safety" | "interface" | "environmental" | "manufacturing" | "verification";
+export type VerificationStatus = "planned" | "in_progress" | "verified" | "failed" | "waived";
+
 export type Requirement = {
   id: string;
   project_id: string;
@@ -218,8 +221,131 @@ export type Requirement = {
   requirement_type: string;
   verification_method?: string | null;
   status: string;
+  owner?: string | null;
   /** Machine-checkable constraint evaluated by the drawing DRC. */
   constraint?: RequirementConstraintRead | null;
+  parent_id?: string | null;
+  rationale?: string | null;
+  category?: RequirementCategory | string;
+  safety_critical?: boolean;
+  applicability?: { systems?: string[]; operating_modes?: string[]; services?: string[] } | null;
+  /** Rolled up from evidence on the server. */
+  verification_status?: VerificationStatus | string;
+  revision?: number;
+  source_ref?: string | null;
+};
+
+export type RequirementHistoryEntry = {
+  id: string;
+  requirement_id: string;
+  revision: number;
+  field: string;
+  old_value: string | null;
+  new_value: string | null;
+  actor: string | null;
+  created_at: string;
+};
+
+export type EvidenceKind = "drc" | "analysis" | "document" | "test" | "inspection" | "waiver";
+export type EvidenceStatus = "pass" | "fail" | "pending";
+
+export type Evidence = {
+  id: string;
+  requirement_id: string;
+  kind: EvidenceKind | string;
+  ref_type: string | null;
+  ref_id: string | null;
+  status: EvidenceStatus | string;
+  note: string | null;
+  recorded_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type HazardControl = {
+  link_id: string;
+  type: "requirement" | "sheet_item";
+  id: string;
+  label: string;
+  title?: string | null;
+  verification_status: string;
+  covered: boolean;
+  covering_requirements: string[];
+};
+
+export type Hazard = {
+  id: string;
+  project_id: string;
+  key: string;
+  title: string;
+  description: string;
+  category: string;
+  system_id: string | null;
+  operating_modes: string[] | null;
+  severity_initial: string | null;
+  likelihood_initial: string | null;
+  severity_residual: string | null;
+  likelihood_residual: string | null;
+  status: "open" | "accepted" | "closed" | string;
+  owner: string | null;
+  accepted_by: string | null;
+  accepted_at: string | null;
+  acceptance_justification: string | null;
+  fault_tolerance_required: number;
+  created_at: string;
+  updated_at: string;
+  computed_status: "open" | "controlled" | "accepted" | "closed" | string;
+  risk_initial: string | null;
+  risk_residual: string | null;
+  controls_total: number;
+  controls_verified: number;
+  independent_controls: number;
+  controls: HazardControl[];
+  causes: number;
+};
+
+export type HazardInput = Partial<Pick<Hazard, "title" | "description" | "category" | "system_id" | "operating_modes" | "severity_initial" | "likelihood_initial" | "severity_residual" | "likelihood_residual" | "status" | "owner" | "fault_tolerance_required">>;
+
+export type ScaleEntry = { code: string; name: string; description?: string };
+
+export type SafetySettings = {
+  severity_scale: ScaleEntry[];
+  likelihood_scale: ScaleEntry[];
+  risk_classes: Array<{ code: string; name: string }>;
+  risk_matrix: Record<string, Record<string, string>>;
+  fault_tolerance: Record<string, number>;
+  rpn_threshold: number;
+  operating_modes: string[];
+  hazard_categories: string[];
+  auto_hazard: boolean;
+  default_hazard_severity: string;
+  default_hazard_likelihood: string;
+  approvers: string[];
+};
+
+export type HazardMatrix = {
+  project_id: string;
+  severity_scale: ScaleEntry[];
+  likelihood_scale: ScaleEntry[];
+  risk_matrix: Record<string, Record<string, string>>;
+  initial: Record<string, Record<string, number>>;
+  residual: Record<string, Record<string, number>>;
+  unrated: number;
+};
+
+export type SheetItemRef = {
+  id: string;
+  sheet_id: string;
+  item_id: string;
+  tag: string | null;
+  label: string | null;
+  category: string | null;
+  symbol_name: string | null;
+  zone: string | null;
+  part_id: string | null;
+  drawing_id: string;
+  drawing_number: string;
+  sheet_no: number;
 };
 
 export type DrcResultRead = {
@@ -269,6 +395,13 @@ export type VerificationRow = {
   linked_components: number;
   linked_drawings: number;
   failures: SheetDrcRead["checks"];
+  category?: string;
+  verification_method?: string | null;
+  owner?: string | null;
+  verification_status?: string;
+  safety_critical?: boolean;
+  evidence?: Record<string, number>;
+  hazards?: string[];
 };
 
 export type VerificationMatrix = { project_id: string; rows: VerificationRow[] };

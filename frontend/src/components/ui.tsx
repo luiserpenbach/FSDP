@@ -122,7 +122,22 @@ const PILL_TONES: Record<string, string> = {
   admin: "warn",
   engineer: "info",
   viewer: "muted",
-  inactive: "bad"
+  inactive: "bad",
+  // Safety
+  open: "warn",
+  controlled: "good",
+  accepted: "info",
+  closed: "muted",
+  // Verification and evidence
+  planned: "muted",
+  in_progress: "warn",
+  verified: "good",
+  failed: "bad",
+  waived: "info",
+  uncovered: "bad",
+  pass: "good",
+  fail: "bad",
+  pending: "warn"
 };
 
 export function StatusPill({ value }: { value: string }) {
