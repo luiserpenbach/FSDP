@@ -22,10 +22,13 @@ from app.models import (
     Drawing,
     DrawingSheet,
     FluidSystem,
+    Hazard,
     Part,
     PidSymbolDef,
     Project,
     Requirement,
+    RequirementEvidence,
+    RequirementHistory,
     SheetItem,
     SheetLine,
     TraceLink,
@@ -47,6 +50,9 @@ from app.schemas import (
     DiagramGraphUpdate,
     DiagramRead,
     DiagramUpdate,
+    EvidenceCreate,
+    EvidenceRead,
+    EvidenceUpdate,
     FluidSystemCreate,
     FluidSystemRead,
     FluidSystemUpdate,
@@ -67,6 +73,7 @@ from app.schemas import (
     ProjectRead,
     ProjectUpdate,
     RequirementCreate,
+    RequirementHistoryRead,
     RequirementRead,
     RequirementUpdate,
     SchematicDocumentIn,
@@ -87,10 +94,16 @@ from app.services.catalog import (
     sanitize_upload_filename,
 )
 from app.services.change_impact import get_change_impact
+from app.services.hazards import refresh_safety_critical
 from app.services.traceability import (
     delete_trace_links_for,
     delete_trace_links_for_many,
     get_trace_links,
+)
+from app.services.verification import (
+    apply_requirement_update,
+    rollup_verification,
+    validate_parent,
 )
 
 router = APIRouter()
@@ -1192,6 +1205,10 @@ def create_requirement(
     if existing:
         raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
+    try:
+        validate_parent(db, None, payload.parent_id, payload.project_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     requirement = Requirement(**payload.model_dump())
     db.add(requirement)
     db.flush()
@@ -1209,9 +1226,146 @@ def create_requirement(
 
 
 @router.get("/projects/{project_id}/requirements", response_model=list[RequirementRead])
-def list_requirements(project_id: str, db: Session = Depends(get_db)) -> list[Requirement]:
+def list_requirements(
+    project_id: str,
+    category: str | None = None,
+    verification_status: str | None = None,
+    safety_critical: bool | None = None,
+    parent_id: str | None = None,
+    q: str | None = None,
+    db: Session = Depends(get_db),
+) -> list[Requirement]:
     require_model(db, Project, project_id)
-    return list(db.scalars(select(Requirement).where(Requirement.project_id == project_id)))
+    query = select(Requirement).where(Requirement.project_id == project_id)
+    if category:
+        query = query.where(Requirement.category == category.strip().lower())
+    if verification_status:
+        query = query.where(Requirement.verification_status == verification_status)
+    if safety_critical is not None:
+        query = query.where(Requirement.safety_critical.is_(safety_critical))
+    if parent_id:
+        query = query.where(Requirement.parent_id == parent_id)
+    if q:
+        pattern = f"%{q.strip()}%"
+        query = query.where(
+            or_(Requirement.key.ilike(pattern), Requirement.title.ilike(pattern))
+        )
+    return list(db.scalars(query.order_by(Requirement.key)))
+
+
+@router.get("/requirements/{requirement_id}", response_model=RequirementRead)
+def get_requirement(requirement_id: str, db: Session = Depends(get_db)) -> Requirement:
+    return require_model(db, Requirement, requirement_id)
+
+
+@router.get(
+    "/requirements/{requirement_id}/history", response_model=list[RequirementHistoryRead]
+)
+def requirement_history(requirement_id: str, db: Session = Depends(get_db)) -> list:
+    require_model(db, Requirement, requirement_id)
+    return list(
+        db.scalars(
+            select(RequirementHistory)
+            .where(RequirementHistory.requirement_id == requirement_id)
+            .order_by(RequirementHistory.revision.desc(), RequirementHistory.created_at.desc())
+        )
+    )
+
+
+@router.get("/requirements/{requirement_id}/evidence", response_model=list[EvidenceRead])
+def list_evidence(requirement_id: str, db: Session = Depends(get_db)) -> list:
+    require_model(db, Requirement, requirement_id)
+    return list(
+        db.scalars(
+            select(RequirementEvidence)
+            .where(RequirementEvidence.requirement_id == requirement_id)
+            .order_by(RequirementEvidence.created_at)
+        )
+    )
+
+
+@router.post(
+    "/requirements/{requirement_id}/evidence", response_model=EvidenceRead, status_code=201
+)
+def add_evidence(
+    requirement_id: str,
+    payload: EvidenceCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> RequirementEvidence:
+    requirement = require_model(db, Requirement, requirement_id)
+    evidence = RequirementEvidence(
+        requirement_id=requirement.id, recorded_by=user.email, **payload.model_dump()
+    )
+    db.add(evidence)
+    db.flush()
+    rollup_verification(db, requirement)
+    record_change(
+        db,
+        "requirement",
+        requirement.id,
+        "updated",
+        f"Recorded {payload.kind} evidence ({payload.status}) for {requirement.key}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(evidence)
+    return evidence
+
+
+@router.put("/evidence/{evidence_id}", response_model=EvidenceRead)
+def update_evidence(
+    evidence_id: str,
+    payload: EvidenceUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> RequirementEvidence:
+    evidence = require_model(db, RequirementEvidence, evidence_id)
+    if evidence.kind == "drc":
+        raise HTTPException(
+            status_code=409, detail="DRC evidence is generated from saved sheets and is read-only"
+        )
+    apply_updates(evidence, payload)
+    requirement = require_model(db, Requirement, evidence.requirement_id)
+    rollup_verification(db, requirement)
+    record_change(
+        db,
+        "requirement",
+        requirement.id,
+        "updated",
+        f"Updated {evidence.kind} evidence for {requirement.key}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(evidence)
+    return evidence
+
+
+@router.delete("/evidence/{evidence_id}", status_code=204)
+def delete_evidence(
+    evidence_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Response:
+    evidence = require_model(db, RequirementEvidence, evidence_id)
+    if evidence.kind == "drc":
+        raise HTTPException(
+            status_code=409, detail="DRC evidence is generated from saved sheets and is read-only"
+        )
+    requirement = require_model(db, Requirement, evidence.requirement_id)
+    db.delete(evidence)
+    db.flush()
+    rollup_verification(db, requirement)
+    record_change(
+        db,
+        "requirement",
+        requirement.id,
+        "updated",
+        f"Removed {evidence.kind} evidence from {requirement.key}",
+        actor=user.email,
+    )
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.put("/requirements/{requirement_id}", response_model=RequirementRead)
@@ -1233,15 +1387,22 @@ def update_requirement(
         if existing:
             raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
-    apply_updates(requirement, payload)
-    record_change(
-        db,
-        "requirement",
-        requirement.id,
-        "updated",
-        f"Updated requirement {requirement.key}",
-        actor=user.email,
-    )
+    changes = payload.model_dump(exclude_unset=True)
+    if "parent_id" in changes:
+        try:
+            validate_parent(db, requirement, changes["parent_id"], requirement.project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    changed = apply_requirement_update(db, requirement, changes, actor=user.email)
+    if changed:
+        record_change(
+            db,
+            "requirement",
+            requirement.id,
+            "updated",
+            f"Updated requirement {requirement.key} ({', '.join(changed)})",
+            actor=user.email,
+        )
     db.commit()
     db.refresh(requirement)
     return requirement
@@ -1278,6 +1439,23 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
     "part": Part,
     "component": ComponentInstance,
     "requirement": Requirement,
+    "hazard": Hazard,
+}
+
+# Semantics of a link, source -> target. Hazard controls use mitigates
+# (requirement -> hazard) and controls (sheet_item -> hazard).
+TRACE_LINK_TYPES = {
+    "related_to",
+    "satisfied_by",
+    "verified_by",
+    "traces",
+    "applies_to",
+    "derives",
+    "mitigates",
+    "controls",
+    "causes",
+    "evidenced_by",
+    "verifies",
 }
 
 
@@ -1287,6 +1465,11 @@ def create_trace_link(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> TraceLink:
+    if payload.link_type not in TRACE_LINK_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail="Unknown link_type. Expected one of: " + ", ".join(sorted(TRACE_LINK_TYPES)),
+        )
     for kind, type_name, object_id in (
         ("source", payload.source_type, payload.source_id),
         ("target", payload.target_type, payload.target_id),
@@ -1317,6 +1500,8 @@ def create_trace_link(
     link = TraceLink(**payload.model_dump())
     db.add(link)
     db.flush()
+    if link.link_type == "mitigates" and link.source_type == "requirement":
+        refresh_safety_critical(db, {link.source_id})
     record_change(
         db,
         "trace_link",

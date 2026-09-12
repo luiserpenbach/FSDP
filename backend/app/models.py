@@ -468,8 +468,128 @@ class Requirement(TimestampMixin, Base):
     # Machine-checkable constraint evaluated by the drawing DRC:
     # {"kind": "material_in", "values": ["316L"], "scope": {"services": ["GHe"]}}
     constraint: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Derivation: a system requirement points at the customer or site requirement it derives from.
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("requirements.id", ondelete="SET NULL"), nullable=True
+    )
+    rationale: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(40), nullable=False, default="functional")
+    # Set when the requirement controls a severity I or II hazard.
+    safety_critical: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # {"systems": [...], "operating_modes": [...], "services": [...]}
+    applicability: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Rolled up from evidence, never edited directly:
+    # planned | in_progress | verified | failed | waived
+    verification_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="planned"
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_ref: Mapped[str | None] = mapped_column(String(200))
 
     project: Mapped[Project] = relationship(back_populates="requirements")
+    parent: Mapped[Requirement | None] = relationship(
+        remote_side="Requirement.id", foreign_keys=[parent_id]
+    )
+    evidence: Mapped[list[RequirementEvidence]] = relationship(
+        back_populates="requirement", cascade="all, delete-orphan"
+    )
+    history: Mapped[list[RequirementHistory]] = relationship(
+        back_populates="requirement", cascade="all, delete-orphan"
+    )
+
+
+class RequirementHistory(TimestampMixin, Base):
+    """One changed field of a requirement, written on every update."""
+
+    __tablename__ = "requirement_history"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    requirement_id: Mapped[str] = mapped_column(
+        ForeignKey("requirements.id", ondelete="CASCADE"), nullable=False
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    field: Mapped[str] = mapped_column(String(40), nullable=False)
+    old_value: Mapped[str | None] = mapped_column(Text)
+    new_value: Mapped[str | None] = mapped_column(Text)
+    actor: Mapped[str | None] = mapped_column(String(160))
+
+    requirement: Mapped[Requirement] = relationship(back_populates="history")
+
+
+class RequirementEvidence(TimestampMixin, Base):
+    """One piece of proof attached to a requirement.
+
+    ``drc`` rows are mirrored from the sheet's requirement checks on every
+    save (ref_type ``sheet``); the other kinds are recorded by people.
+    """
+
+    __tablename__ = "requirement_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "requirement_id", "kind", "ref_type", "ref_id", name="uq_requirement_evidence_ref"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    requirement_id: Mapped[str] = mapped_column(
+        ForeignKey("requirements.id", ondelete="CASCADE"), nullable=False
+    )
+    # drc | analysis | document | test | inspection | waiver
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    ref_type: Mapped[str | None] = mapped_column(String(40))
+    ref_id: Mapped[str | None] = mapped_column(String(200))
+    # pass | fail | pending
+    status: Mapped[str] = mapped_column(String(10), nullable=False, default="pending")
+    note: Mapped[str | None] = mapped_column(Text)
+    recorded_by: Mapped[str | None] = mapped_column(String(160))
+
+    requirement: Mapped[Requirement] = relationship(back_populates="evidence")
+
+
+class Hazard(TimestampMixin, Base):
+    """Project hazard log entry. ``status`` is the human state (open, accepted,
+    closed); whether the hazard is controlled is computed from its controls."""
+
+    __tablename__ = "hazards"
+    __table_args__ = (UniqueConstraint("project_id", "key", name="uq_hazard_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
+    system_id: Mapped[str | None] = mapped_column(
+        ForeignKey("fluid_systems.id", ondelete="SET NULL"), nullable=True
+    )
+    operating_modes: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    severity_initial: Mapped[str | None] = mapped_column(String(4))
+    likelihood_initial: Mapped[str | None] = mapped_column(String(4))
+    severity_residual: Mapped[str | None] = mapped_column(String(4))
+    likelihood_residual: Mapped[str | None] = mapped_column(String(4))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    owner: Mapped[str | None] = mapped_column(String(160))
+    accepted_by: Mapped[str | None] = mapped_column(String(160))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acceptance_justification: Mapped[str | None] = mapped_column(Text)
+    fault_tolerance_required: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    project: Mapped[Project] = relationship()
+    system: Mapped[FluidSystem | None] = relationship()
+
+
+class SafetySettings(TimestampMixin, Base):
+    """Per-project safety settings (scales, risk matrix, policy, modes)."""
+
+    __tablename__ = "safety_settings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True
+    )
+    settings: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
 class TraceLink(TimestampMixin, Base):

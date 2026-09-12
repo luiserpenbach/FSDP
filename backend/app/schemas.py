@@ -970,6 +970,13 @@ class VerificationRowRead(BaseModel):
     linked_components: int
     linked_drawings: int
     failures: list[DrcRequirementCheckRead]
+    category: str = "functional"
+    verification_method: str | None = None
+    owner: str | None = None
+    verification_status: str = "planned"
+    safety_critical: bool = False
+    evidence: dict[str, int] = Field(default_factory=dict)
+    hazards: list[str] = Field(default_factory=list)
 
 
 class VerificationMatrixRead(BaseModel):
@@ -1213,16 +1220,66 @@ def clean_constraint(value: dict[str, Any] | None) -> dict[str, Any] | None:
     return {"kind": kind, "values": values, "scope": scope}
 
 
+REQUIREMENT_CATEGORIES = {
+    "functional",
+    "performance",
+    "safety",
+    "interface",
+    "environmental",
+    "manufacturing",
+    "verification",
+}
+VERIFICATION_METHODS = {"test", "analysis", "inspection", "demonstration", "design_rule"}
+VERIFICATION_STATUSES = {"planned", "in_progress", "verified", "failed", "waived"}
+EVIDENCE_KINDS = {"drc", "analysis", "document", "test", "inspection", "waiver"}
+EVIDENCE_STATUSES = {"pass", "fail", "pending"}
+
+
+def clean_category(value: str | None) -> str | None:
+    if value is None:
+        return None
+    cleaned = value.strip().lower()
+    if cleaned not in REQUIREMENT_CATEGORIES:
+        raise ValueError("category must be one of: " + ", ".join(sorted(REQUIREMENT_CATEGORIES)))
+    return cleaned
+
+
+def clean_verification_method(value: str | None) -> str | None:
+    """Known methods are normalised; other free text is kept for compatibility."""
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned.lower() if cleaned.lower() in VERIFICATION_METHODS else (cleaned or None)
+
+
+def clean_applicability(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    result: dict[str, list[str]] = {}
+    for field in ("systems", "operating_modes", "services"):
+        entries = value.get(field)
+        if entries:
+            if not isinstance(entries, list):
+                raise ValueError(f"applicability.{field} must be a list")
+            result[field] = [str(entry).strip() for entry in entries if str(entry).strip()]
+    return result
+
+
 class RequirementCreate(BaseModel):
     project_id: str
     key: str
     title: str
     text: str
-    requirement_type: str
+    requirement_type: str = "functional"
     verification_method: str | None = None
     status: str = "draft"
     owner: str | None = None
     constraint: dict[str, Any] | None = None
+    parent_id: str | None = None
+    rationale: str | None = None
+    category: str = "functional"
+    applicability: dict[str, Any] | None = None
+    source_ref: str | None = None
 
     @field_validator("key", "title", "text", "requirement_type")
     @classmethod
@@ -1234,6 +1291,21 @@ class RequirementCreate(BaseModel):
     def _constraint(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         return clean_constraint(value)
 
+    @field_validator("category")
+    @classmethod
+    def _category(cls, value: str) -> str:
+        return clean_category(value) or "functional"
+
+    @field_validator("verification_method")
+    @classmethod
+    def _method(cls, value: str | None) -> str | None:
+        return clean_verification_method(value)
+
+    @field_validator("applicability")
+    @classmethod
+    def _applicability(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return clean_applicability(value)
+
 
 class RequirementUpdate(BaseModel):
     key: str | None = None
@@ -1244,6 +1316,11 @@ class RequirementUpdate(BaseModel):
     status: str | None = None
     owner: str | None = None
     constraint: dict[str, Any] | None = None
+    parent_id: str | None = None
+    rationale: str | None = None
+    category: str | None = None
+    applicability: dict[str, Any] | None = None
+    source_ref: str | None = None
 
     @field_validator("key", "title", "text", "requirement_type")
     @classmethod
@@ -1255,11 +1332,274 @@ class RequirementUpdate(BaseModel):
     def _constraint(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         return clean_constraint(value)
 
+    @field_validator("category")
+    @classmethod
+    def _category(cls, value: str | None) -> str | None:
+        return clean_category(value)
+
+    @field_validator("verification_method")
+    @classmethod
+    def _method(cls, value: str | None) -> str | None:
+        return clean_verification_method(value)
+
+    @field_validator("applicability")
+    @classmethod
+    def _applicability(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        return clean_applicability(value)
+
 
 class RequirementRead(RequirementCreate, OrmModel):
     id: str
+    safety_critical: bool = False
+    verification_status: str = "planned"
+    revision: int = 1
     created_at: datetime
     updated_at: datetime
+
+
+class RequirementHistoryRead(OrmModel):
+    id: str
+    requirement_id: str
+    revision: int
+    field: str
+    old_value: str | None
+    new_value: str | None
+    actor: str | None
+    created_at: datetime
+
+
+class EvidenceCreate(BaseModel):
+    kind: str
+    ref_type: str | None = None
+    ref_id: str | None = None
+    status: str = "pending"
+    note: str | None = None
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned == "drc":
+            raise ValueError("drc evidence is generated from saved sheets, not recorded by hand")
+        if cleaned not in EVIDENCE_KINDS:
+            raise ValueError("kind must be one of: " + ", ".join(sorted(EVIDENCE_KINDS - {"drc"})))
+        return cleaned
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in EVIDENCE_STATUSES:
+            raise ValueError("status must be one of: " + ", ".join(sorted(EVIDENCE_STATUSES)))
+        return cleaned
+
+    @field_validator("ref_type", "ref_id", "note")
+    @classmethod
+    def _optional(cls, value: str | None) -> str | None:
+        return clean_optional_text(value) if value is not None and value.strip() else None
+
+
+class EvidenceUpdate(BaseModel):
+    status: str | None = None
+    note: str | None = None
+    ref_type: str | None = None
+    ref_id: str | None = None
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().lower()
+        if cleaned not in EVIDENCE_STATUSES:
+            raise ValueError("status must be one of: " + ", ".join(sorted(EVIDENCE_STATUSES)))
+        return cleaned
+
+
+class EvidenceRead(OrmModel):
+    id: str
+    requirement_id: str
+    kind: str
+    ref_type: str | None
+    ref_id: str | None
+    status: str
+    note: str | None
+    recorded_by: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+HAZARD_STATUSES = {"open", "accepted", "closed"}
+
+
+class HazardCreate(BaseModel):
+    title: str
+    description: str = ""
+    category: str = "other"
+    system_id: str | None = None
+    operating_modes: list[str] | None = None
+    severity_initial: str | None = None
+    likelihood_initial: str | None = None
+    severity_residual: str | None = None
+    likelihood_residual: str | None = None
+    owner: str | None = None
+    fault_tolerance_required: int | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("category")
+    @classmethod
+    def _category(cls, value: str) -> str:
+        return clean_required_text(value).lower()
+
+    @field_validator("fault_tolerance_required")
+    @classmethod
+    def _tolerance(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("fault_tolerance_required must be at least 1")
+        return value
+
+
+class HazardUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    category: str | None = None
+    system_id: str | None = None
+    operating_modes: list[str] | None = None
+    severity_initial: str | None = None
+    likelihood_initial: str | None = None
+    severity_residual: str | None = None
+    likelihood_residual: str | None = None
+    status: str | None = None
+    owner: str | None = None
+    fault_tolerance_required: int | None = None
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+    @field_validator("status")
+    @classmethod
+    def _status(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().lower()
+        if cleaned not in HAZARD_STATUSES:
+            raise ValueError("status must be one of: " + ", ".join(sorted(HAZARD_STATUSES)))
+        return cleaned
+
+    @field_validator("fault_tolerance_required")
+    @classmethod
+    def _tolerance(cls, value: int | None) -> int | None:
+        if value is not None and value < 1:
+            raise ValueError("fault_tolerance_required must be at least 1")
+        return value
+
+
+class HazardControlRead(BaseModel):
+    link_id: str
+    type: str
+    id: str
+    label: str
+    title: str | None = None
+    verification_status: str
+    covered: bool = True
+    covering_requirements: list[str] = Field(default_factory=list)
+
+
+class HazardRead(OrmModel):
+    id: str
+    project_id: str
+    key: str
+    title: str
+    description: str
+    category: str
+    system_id: str | None
+    operating_modes: list[str] | None
+    severity_initial: str | None
+    likelihood_initial: str | None
+    severity_residual: str | None
+    likelihood_residual: str | None
+    status: str
+    owner: str | None
+    accepted_by: str | None
+    accepted_at: datetime | None
+    acceptance_justification: str | None
+    fault_tolerance_required: int
+    created_at: datetime
+    updated_at: datetime
+    # Computed from controls and the project's policy.
+    computed_status: str = "open"
+    risk_initial: str | None = None
+    risk_residual: str | None = None
+    controls_total: int = 0
+    controls_verified: int = 0
+    independent_controls: int = 0
+    controls: list[HazardControlRead] = Field(default_factory=list)
+    causes: int = 0
+
+
+class HazardControlIn(BaseModel):
+    type: str
+    id: str
+
+    @field_validator("type")
+    @classmethod
+    def _type(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if cleaned not in {"requirement", "sheet_item"}:
+            raise ValueError("type must be 'requirement' or 'sheet_item'")
+        return cleaned
+
+
+class HazardDeriveIn(BaseModel):
+    key: str
+    title: str
+    text: str
+    verification_method: str | None = None
+    category: str = "safety"
+
+    @field_validator("key", "title", "text")
+    @classmethod
+    def _required_text(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("verification_method")
+    @classmethod
+    def _method(cls, value: str | None) -> str | None:
+        return clean_verification_method(value)
+
+
+class HazardAcceptIn(BaseModel):
+    justification: str
+
+    @field_validator("justification")
+    @classmethod
+    def _justification(cls, value: str) -> str:
+        return clean_required_text(value)
+
+
+class HazardMatrixRead(BaseModel):
+    project_id: str
+    severity_scale: list[dict[str, Any]]
+    likelihood_scale: list[dict[str, Any]]
+    risk_matrix: dict[str, dict[str, str]]
+    initial: dict[str, dict[str, int]]
+    residual: dict[str, dict[str, int]]
+    unrated: int
+
+
+class SafetySettingsRead(BaseModel):
+    project_id: str
+    settings: dict[str, Any]
+
+
+class SafetySettingsUpdate(BaseModel):
+    settings: dict[str, Any]
 
 
 class TraceLinkCreate(BaseModel):

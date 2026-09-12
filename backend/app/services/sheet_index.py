@@ -18,12 +18,20 @@ LineRow = tuple[SheetLine, DrawingSheet, Drawing]
 
 
 def replace_sheet_index(db: Session, sheet: DrawingSheet, index: SheetIndexIn) -> None:
-    """Replace the stored index rows of a sheet with the given ones."""
-    for existing in db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id)):
-        db.delete(existing)
-    for existing in db.scalars(select(SheetLine).where(SheetLine.sheet_id == sheet.id)):
-        db.delete(existing)
-    db.flush()
+    """Replace the stored index rows of a sheet with the given ones.
+
+    Rows are upserted by ``(sheet, item_id)`` / ``(sheet, line_id)`` so their
+    primary keys survive a save: trace links, hazard controls, and FMEA rows
+    reference them and must not dangle after every edit.
+    """
+    existing_items = {
+        row.item_id: row
+        for row in db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id))
+    }
+    existing_lines = {
+        row.line_id: row
+        for row in db.scalars(select(SheetLine).where(SheetLine.sheet_id == sheet.id))
+    }
     known_parts = {
         part_id
         for (part_id,) in db.execute(
@@ -40,13 +48,28 @@ def replace_sheet_index(db: Session, sheet: DrawingSheet, index: SheetIndexIn) -
         data = item.model_dump()
         if data["part_id"] not in known_parts:
             data["part_id"] = None
-        db.add(SheetItem(sheet_id=sheet.id, **data))
+        row = existing_items.pop(item.item_id, None)
+        if row is None:
+            db.add(SheetItem(sheet_id=sheet.id, **data))
+        else:
+            for field, value in data.items():
+                setattr(row, field, value)
+    for row in existing_items.values():
+        db.delete(row)
     seen_lines: set[str] = set()
     for line in index.lines:
         if line.line_id in seen_lines:
             continue
         seen_lines.add(line.line_id)
-        db.add(SheetLine(sheet_id=sheet.id, **line.model_dump()))
+        data = line.model_dump()
+        row = existing_lines.pop(line.line_id, None)
+        if row is None:
+            db.add(SheetLine(sheet_id=sheet.id, **data))
+        else:
+            for field, value in data.items():
+                setattr(row, field, value)
+    for row in existing_lines.values():
+        db.delete(row)
     db.flush()
 
 

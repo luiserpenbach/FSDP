@@ -14,8 +14,10 @@ from app.models import (
     DrcRequirementCheck,
     DrcResult,
     DrcWaiver,
+    Hazard,
     Project,
     Requirement,
+    RequirementEvidence,
     TraceLink,
 )
 from app.schemas import DrcIn
@@ -144,6 +146,27 @@ def verification_matrix(db: Session, project: Project) -> dict:
                 )
             )
         )
+        evidence: Counter[str] = Counter(
+            kind
+            for (kind,) in db.execute(
+                select(RequirementEvidence.kind).where(
+                    RequirementEvidence.requirement_id == requirement.id
+                )
+            )
+        )
+        hazard_ids = [
+            link.target_id
+            for link in links
+            if link.target_type == "hazard" and link.link_type == "mitigates"
+        ]
+        hazard_keys = (
+            sorted(
+                key
+                for (key,) in db.execute(select(Hazard.key).where(Hazard.id.in_(hazard_ids)))
+            )
+            if hazard_ids
+            else []
+        )
         checked = len(checks)
         failed = sum(1 for check, _, _ in checks if check.status == "fail")
         if requirement.constraint is None:
@@ -173,6 +196,13 @@ def verification_matrix(db: Session, project: Project) -> dict:
                     if link.target_type in {"drawing", "sheet_item", "sheet_line"}
                 ),
                 "failures": [check for check, _, _ in checks if check.status == "fail"],
+                "category": requirement.category,
+                "verification_method": requirement.verification_method,
+                "owner": requirement.owner,
+                "verification_status": requirement.verification_status,
+                "safety_critical": requirement.safety_critical,
+                "evidence": dict(evidence),
+                "hazards": hazard_keys,
             }
         )
     return {"project_id": project.id, "rows": rows}

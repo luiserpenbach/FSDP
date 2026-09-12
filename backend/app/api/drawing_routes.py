@@ -67,6 +67,7 @@ from app.services.lists import (
     rows_to_xlsx,
 )
 from app.services.sheet_index import replace_sheet_index
+from app.services.verification import sync_drc_evidence
 
 drawing_router = APIRouter()
 
@@ -315,6 +316,7 @@ def update_sheet(
         replace_sheet_index(db, sheet, payload.index)
     if payload.drc is not None:
         replace_sheet_drc(db, sheet, payload.drc)
+        sync_drc_evidence(db, sheet)
     drawing = require_model(db, Drawing, sheet.drawing_id)
     item_count = len((sheet.document or {}).get("items", []))
     record_change(
