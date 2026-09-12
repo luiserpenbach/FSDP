@@ -26,6 +26,8 @@ services:
       FSDP_ADMIN_PASSWORD: ${FSDP_ADMIN_PASSWORD:-}
       FSDP_ADMIN_NAME: ${FSDP_ADMIN_NAME:-FSDP Admin}
       FSDP_CORS_ORIGINS: '["http://localhost:5173","http://localhost:8080"]'
+    volumes:
+      - api-files:/app/var
     depends_on:
       db:
         condition: service_healthy
@@ -53,3 +55,4 @@ services:
 
 volumes:
   postgres-data:
+  api-files:

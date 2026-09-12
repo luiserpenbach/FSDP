@@ -12,8 +12,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY . .
+# /app/var holds uploaded catalog documents and generated safety review packages;
+# compose mounts a named volume there so they survive image rebuilds.
 RUN pip install --no-cache-dir . \
     && useradd --create-home appuser \
+    && mkdir -p /app/var/catalog-files /app/var/safety-packages \
     && chown -R appuser:appuser /app
 
 USER appuser

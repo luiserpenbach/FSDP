@@ -195,7 +195,7 @@ Includes:
 - Fault tree analysis.
 - Design-rule checks for unprotected pressure sources, missing relief devices, dead-end lines, and improper isolation.
 
-A proposed concept for this epic together with Epic 5 (hazard log, FMEA worksheets bound to drawing items, engine-derived analyses, requirement evidence and verification roll-up, review packages, phased delivery) is in [safety-requirements-concept.md](safety-requirements-concept.md). It is not implemented.
+A proposed concept for this epic together with Epic 5 (hazard log, FMEA worksheets bound to drawing items, engine-derived analyses, requirement evidence and verification roll-up, review packages, phased delivery) is in [safety-requirements-concept.md](safety-requirements-concept.md). Phases A–D are implemented; see [implementation.md](implementation.md).
 
 ### Epic 7: BoM and Procurement
 
@@ -302,6 +302,9 @@ Implemented as of the current MVP:
 - Requirement-to-component, drawing, item, and line trace links.
 - Requirements import (CSV/XLSX) and export; verification matrix and coverage views.
 - Hazard log with controls, computed control state against a fault-tolerance policy, risk matrix, derived requirements, and acceptance (safety phase A).
+- FMEA worksheets bound to drawing items with a failure-mode library, generation, staleness on save, a release gate, diffs, exports, and comments (safety phase B).
+- Isolable volumes, trapped-volume, relief-coverage, single-point-failure, and fault-tolerance analyses with outdated tracking and evidence attachment; the drawing safety overlay; auto-hazards from relief findings; change impact through the safety objects (safety phase C).
+- Safety review packages (PDF/XLSX), the safety approver grant, and the certification evidence view (safety phase D).
 - BoM snapshot generation and CSV export.
 - Diagram-level and project-level BoM history endpoints.
 - Basic change impact for parts and components.
@@ -310,7 +313,6 @@ Not yet implemented:
 
 - Pressure-drop calculation.
 - Relief valve sizing.
-- Trapped-volume detection.
-- FMEA worksheets, engine-derived safety analyses, review packages (safety plan phases B–D).
-- Certification package generation beyond export stubs.
+- Relief device sizing (the relief-coverage analysis checks presence and set pressure, not capacity).
+- Certification packages beyond the safety review package and the evidence view.
 - Per-role write restrictions and review/approval workflows.

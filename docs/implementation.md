@@ -385,3 +385,41 @@ Implemented from [safety-requirements-implementation-plan.md](safety-requirement
 - **Sheet index**: `replace_sheet_index` upserts by `(sheet, item_id)` / `(sheet, line_id)` so item and line ids survive saves and can be referenced by controls and trace links.
 
 Tests: `backend/tests/test_safety_phase_a.py`, `frontend/src/pages/SafetyPage.test.tsx`, `frontend/src/pages/RequirementsPage.test.tsx`.
+
+## Safety Phase B (FMEA worksheets)
+
+Implemented from the plan (migration `0014`):
+
+- **Failure-mode library** (`failure_modes`, `services/failure_modes.py`): seeded on first use with modes per item category and symbol key (valves, check valves, relief devices, filters, regulators, instruments, quick disconnects, pumps, tanks, lines); admins edit it on the Settings page (`pages/FailureModePanel.tsx`). Each mode carries default severity, local and end effect templates, detection hints, and a hazard suggestion.
+- **Worksheets and rows** (`fmea_worksheets`, `fmea_rows`; `services/fmea.py`): a worksheet is bound to a drawing and its revision label; rows are bound to `(sheet_id, item_id)` so they follow the item through re-tagging. `POST /fmea/{id}/generate` creates one row per applicable failure mode for every tagged item in the chosen categories, skipping rows that already exist, and suggests the detecting instrument from the same line. `validate_row` enforces the S/O/D scale, requires a hazard above the hazard-severity floor, and requires a reason when detection is `none`.
+- **Staleness on save** (`services/safety_sync.py`): saving a sheet compares the previous index with the new one and marks rows `retagged`, `part_changed`, `moved_volume`, or `deleted`; the engineer confirms each row from the grid, which clears the flag and records the new tag or part.
+- **Release** (`fmea_releases`): the gate blocks stale rows, high-severity rows without a hazard, undetected rows without a reason, and open actions without an owner; release freezes the row views with the drawing revision label and needs the safety approver grant. `GET /fmea/{id}/diff?against=` compares the live rows with a release (added, removed, changed ratings and text).
+- **Exports and comments**: XLSX/CSV (`services/lists.py`) and PDF (`services/svg_tables.py` pages through cairosvg); per-row comment threads with resolve.
+- **Grid** (`components/safety/FmeaGrid.tsx`, `useFmeaRows.ts`, `RefPicker.tsx`, `FmeaTab.tsx`): keyboard-driven cells, bulk save with undo, hazard and requirement pickers, stale banner, gate summary, release, export, comments.
+
+Tests: `backend/tests/test_safety_phase_b.py`, `frontend/src/components/safety/FmeaGrid.test.tsx`, the FMEA tab test in `SafetyPage.test.tsx`.
+
+## Safety Phase C (engine analyses, drawing overlay)
+
+Implemented from the plan (migration `0015`):
+
+- **Isolable volumes** (`engine/volumes.ts`, `sheet_volumes`): the engine walks process lines between isolating items (valves, check valves, regulators, disconnects) and sends the volumes with the sheet index; keys are a hash of the sorted line ids so they survive unrelated edits. Volumes record service, line numbers, isolating items, relief and vent coverage.
+- **Analyses** (`analyses`, `services/analyses.py`): `trapped_volume`, `relief_scenario`, `single_point_failure`, `fault_tolerance`, and `manual`. Runs store scope, assumptions, result, verdict, and the sheet's document hash; saving the sheet marks analyses of that sheet outdated. `POST /analyses/{id}/attach-evidence` records the run as `analysis` evidence on the requirements it covers (refused while outdated).
+- **Auto-hazards** (`safety_settings.auto_hazard`): a `relief_coverage` DRC finding creates a `trapped_fluid` hazard linked to the volume; the finding carries `hazard_id`, and waiving such a finding requires the hazard to be accepted or closed.
+- **Drafting overlay** (`GET /sheets/{id}/safety-overlay`, `SchematicCanvas` safety layer, `components/schematic/SafetyPanel.tsx`): item badges for open and stale FMEA rows and hazard risk, volume shading, a Safety inspector panel listing the selected item's rows, hazards, and controls with "Add failure mode" and "Create hazard" from a relief finding. `/drafting?drawing=&sheet=&item=` locates an item from the Safety and Requirements pages.
+- **Safety page tabs**: Analyses (run, re-run, attach as evidence, outdated markers) and Design rules (every open and waived finding across the project's drawings, grouped by rule, with the hazard a relief finding created).
+- **Change impact** (`services/change_impact.py`): a part change now walks part → sheet items → FMEA rows → hazards → requirements → analyses; the Reviews page lists each.
+
+Tests: `backend/tests/test_safety_phase_c.py`, `frontend/src/engine/volumes.test.ts`, the analyses and design rules tab tests in `SafetyPage.test.tsx`, the overlay cases in `DraftingPage.test.tsx`.
+
+## Safety Phase D (review packages, approver grant, certification evidence)
+
+Implemented from the plan (migration `0016`):
+
+- **Review packages** (`safety_packages`, `services/safety_package.py`, `POST/GET /projects/{id}/safety/packages`, `GET /safety/packages/{id}/pdf|xlsx`): one PDF (cover with scope and summary, initial and residual risk matrices, hazard log, FMEA rows by RPN, verification matrix, open actions, design rule findings and waivers, change log since the previous package) and one XLSX with the same sections as sheets. Rendered server-side through `services/svg_tables.py` and cairosvg, stored under `FSDP_SAFETY_FILES_DIR` (default `var/safety-packages`). Scope defaults to every drawing and worksheet; the Reviews page (`components/reviews/PackagesPanel.tsx`) narrows it with checkboxes and shows the generation time. The plan's criterion (a package for one drawing and one worksheet in under a minute) is met: the backend test generates two packages in about four seconds including the API round-trips.
+- **Approver grant** (`safety_settings.approvers`, `core/security.require_safety_approver`): admins always pass; engineers pass when the list is empty or names them by e-mail or id. Applied to hazard acceptance, worksheet release, and waivers of findings that carry a hazard. Admins pick approvers from the user list on the Settings page; others enter e-mails.
+- **Certification evidence** (`GET /projects/{id}/certification/evidence`, `services/certification.py`, `pages/CertificationPage.tsx`): released worksheets (with whether the release is behind the drawing revision), accepted hazards, verified safety-critical requirements, analyses, packages, and the gaps: severity I–II hazards not accepted, safety-critical requirements not verified or waived, worksheets never released or released against an older drawing revision, outdated or failed analyses, open design rule errors, and no package.
+
+Tests: `backend/tests/test_safety_phase_d.py`, `frontend/src/pages/CertificationPage.test.tsx`, `frontend/src/components/reviews/PackagesPanel.test.tsx`.
+
+A manual walk-through for the whole safety feature set is in [safety-testing-guide.md](safety-testing-guide.md).

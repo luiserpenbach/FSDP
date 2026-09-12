@@ -285,3 +285,11 @@ Line metadata editing (F8) → auto-tagging + tag uniqueness UX → symbol libra
 ## Appendix — How the bugs were verified
 
 B1–B11 were reproduced with a scripted client against the live FastAPI app (in-memory SQLite with `PRAGMA foreign_keys=ON` to match Postgres FK semantics), asserting on actual API responses and DB state. F-series findings were verified by code-path analysis of `App.tsx`/`api.ts` (and F11 against the installed lockfile versions). The regression tests recommended in Phase 0 should encode the same scenarios.
+
+### Safety phases A–D — ✅ IMPLEMENTED
+
+> Status 2026-09-12: hazard log, requirements evidence and verification, FMEA worksheets,
+> engine analyses with the drawing overlay, review packages, the approver grant, and the
+> certification evidence view are implemented per `docs/safety-requirements-implementation-plan.md`
+> (migrations `0013`–`0016`; tests `backend/tests/test_safety_phase_{a,b,c,d}.py`). See
+> `docs/implementation.md` and `docs/safety-testing-guide.md`.
