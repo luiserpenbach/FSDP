@@ -1,6 +1,6 @@
 # Requirements, FMEA, and Safety Analysis: Implementation Plan
 
-Status: plan (2026-09-12). Implements [safety-requirements-concept.md](safety-requirements-concept.md).
+Status: plan (2026-09-12). Phase A implemented 2026-09-12 (A1–A7; see `docs/implementation.md`, "Safety Phase A"). Implements [safety-requirements-concept.md](safety-requirements-concept.md).
 Audience: the engineers building it, and whoever schedules them.
 
 The plan is organised as four phases, each a shippable slice, broken into work packages sized for one pull request. Every package names the migration, models, schemas, routes, services, frontend files, and tests it touches, and the acceptance check that closes it. Estimates are engineer-days for someone who knows the codebase; a two-person team splits most packages along the backend/frontend line after the phase's schema package lands.

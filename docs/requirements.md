@@ -298,8 +298,10 @@ Implemented as of the current MVP:
 - React Flow graph editing with saved nodes and edges.
 - Component catalog creation, selection, update, and delete.
 - Component placement on persisted diagram nodes.
-- Requirement creation, selection, update, and delete.
-- Requirement-to-component trace links.
+- Requirement creation, selection, update, and delete, with categories, derivation, applicability, history, evidence, and a rolled-up verification status.
+- Requirement-to-component, drawing, item, and line trace links.
+- Requirements import (CSV/XLSX) and export; verification matrix and coverage views.
+- Hazard log with controls, computed control state against a fault-tolerance policy, risk matrix, derived requirements, and acceptance (safety phase A).
 - BoM snapshot generation and CSV export.
 - Diagram-level and project-level BoM history endpoints.
 - Basic change impact for parts and components.
@@ -309,7 +311,6 @@ Not yet implemented:
 - Pressure-drop calculation.
 - Relief valve sizing.
 - Trapped-volume detection.
-- Hazard objects and hazard reports.
-- Verification matrix UI.
+- FMEA worksheets, engine-derived safety analyses, review packages (safety plan phases B–D).
 - Certification package generation beyond export stubs.
 - Per-role write restrictions and review/approval workflows.

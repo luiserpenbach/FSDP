@@ -1,5 +1,7 @@
 import type {
   Evidence,
+  RequirementCoverage,
+  RequirementImportResult,
   Hazard,
   HazardInput,
   HazardMatrix,
@@ -314,6 +316,30 @@ export const api = {
   updateEvidence: (evidenceId: string, body: { status?: string; note?: string | null; ref_type?: string | null; ref_id?: string | null }) =>
     request<Evidence>(`/evidence/${evidenceId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteEvidence: (evidenceId: string) => requestNoContent(`/evidence/${evidenceId}`, { method: "DELETE" }),
+  importRequirements: async (projectId: string, file: File, options: { mapping?: Record<string, string>; dryRun?: boolean; updateExisting?: boolean } = {}) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (options.mapping) form.append("mapping", JSON.stringify(options.mapping));
+    form.append("dry_run", options.dryRun ? "true" : "false");
+    form.append("update_existing", options.updateExisting ? "true" : "false");
+    const response = await fetch(`${API_BASE_URL}/projects/${projectId}/requirements/import`, { credentials: "include", method: "POST", body: form });
+    if (!response.ok) {
+      if (response.status === 401) unauthorizedHandler?.();
+      throw await toApiError(response);
+    }
+    return response.json() as Promise<RequirementImportResult>;
+  },
+  downloadRequirements: async (projectId: string, format: "csv" | "xlsx") => {
+    const response = await rawRequest(`/projects/${projectId}/requirements/export?format=${format}`);
+    const match = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "");
+    return { blob: await response.blob(), filename: match?.[1] ?? `requirements.${format}` };
+  },
+  downloadVerificationMatrix: async (projectId: string, format: "csv" | "xlsx") => {
+    const response = await rawRequest(`/projects/${projectId}/verification-matrix?format=${format}`);
+    const match = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "");
+    return { blob: await response.blob(), filename: match?.[1] ?? `verification-matrix.${format}` };
+  },
+  getRequirementCoverage: (projectId: string) => request<RequirementCoverage>(`/projects/${projectId}/requirements/coverage`),
   getSafetySettings: (projectId: string) => request<{ project_id: string; settings: SafetySettings }>(`/projects/${projectId}/safety-settings`),
   updateSafetySettings: (projectId: string, settings: SafetySettings) =>
     request<{ project_id: string; settings: SafetySettings }>(`/projects/${projectId}/safety-settings`, { method: "PUT", body: JSON.stringify({ settings }) }),

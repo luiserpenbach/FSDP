@@ -40,6 +40,9 @@ function stubFetch(calls: Array<{ path: string; init?: RequestInit }>) {
     vi.fn((url: string, init?: RequestInit) => {
       const path = String(url).replace("http://localhost:8000", "");
       calls.push({ path, init });
+      if (path === "/projects/p1/requirements/coverage") {
+        return jsonResponse({ project_id: "p1", totals: { requirements: 3, hazards: 1, traced: 1, with_evidence: 1 }, untraced_requirements: [{ id: "r2", key: "REQ-PERF-001", title: "Fill rate" }], critical_without_evidence: [], hazards_without_controls: [{ id: "h9", key: "HZ-009", title: "Fast-fill overpressure" }], uncovered_hardware_controls: [] });
+      }
       if (path === "/projects/p1/drawings") return jsonResponse([{ id: "dw1", project_id: "p1", number: "GSE-LOX-001", title: "LOX fill and drain", sheets: [], revisions: [] }]);
       if (path === "/projects/p1/verification-matrix") {
         return jsonResponse({
@@ -108,6 +111,17 @@ describe("RequirementsPage", () => {
     fireEvent.change(within(drawer).getByLabelText("Reference"), { target: { value: "LOX-TP-07" } });
     fireEvent.click(within(drawer).getByRole("button", { name: "Record evidence" }));
     await waitFor(() => expect(calls.some((call) => call.path === "/requirements/r1/evidence" && call.init?.method === "POST")).toBe(true));
+  });
+
+  it("shows the coverage tab with the count badge", async () => {
+    stubFetch([]);
+    render(<Harness initial={[site, derived, perf]} calls={[]} />);
+    await screen.findByText("Requirements · 3 of 3");
+    const tab = await screen.findByRole("button", { name: /Coverage/ });
+    await waitFor(() => expect(tab.textContent).toContain("2"));
+    fireEvent.click(tab);
+    expect(await screen.findByText("Requirements with no trace to hardware · 1")).toBeInTheDocument();
+    expect(screen.getByText("HZ-009")).toBeInTheDocument();
   });
 
   it("shows the verification matrix with status, evidence, and hazards", async () => {

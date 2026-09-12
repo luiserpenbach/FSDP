@@ -1,6 +1,8 @@
 """Safety phase A: hazard log, controls, derived requirements, evidence roll-up,
 DRC evidence mirrored from sheet saves, requirement history and derivation."""
 
+import io
+
 from fastapi.testclient import TestClient
 
 
@@ -386,3 +388,104 @@ def test_requirement_filters_and_waiver_rollup(client: TestClient) -> None:
         },
     )
     assert unknown.status_code == 422
+
+
+def test_import_export_and_coverage(client: TestClient) -> None:
+    project_id = _project(client)
+    csv_text = (
+        "ID,Requirement,Type,Verification,Parent,Clause\n"
+        "SITE-4.2,Every isolable cryogenic volume shall have thermal relief.,Safety,Analysis,"
+        ",4.2\n"
+        "REQ-SAF-031,Every isolable LOX volume shall have a thermal relief valve.,safety,"
+        "design rule,SITE-4.2,\n"
+        "REQ-PERF-001,Fast fill shall deliver 40 kg/s.,performance,test,MISSING-1,\n"
+    )
+    files = {"file": ("reqs.csv", csv_text.encode(), "text/csv")}
+    dry = client.post(
+        f"/projects/{project_id}/requirements/import", files=files, data={"dry_run": "true"}
+    )
+    assert dry.status_code == 200, dry.text
+    body = dry.json()
+    assert body["dry_run"] is True
+    assert (body["created"], body["updated"], body["skipped"]) == (3, 0, 0)
+    assert body["mapping"] == {
+        "ID": "key",
+        "Requirement": "text",
+        "Type": "category",
+        "Verification": "verification_method",
+        "Parent": "parent_key",
+        "Clause": "source_ref",
+    }
+    assert any("MISSING-1" in error for error in body["errors"])
+    assert client.get(f"/projects/{project_id}/requirements").json() == []
+
+    real = client.post(f"/projects/{project_id}/requirements/import", files=files)
+    assert real.status_code == 200, real.text
+    assert real.json()["created"] == 3
+    rows = {row["key"]: row for row in client.get(f"/projects/{project_id}/requirements").json()}
+    assert rows["REQ-SAF-031"]["parent_id"] == rows["SITE-4.2"]["id"]
+    assert rows["REQ-SAF-031"]["category"] == "safety"
+    assert rows["REQ-SAF-031"]["verification_method"] == "design rule"
+    assert rows["SITE-4.2"]["source_ref"] == "4.2"
+    assert rows["REQ-PERF-001"]["parent_id"] is None
+
+    # Re-import without update_existing skips; with it, updates in place.
+    again = client.post(f"/projects/{project_id}/requirements/import", files=files).json()
+    assert (again["created"], again["skipped"]) == (0, 3)
+    updated_csv = csv_text.replace("Fast fill shall deliver 40 kg/s.", "Fast fill: 45 kg/s.")
+    updated = client.post(
+        f"/projects/{project_id}/requirements/import",
+        files={"file": ("reqs.csv", updated_csv.encode(), "text/csv")},
+        data={"update_existing": "true"},
+    ).json()
+    assert updated["updated"] == 3
+    rows = {row["key"]: row for row in client.get(f"/projects/{project_id}/requirements").json()}
+    assert rows["REQ-PERF-001"]["text"] == "Fast fill: 45 kg/s."
+
+    # XLSX round trip through export.
+    export = client.get(f"/projects/{project_id}/requirements/export", params={"format": "xlsx"})
+    assert export.status_code == 200
+    assert "attachment" in export.headers["content-disposition"]
+    from openpyxl import load_workbook
+
+    sheet = load_workbook(io.BytesIO(export.content)).worksheets[0]
+    values = [[cell for cell in row] for row in sheet.iter_rows(values_only=True)]
+    header_row = next(row for row in values if row and row[0] == "Key")
+    assert header_row[:3] == ["Key", "Title", "Text"]
+    exported_keys = {row[0] for row in values[values.index(header_row) + 1 :]}
+    assert exported_keys == {"SITE-4.2", "REQ-SAF-031", "REQ-PERF-001"}
+    xlsx_files = {"file": ("reqs.xlsx", export.content, "application/octet-stream")}
+    from_xlsx = client.post(
+        f"/projects/{project_id}/requirements/import",
+        files=xlsx_files,
+        data={"dry_run": "true", "mapping": '{"Derives from": "parent_key"}'},
+    ).json()
+    assert from_xlsx["errors"] == []
+    assert from_xlsx["skipped"] == 3
+
+    csv_export = client.get(f"/projects/{project_id}/requirements/export")
+    assert csv_export.status_code == 200 and "REQ-SAF-031" in csv_export.text
+    matrix_xlsx = client.get(
+        f"/projects/{project_id}/verification-matrix", params={"format": "xlsx"}
+    )
+    assert matrix_xlsx.status_code == 200
+    assert matrix_xlsx.headers["content-type"].startswith("application/vnd.openxmlformats")
+
+    # Coverage: nothing traced yet, one hazard without controls.
+    hazard = _hazard(client, project_id)
+    client.post(
+        f"/hazards/{hazard['id']}/controls",
+        json={"type": "requirement", "id": rows["REQ-SAF-031"]["id"]},
+    )
+    empty = _hazard(client, project_id, title="Uncontrolled", severity_initial="III")
+    report = client.get(f"/projects/{project_id}/requirements/coverage").json()
+    assert report["totals"] == {
+        "requirements": 3,
+        "hazards": 2,
+        "traced": 0,
+        "with_evidence": 0,
+    }
+    assert {row["key"] for row in report["untraced_requirements"]} == set(rows)
+    assert [row["key"] for row in report["critical_without_evidence"]] == ["REQ-SAF-031"]
+    assert [row["key"] for row in report["hazards_without_controls"]] == [empty["key"]]
+    assert report["uncovered_hardware_controls"] == []

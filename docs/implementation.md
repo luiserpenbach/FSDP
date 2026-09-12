@@ -89,7 +89,11 @@ Core tables:
 - `parts`: internal or vendor catalog parts.
 - `component_instances`: part usage on a diagram, optionally bound to a persisted diagram node.
 - `requirements`: project-level requirements.
-- `trace_links`: typed links between requirements, components, and other object types.
+- `trace_links`: typed links between requirements, components, and other object types. Link types are validated (`related_to`, `satisfied_by`, `verified_by`, `traces`, `applies_to`, `derives`, `mitigates`, `controls`, `causes`, `evidenced_by`, `verifies`).
+- `requirement_history`: one row per changed requirement field, with the revision and actor.
+- `requirement_evidence`: proof attached to a requirement (`drc` rows are mirrored from saved sheets; `analysis`, `document`, `test`, `inspection`, `waiver` are recorded by people). `requirements.verification_status` rolls up from these rows.
+- `hazards`: project hazard log entries with initial and residual ratings, operating modes, status (`open`, `accepted`, `closed`), and the fault-tolerance requirement. Controls are `mitigates` (requirement → hazard) and `controls` (sheet_item → hazard) trace links.
+- `safety_settings`: one JSON row per project (rating scales, risk matrix, fault-tolerance policy, operating modes, hazard categories, flags).
 - `bom_snapshots`: generated BoM rows for a diagram at a point in time.
 - `change_events`: simple audit/change records used by change impact views.
 
@@ -108,6 +112,10 @@ Service modules live in `backend/app/services/`.
 - `traceability.py`: returns trace links for an object in either source or target direction.
 - `change_impact.py`: identifies linked objects, affected components, and affected BoM snapshots.
 - `catalog.py`: contains early catalog-quality warnings for missing qualification data.
+- `hazards.py`: hazard keys, the computed control state of a hazard (every control verified, hardware controls covered by a requirement, independent controls at or above the policy), risk matrix counts, and the safety-critical flag on requirements.
+- `verification.py`: evidence roll-up, DRC evidence mirrored from sheet saves, derivation cycle checks, and requirement history.
+- `requirements_io.py`: CSV/XLSX import with header aliases and mapping, export rows, and the coverage report.
+- `safety_settings.py`: defaults (MIL-STD-882 style I–IV × A–E matrix, fault tolerance 2 for I and II) merged with the stored per-project row.
 
 ### API Summary
 
@@ -161,9 +169,26 @@ Components:
 Requirements:
 
 - `POST /requirements`
-- `GET /projects/{project_id}/requirements`
-- `PUT /requirements/{requirement_id}`
+- `GET /projects/{project_id}/requirements` (filters: `category`, `verification_status`, `safety_critical`, `parent_id`, `q`)
+- `GET /requirements/{requirement_id}`
+- `PUT /requirements/{requirement_id}` (writes `requirement_history`, bumps `revision`)
 - `DELETE /requirements/{requirement_id}`
+- `GET /requirements/{requirement_id}/history`
+- `GET/POST /requirements/{requirement_id}/evidence`, `PUT/DELETE /evidence/{evidence_id}`
+- `POST /projects/{project_id}/requirements/import` (multipart CSV/XLSX, `mapping`, `dry_run`, `update_existing`)
+- `GET /projects/{project_id}/requirements/export?format=csv|xlsx`
+- `GET /projects/{project_id}/requirements/coverage`
+- `GET /projects/{project_id}/verification-matrix?format=json|csv|xlsx`
+
+Safety (`backend/app/api/safety_routes.py`):
+
+- `GET/PUT /projects/{project_id}/safety-settings`
+- `GET /projects/{project_id}/sheet-items?q=&category=` (picker for hardware controls)
+- `GET/POST /projects/{project_id}/hazards`, `GET /projects/{project_id}/hazards/matrix`
+- `GET/PUT/DELETE /hazards/{hazard_id}`
+- `POST /hazards/{hazard_id}/controls`, `DELETE /hazards/{hazard_id}/controls/{link_id}`
+- `POST /hazards/{hazard_id}/derive-requirement`
+- `POST /hazards/{hazard_id}/accept`
 
 Traceability:
 
@@ -306,17 +331,17 @@ Current backend tests cover:
 - There is no authentication, authorization, or role-based approval workflow.
 - Change impact is shallow and only follows direct trace links plus part/component BoM usage.
 - Diagram symbols are generic React Flow nodes, not a full P&ID symbol library.
-- Engineering analysis modules are not implemented yet.
+- Engineering analysis modules are not implemented yet; FMEA worksheets and engine-derived safety analyses are the next phases of [safety-requirements-implementation-plan.md](safety-requirements-implementation-plan.md).
 - Configuration baselines, branches, and releases are not implemented yet.
 - Certification package generation is not implemented beyond BoM CSV export and future-oriented stubs.
 
 ## Recommended Next Implementation Areas
 
 1. Add pressure-drop analysis for simple incompressible line networks.
-2. Introduce hazard objects linked to components, lines, and requirements.
+2. FMEA worksheets bound to sheet items (safety plan phase B).
 3. Add trapped-volume detection from valve states and graph connectivity.
 4. Add relief valve sizing with stored assumptions and calculation reports.
-5. Add verification matrix views from requirements and trace links.
+5. Engine-derived safety analyses and the drafting safety overlay (safety plan phase C).
 6. Add release/baseline snapshots for diagrams, BoMs, requirements, and analyses.
 
 ## Schematic Engine (Drafting page)
@@ -348,3 +373,15 @@ The Drafting page is the first slice of the [P&ID professional upgrade plan](pid
 Legacy persistence: `GET/PUT /diagrams/{id}/schematic` stores a schematic document on a classic diagram (`diagrams.schematic`, migration `0007`); "Convert diagram" on the Drafting page uses it as the source when present, else converts the React Flow `graph`.
 
 Tests: `npx vitest run src/engine` covers geometry, library grid conformance, undo/redo (including a randomised inverse property), connectivity, routing, snapping, hit testing, conversion, rendering, frame templates, and the editor tools; `src/pages/DraftingPage.test.tsx` covers opening a sheet with a bound title block, saving, converting a diagram, and exporting; `backend/tests/test_schematic.py` and `test_drawings.py` cover the API including PDF/PNG export.
+
+## Safety Phase A (hazard log, evidence, requirements)
+
+Implemented from [safety-requirements-implementation-plan.md](safety-requirements-implementation-plan.md) (migration `0013`):
+
+- **Hazard log** (`/safety`, `pages/SafetyPage.tsx`, `components/safety/`): overview tiles, an initial/residual risk matrix that filters the log, the hazard grid, and a drawer with fields, ratings, operating modes, controls (requirements via `mitigates`, drawing items via `controls`), derive-requirement, and acceptance. A hazard's `computed_status` is `controlled` only when every control is a verified or waived requirement (hardware controls count when a requirement applies to the item through a DRC check or a trace link) and the number of independent controls meets `fault_tolerance_required`.
+- **Requirements** (`/requirements`, `pages/RequirementsPage.tsx`, `components/requirements/`): filters, a derivation tree, a coverage bar, a drawer with derivation, applicability, source reference, the constraint builder, trace links, evidence, and history; a verification matrix tab with method, owner, verification status, evidence counts, and mitigated hazards; a coverage tab (untraced requirements, safety-critical without evidence, hazards without controls, uncovered hardware controls); CSV/XLSX import with a dry run and column mapping; XLSX export of the list and the matrix.
+- **Verification**: saving a sheet mirrors its requirement checks into `drc` evidence rows (`services/verification.py`), and `verification_status` rolls up as `planned`, `in_progress`, `verified`, `failed`, or `waived`.
+- **Settings**: `pages/SafetySettingsPanel.tsx` edits the fault-tolerance policy, operating modes, hazard categories, defaults, and the RPN threshold.
+- **Sheet index**: `replace_sheet_index` upserts by `(sheet, item_id)` / `(sheet, line_id)` so item and line ids survive saves and can be referenced by controls and trace links.
+
+Tests: `backend/tests/test_safety_phase_a.py`, `frontend/src/pages/SafetyPage.test.tsx`, `frontend/src/pages/RequirementsPage.test.tsx`.

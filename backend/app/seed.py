@@ -20,9 +20,11 @@ from app.models import (
     DiagramEdge,
     DiagramNode,
     FluidSystem,
+    Hazard,
     Part,
     Project,
     Requirement,
+    RequirementEvidence,
     TraceLink,
 )
 from app.services.bom import generate_bom_snapshot
@@ -244,9 +246,13 @@ def seed_demo(db: Session) -> None:
         db.add(component)
     db.flush()
 
+    requirements_by_key: dict[str, Requirement] = {}
     for requirement_data in REQUIREMENTS:
-        trace_tag = requirement_data.pop("trace_tag")
-        requirement = Requirement(project_id=project.id, **requirement_data)
+        data = dict(requirement_data)
+        trace_tag = data.pop("trace_tag")
+        data.setdefault("category", data["requirement_type"])
+        requirement = Requirement(project_id=project.id, **data)
+        requirements_by_key[requirement.key] = requirement
         db.add(requirement)
         db.flush()
         db.add(
@@ -258,10 +264,131 @@ def seed_demo(db: Session) -> None:
                 link_type="satisfied_by",
             )
         )
+    seed_safety(db, project, system, requirements_by_key)
 
     generate_bom_snapshot(db, diagram)
     db.commit()
     logger.info("Seeded demo project '%s'", DEMO_PROJECT_NAME)
+
+
+HAZARDS = [
+    {
+        "key": "HZ-001",
+        "title": "Overpressure of the regulated section on regulator failure",
+        "description": (
+            "PR-1 fails open and passes full upstream pressure into the regulated "
+            "section, exceeding the MEOP of downstream components."
+        ),
+        "category": "overpressure",
+        "operating_modes": ["standby", "fast_fill", "hold"],
+        "severity_initial": "I",
+        "likelihood_initial": "C",
+        "severity_residual": "I",
+        "likelihood_residual": "E",
+        "owner": "Propulsion Engineering",
+        "controls": ["AMPH-REQ-002", "AMPH-REQ-001"],
+    },
+    {
+        "key": "HZ-002",
+        "title": "External helium leak at the isolation valve",
+        "description": "V-1 stem seal leaks GHe into the enclosure during standby.",
+        "category": "asphyxiation_toxic",
+        "operating_modes": ["standby", "hold"],
+        "severity_initial": "II",
+        "likelihood_initial": "D",
+        "owner": "Propulsion Engineering",
+        "controls": ["AMPH-REQ-003"],
+    },
+    {
+        "key": "HZ-003",
+        "title": "Trapped helium between V-1 and the engine interface",
+        "description": (
+            "With V-1 closed the press line to the engine interface is an isolable "
+            "volume with no relief device."
+        ),
+        "category": "trapped_fluid",
+        "operating_modes": ["hold", "abort_safe"],
+        "severity_initial": "II",
+        "likelihood_initial": "C",
+        "owner": "Propulsion Engineering",
+        "controls": [],
+    },
+]
+
+
+def seed_safety(
+    db: Session, project: Project, system: FluidSystem, requirements: dict[str, Requirement]
+) -> None:
+    """Hazard log for the demo: controls from the seeded requirements, one derived
+    requirement, and document evidence so one hazard shows as controlled."""
+    for hazard_data in HAZARDS:
+        data = dict(hazard_data)
+        control_keys = data.pop("controls")
+        hazard = Hazard(
+            project_id=project.id,
+            system_id=system.id,
+            fault_tolerance_required=2 if data["severity_initial"] in {"I", "II"} else 1,
+            **data,
+        )
+        db.add(hazard)
+        db.flush()
+        for key in control_keys:
+            requirement = requirements[key]
+            requirement.safety_critical = True
+            db.add(
+                TraceLink(
+                    source_type="requirement",
+                    source_id=requirement.id,
+                    target_type="hazard",
+                    target_id=hazard.id,
+                    link_type="mitigates",
+                )
+            )
+        if hazard.key == "HZ-003":
+            derived = Requirement(
+                project_id=project.id,
+                key="AMPH-REQ-004",
+                title="Thermal relief of isolable helium volumes",
+                text=(
+                    "Every isolable GHe volume between an isolation valve and an interface "
+                    "shall be protected by a relief device."
+                ),
+                requirement_type="safety",
+                category="safety",
+                verification_method="design_rule",
+                status="draft",
+                rationale=f"Controls {hazard.key}: {hazard.title}",
+                safety_critical=True,
+                constraint={"kind": "relief_required", "values": [], "scope": {}},
+            )
+            db.add(derived)
+            db.flush()
+            db.add(
+                TraceLink(
+                    source_type="requirement",
+                    source_id=derived.id,
+                    target_type="hazard",
+                    target_id=hazard.id,
+                    link_type="mitigates",
+                    rationale=f"Derived from {hazard.key}",
+                )
+            )
+    # AMPH-REQ-001 and -002 carry analysis evidence, so HZ-001 shows as controlled.
+    for key, reference in (("AMPH-REQ-001", "AMPH-AN-014"), ("AMPH-REQ-002", "AMPH-AN-021")):
+        requirement = requirements[key]
+        db.add(
+            RequirementEvidence(
+                requirement_id=requirement.id,
+                kind="analysis",
+                ref_type="report",
+                ref_id=reference,
+                status="pass",
+                note="Seeded demo evidence",
+                recorded_by="seed",
+            )
+        )
+        requirement.verification_status = "verified"
+    db.flush()
 
 
 def main() -> None:

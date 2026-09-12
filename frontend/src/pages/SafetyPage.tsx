@@ -7,7 +7,7 @@ import { api } from "../api";
 import { HazardDrawer } from "../components/safety/HazardDrawer";
 import { RiskMatrix, type MatrixCell, type MatrixMode } from "../components/safety/RiskMatrix";
 import { DataTable, Panel, StatusPill, SummaryCard } from "../components/ui";
-import type { FluidSystem, Hazard, HazardMatrix, Project, Requirement, SafetySettings } from "../types";
+import type { FluidSystem, Hazard, HazardMatrix, Project, Requirement, RequirementCoverage, SafetySettings } from "../types";
 import { PageLayout } from "./PageLayout";
 
 type Tab = "overview" | "hazards" | "fmea" | "analyses" | "rules";
@@ -43,6 +43,7 @@ export function SafetyPage({
   const [hazards, setHazards] = useState<Hazard[]>([]);
   const [matrix, setMatrix] = useState<HazardMatrix | null>(null);
   const [settings, setSettings] = useState<SafetySettings | null>(null);
+  const [coverage, setCoverage] = useState<RequirementCoverage | null>(null);
   const [matrixMode, setMatrixMode] = useState<MatrixMode>("residual");
   const [cell, setCell] = useState<MatrixCell | null>(null);
   const [filters, setFilters] = useState({ category: "", computed: "", mode: "", severity: "" });
@@ -57,13 +58,15 @@ export function SafetyPage({
       setHazards([]);
       setMatrix(null);
       setSettings(null);
+      setCoverage(null);
       return;
     }
     try {
-      const [nextHazards, nextMatrix, nextSettings] = await Promise.all([api.listHazards(projectId), api.getHazardMatrix(projectId), api.getSafetySettings(projectId)]);
+      const [nextHazards, nextMatrix, nextSettings, nextCoverage] = await Promise.all([api.listHazards(projectId), api.getHazardMatrix(projectId), api.getSafetySettings(projectId), api.getRequirementCoverage(projectId).catch(() => null)]);
       setHazards(nextHazards);
       setMatrix(nextMatrix);
       setSettings(nextSettings.settings);
+      setCoverage(nextCoverage);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load the safety data.");
@@ -147,6 +150,8 @@ export function SafetyPage({
             <SummaryCard title="Accepted" value={hazards.filter((hazard) => hazard.status === "accepted").length} detail="Residual risk signed off" />
             <SummaryCard title="Safety reqs verified" value={verifiedSafety.length} detail={`of ${safetyRequirements.length} safety requirements`} />
             <SummaryCard title="Critical without evidence" value={withoutEvidence.length} detail="Safety-critical requirements still planned" />
+            <SummaryCard title="Hazards without controls" value={coverage?.hazards_without_controls.length ?? 0} detail="No requirement or hardware control yet" />
+            <SummaryCard title="Uncovered hardware controls" value={coverage?.uncovered_hardware_controls.length ?? 0} detail="Items no requirement applies to" />
           </div>
           <div className="grid">
             <Panel

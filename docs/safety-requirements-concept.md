@@ -1,6 +1,6 @@
 # Requirements, FMEA, and Safety Analysis Concept
 
-Status: proposal (2026-09-11). Not implemented. Implementation plan: [safety-requirements-implementation-plan.md](safety-requirements-implementation-plan.md).
+Status: proposal (2026-09-11). Phase A implemented (2026-09-12); phases B–D not yet. Implementation plan: [safety-requirements-implementation-plan.md](safety-requirements-implementation-plan.md).
 Audience: product, propulsion/GSE engineers, systems engineering, safety and mission assurance, and the reviewers who sign the hazard log.
 
 This document describes the requirements, FMEA, and safety-analysis feature set for FSDP: what the objects are, how they hang off the drawing, the pages, the rules, and a phased path from the current stubs to a product that replaces the FMEA spreadsheet. It closes with a walk-through of a GSE engineer building a launch-pad fueling system with it, side by side with the Excel workflow it replaces.

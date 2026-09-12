@@ -4,13 +4,14 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { ImportDialog } from "../components/requirements/ImportDialog";
 import { describeConstraint } from "../components/requirements/ConstraintBuilder";
 import { CATEGORIES, RequirementDrawer } from "../components/requirements/RequirementDrawer";
 import { DataTable, Panel, StatusPill } from "../components/ui";
-import type { ComponentInstance, Drawing, Project, Requirement, VerificationMatrix, VerificationRow } from "../types";
+import type { ComponentInstance, Drawing, Project, Requirement, RequirementCoverage, VerificationMatrix, VerificationRow } from "../types";
 import { PageLayout } from "./PageLayout";
 
-type Tab = "requirements" | "matrix";
+type Tab = "requirements" | "matrix" | "coverage";
 const VERIFICATION_STATUSES = ["planned", "in_progress", "verified", "failed", "waived"];
 
 type TreeRow = { requirement: Requirement; depth: number };
@@ -66,6 +67,8 @@ export function RequirementsPage({
   const [creating, setCreating] = useState(false);
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [matrix, setMatrix] = useState<VerificationMatrix | null>(null);
+  const [coverageReport, setCoverageReport] = useState<RequirementCoverage | null>(null);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
 
   const projectId = project?.id ?? "";
@@ -74,12 +77,14 @@ export function RequirementsPage({
     if (!projectId) {
       setDrawings([]);
       setMatrix(null);
+      setCoverageReport(null);
       return;
     }
     try {
-      const [nextDrawings, nextMatrix] = await Promise.all([api.listDrawings(projectId), api.getVerificationMatrix(projectId)]);
+      const [nextDrawings, nextMatrix, nextCoverage] = await Promise.all([api.listDrawings(projectId), api.getVerificationMatrix(projectId), api.getRequirementCoverage(projectId)]);
       setDrawings(nextDrawings);
       setMatrix(nextMatrix);
+      setCoverageReport(nextCoverage);
       setError("");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not load verification data.");
@@ -132,6 +137,20 @@ export function RequirementsPage({
     if (selectId !== undefined) onSelectRequirement(selectId);
   }
 
+  async function download(kind: "requirements" | "matrix", format: "csv" | "xlsx") {
+    try {
+      const { blob, filename } = kind === "requirements" ? await api.downloadRequirements(projectId, format) : await api.downloadVerificationMatrix(projectId, format);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not export.");
+    }
+  }
+
   if (!project) {
     return (
       <PageLayout title="Requirements" description="Traceable requirements">
@@ -154,6 +173,12 @@ export function RequirementsPage({
         <button type="button" className={tab === "matrix" ? "active" : ""} onClick={() => setTab("matrix")}>
           Verification matrix
         </button>
+        <button type="button" className={tab === "coverage" ? "active" : ""} onClick={() => setTab("coverage")}>
+          Coverage
+          {coverageReport && coverageReport.untraced_requirements.length + coverageReport.critical_without_evidence.length + coverageReport.hazards_without_controls.length + coverageReport.uncovered_hardware_controls.length > 0 ? (
+            <span className="tabCount">{coverageReport.untraced_requirements.length + coverageReport.critical_without_evidence.length + coverageReport.hazards_without_controls.length + coverageReport.uncovered_hardware_controls.length}</span>
+          ) : null}
+        </button>
       </nav>
       {error && <p className="formError">{error}</p>}
 
@@ -162,18 +187,28 @@ export function RequirementsPage({
           <Panel
             title={`Requirements · ${visible.length} of ${requirements.length}`}
             actions={
-              canWrite ? (
-                <button
-                  type="button"
-                  className="primary"
-                  onClick={() => {
-                    onSelectRequirement("");
-                    setCreating(true);
-                  }}
-                >
-                  New requirement
+              <span className="buttonRow compact">
+                <button type="button" onClick={() => void download("requirements", "xlsx")}>
+                  Export XLSX
                 </button>
-              ) : undefined
+                {canWrite && (
+                  <button type="button" onClick={() => setImporting(true)}>
+                    Import…
+                  </button>
+                )}
+                {canWrite && (
+                  <button
+                    type="button"
+                    className="primary"
+                    onClick={() => {
+                      onSelectRequirement("");
+                      setCreating(true);
+                    }}
+                  >
+                    New requirement
+                  </button>
+                )}
+              </span>
             }
           >
             <div className="filterRow">
@@ -269,7 +304,14 @@ export function RequirementsPage({
       )}
 
       {tab === "matrix" && (
-        <Panel title="Verification matrix">
+        <Panel
+          title="Verification matrix"
+          actions={
+            <button type="button" onClick={() => void download("matrix", "xlsx")}>
+              Export XLSX
+            </button>
+          }
+        >
           {matrix?.rows.length ? (
             <DataTable<VerificationRow>
               rows={matrix.rows}
@@ -310,6 +352,68 @@ export function RequirementsPage({
           )}
         </Panel>
       )}
+      {tab === "coverage" && (
+        <section className="grid">
+          <CoverageList title="Requirements with no trace to hardware" hint="Link each requirement to a drawing, item, line, or component." rows={coverageReport?.untraced_requirements ?? []} onOpen={(id) => { onSelectRequirement(id); setTab("requirements"); }} />
+          <CoverageList title="Safety-critical requirements without evidence" hint="Record test, analysis, inspection, or document evidence, or add a design rule." rows={coverageReport?.critical_without_evidence ?? []} onOpen={(id) => { onSelectRequirement(id); setTab("requirements"); }} />
+          <CoverageList title="Hazards without controls" hint="Add a requirement or a hardware item as a control on the Safety page." rows={coverageReport?.hazards_without_controls ?? []} />
+          <Panel title="Hardware controls with no requirement">
+            {coverageReport?.uncovered_hardware_controls.length ? (
+              <ul className="attentionList">
+                {coverageReport.uncovered_hardware_controls.map((entry) => (
+                  <li key={entry.link_id}>
+                    <span>
+                      <span className="mono">{entry.tag}</span> controls <span className="mono">{entry.hazard_key}</span>
+                    </span>
+                    <span className="hint">No requirement applies to this item: add a constraint that covers it or link a requirement to it.</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="hint">Every hardware control is covered by a requirement.</p>
+            )}
+          </Panel>
+        </section>
+      )}
+      {importing && (
+        <ImportDialog
+          projectId={project.id}
+          onClose={() => setImporting(false)}
+          onImported={() => {
+            setImporting(false);
+            void reloadRequirements();
+          }}
+        />
+      )}
     </PageLayout>
+  );
+}
+
+function CoverageList({ title, hint, rows, onOpen }: { title: string; hint: string; rows: Array<{ id: string; key: string; title: string }>; onOpen?: (id: string) => void }) {
+  return (
+    <Panel title={`${title} · ${rows.length}`}>
+      {rows.length === 0 ? (
+        <p className="hint">Nothing outstanding.</p>
+      ) : (
+        <>
+          <p className="hint">{hint}</p>
+          <ul className="attentionList">
+            {rows.map((row) => (
+              <li key={row.id}>
+                {onOpen ? (
+                  <button type="button" className="linkButton" onClick={() => onOpen(row.id)}>
+                    <span className="mono">{row.key}</span> {row.title}
+                  </button>
+                ) : (
+                  <span>
+                    <span className="mono">{row.key}</span> {row.title}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Panel>
   );
 }

@@ -9,7 +9,7 @@ FSDP is a greenfield web platform for connected fluid-system design data. The MV
 - [Implementation guide](docs/implementation.md): repository structure, backend API, data model, frontend workflow, and verification commands.
 - [Gap analysis](docs/gap-analysis.md): verified bugs, P&ID/BoM usability gaps, authentication and deployment readiness (Vercel demo, internal server + Tailscale), and prioritized roadmap.
 - [Part catalog concept](docs/part-catalog-concept.md): proposed fully featured Parts Catalog (object model, P&ID/BoM thread, UX, phases). Not yet implemented.
-- [Requirements, FMEA, and safety analysis concept](docs/safety-requirements-concept.md): proposed hazard log, FMEA worksheets bound to drawing items, engine-derived safety analyses, requirements verification and evidence, safety review packages, and a launch-pad fueling system walk-through against the spreadsheet workflow. Not yet implemented.
+- [Requirements, FMEA, and safety analysis concept](docs/safety-requirements-concept.md): proposed hazard log, FMEA worksheets bound to drawing items, engine-derived safety analyses, requirements verification and evidence, safety review packages, and a launch-pad fueling system walk-through against the spreadsheet workflow. Phase A (hazard log, evidence, requirements upgrade) is implemented.
 - [Requirements, FMEA, and safety analysis implementation plan](docs/safety-requirements-implementation-plan.md): phased work packages (schema, API, services, pages, tests, acceptance) for the concept above, with dependencies and estimates.
 - [P&ID professional upgrade plan](docs/pid-professional-upgrade-plan.md): plan to grow the Diagrams editor into an AutoCAD/KiCad-grade P&ID tool (schematic engine, sheets and title blocks, ISA symbol library, first-class lines, tag schemes, vector/DXF export, generated lists, DRC, revision control). Phases 0–3 (engine, drawings and sheets, title blocks, PDF/PNG export, symbol library, tag schemes, first-class lines and connectors) are delivered; later phases are not.
 
@@ -57,6 +57,9 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
 - Create, select, update, and delete catalog parts with qualification/certification
   status tracking.
 - Place parts onto diagram nodes with auto-suggested tags; placed nodes are badged.
+- Keep a hazard log on the Safety page: ratings on a MIL-STD-882 style risk matrix,
+  operating modes, controls from requirements or drawing items, a computed control state
+  against the project's fault-tolerance policy, derived safety requirements, and acceptance.
 - Create, select, update, and delete requirements; link them to components and manage
   trace links.
 - Generate BoM snapshots with history, draft/released workflow, revision diffs,

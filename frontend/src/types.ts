@@ -246,6 +246,25 @@ export type RequirementHistoryEntry = {
   created_at: string;
 };
 
+export type RequirementImportResult = {
+  dry_run: boolean;
+  mapping: Record<string, string>;
+  created: number;
+  updated: number;
+  skipped: number;
+  errors: string[];
+  preview: Array<{ row: number; key: string; title: string; category: string; parent_key: string | null; action: "create" | "update" | "skip" }>;
+};
+
+export type RequirementCoverage = {
+  project_id: string;
+  totals: { requirements: number; hazards: number; traced: number; with_evidence: number };
+  untraced_requirements: Array<{ id: string; key: string; title: string }>;
+  critical_without_evidence: Array<{ id: string; key: string; title: string }>;
+  hazards_without_controls: Array<{ id: string; key: string; title: string }>;
+  uncovered_hardware_controls: Array<{ hazard_id: string; hazard_key: string; link_id: string; item_id: string; tag: string; sheet_id: string | null }>;
+};
+
 export type EvidenceKind = "drc" | "analysis" | "document" | "test" | "inspection" | "waiver";
 export type EvidenceStatus = "pass" | "fail" | "pending";
 

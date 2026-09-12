@@ -66,6 +66,7 @@ from app.services.lists import (
     rows_to_csv,
     rows_to_xlsx,
 )
+from app.services.requirements_io import MATRIX_COLUMNS, matrix_rows
 from app.services.sheet_index import replace_sheet_index
 from app.services.verification import sync_drc_evidence
 
@@ -518,9 +519,29 @@ def get_drawing_drc(drawing_id: str, db: Session = Depends(get_db)) -> dict:
 @drawing_router.get(
     "/projects/{project_id}/verification-matrix", response_model=VerificationMatrixRead
 )
-def get_verification_matrix(project_id: str, db: Session = Depends(get_db)) -> dict:
-    """Requirements against the drawing DRC checks and trace links."""
-    return verification_matrix(db, require_model(db, Project, project_id))
+def get_verification_matrix(
+    project_id: str, format: str = "json", db: Session = Depends(get_db)
+) -> dict | Response:
+    """Requirements against the drawing DRC checks, evidence, and hazards."""
+    project = require_model(db, Project, project_id)
+    matrix = verification_matrix(db, project)
+    if format == "json":
+        return matrix
+    if format not in LIST_MEDIA_TYPES:
+        raise HTTPException(status_code=400, detail="format must be json, csv, or xlsx")
+    header = {"list": "Verification matrix", "project": project.name}
+    rows = matrix_rows(matrix)
+    body = (
+        rows_to_csv(header, MATRIX_COLUMNS, rows).encode("utf-8")
+        if format == "csv"
+        else rows_to_xlsx(header, MATRIX_COLUMNS, rows)
+    )
+    filename = list_filename("verification-matrix", project.name, format).replace("-list.", ".")
+    return Response(
+        content=body,
+        media_type=LIST_MEDIA_TYPES[format],
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @drawing_router.get("/sheets/{sheet_id}/index", response_model=SheetIndexRead)

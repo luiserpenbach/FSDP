@@ -1,5 +1,6 @@
 import csv
 import io
+import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
@@ -95,6 +96,14 @@ from app.services.catalog import (
 )
 from app.services.change_impact import get_change_impact
 from app.services.hazards import refresh_safety_critical
+from app.services.lists import list_filename, rows_to_csv, rows_to_xlsx
+from app.services.requirements_io import (
+    EXPORT_COLUMNS,
+    coverage,
+    export_rows,
+    import_requirements,
+    parse_table,
+)
 from app.services.traceability import (
     delete_trace_links_for,
     delete_trace_links_for_many,
@@ -1251,6 +1260,84 @@ def list_requirements(
             or_(Requirement.key.ilike(pattern), Requirement.title.ilike(pattern))
         )
     return list(db.scalars(query.order_by(Requirement.key)))
+
+
+@router.post("/projects/{project_id}/requirements/import")
+def import_project_requirements(
+    project_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+    file: UploadFile = File(...),
+    mapping: str | None = Form(None),
+    dry_run: bool = Form(False),
+    update_existing: bool = Form(False),
+) -> dict:
+    """Import requirements from CSV or XLSX; columns map to fields by header alias or mapping."""
+    project = require_model(db, Project, project_id)
+    payload = file.file.read()
+    if not payload:
+        raise HTTPException(status_code=422, detail="File is empty")
+    if len(payload) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File is larger than 5 MB")
+    try:
+        parsed_mapping = json.loads(mapping) if mapping else None
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="mapping must be a JSON object") from exc
+    if parsed_mapping is not None and not isinstance(parsed_mapping, dict):
+        raise HTTPException(status_code=422, detail="mapping must be a JSON object")
+    try:
+        header, rows = parse_table(file.filename or "", payload)
+    except Exception as exc:  # noqa: BLE001 - surface parser errors as 422
+        raise HTTPException(status_code=422, detail=f"Could not read the file: {exc}") from exc
+    result = import_requirements(
+        db, project, header, rows, parsed_mapping, dry_run=dry_run, update_existing=update_existing
+    )
+    if dry_run:
+        db.rollback()
+        return result
+    record_change(
+        db,
+        "project",
+        project.id,
+        "updated",
+        f"Imported requirements: {result['created']} created, {result['updated']} updated",
+        actor=user.email,
+    )
+    db.commit()
+    return result
+
+
+@router.get("/projects/{project_id}/requirements/export")
+def export_project_requirements(
+    project_id: str, format: str = "csv", db: Session = Depends(get_db)
+) -> Response:
+    project = require_model(db, Project, project_id)
+    if format not in {"csv", "xlsx"}:
+        raise HTTPException(status_code=400, detail="format must be csv or xlsx")
+    header = {"list": "Requirements", "project": project.name}
+    rows = export_rows(db, project)
+    body = (
+        rows_to_csv(header, EXPORT_COLUMNS, rows).encode("utf-8")
+        if format == "csv"
+        else rows_to_xlsx(header, EXPORT_COLUMNS, rows)
+    )
+    filename = list_filename("requirements", project.name, format).replace("-list.", ".")
+    return Response(
+        content=body,
+        media_type=(
+            "text/csv"
+            if format == "csv"
+            else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/projects/{project_id}/requirements/coverage")
+def project_requirements_coverage(project_id: str, db: Session = Depends(get_db)) -> dict:
+    """Requirements with no trace, safety-critical ones with no evidence, hazards with no
+    controls, and hardware controls no requirement applies to."""
+    return coverage(db, require_model(db, Project, project_id))
 
 
 @router.get("/requirements/{requirement_id}", response_model=RequirementRead)
