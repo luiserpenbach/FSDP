@@ -103,9 +103,14 @@ describe("resolvePlaceComponentGraphWrite", () => {
       id: "valve-a",
       type: "pidSymbol",
       data: { label: "Valve A", symbolType: "valve", rotation: 90 }
+    }),
+    node({
+      id: "pump-a",
+      type: "pidSymbol",
+      data: { label: "Pump A", symbolType: "pump", rotation: 0 }
     })
   ];
-  const diagramAEdges = [edge({ id: "a-line", source: "valve-a", target: "valve-a" })];
+  const diagramAEdges = [edge({ id: "a-line", source: "valve-a", target: "pump-a" })];
   const diagramBNodes = [
     node({
       id: "valve-b",
@@ -121,6 +126,8 @@ describe("resolvePlaceComponentGraphWrite", () => {
       currentDiagramId: "d1",
       liveNodes: diagramANodes,
       liveEdges: diagramAEdges,
+      nodesAtClick: diagramANodes,
+      edgesAtClick: diagramAEdges,
       serverNodes: [],
       serverEdges: [],
       nodeId: "valve-a",
@@ -131,12 +138,86 @@ describe("resolvePlaceComponentGraphWrite", () => {
     expect(result.nodes[0]?.data).toMatchObject({ rotation: 90, tag: "V-1" });
   });
 
+  it("keeps mid-place rotates on the live canvas when no nodes were removed", () => {
+    const rotated = [
+      node({
+        id: "valve-a",
+        type: "pidSymbol",
+        data: { label: "Valve A", symbolType: "valve", rotation: 180 }
+      }),
+      node({
+        id: "pump-a",
+        type: "pidSymbol",
+        data: { label: "Pump A", symbolType: "pump", rotation: 0 }
+      })
+    ];
+    const result = resolvePlaceComponentGraphWrite({
+      placedDiagramId: "d1",
+      currentDiagramId: "d1",
+      liveNodes: rotated,
+      liveEdges: diagramAEdges,
+      nodesAtClick: diagramANodes,
+      edgesAtClick: diagramAEdges,
+      serverNodes: [],
+      serverEdges: [],
+      nodeId: "valve-a",
+      tag: "V-1"
+    });
+    expect(result.source).toBe("live");
+    expect(result.nodes[0]?.data).toMatchObject({ rotation: 180, tag: "V-1" });
+  });
+
+  it("falls back to the click snapshot when mid-place Delete guts the live canvas", () => {
+    const result = resolvePlaceComponentGraphWrite({
+      placedDiagramId: "d1",
+      currentDiagramId: "d1",
+      liveNodes: [],
+      liveEdges: [],
+      nodesAtClick: diagramANodes,
+      edgesAtClick: diagramAEdges,
+      serverNodes: [],
+      serverEdges: [],
+      nodeId: "valve-a",
+      tag: "V-1"
+    });
+    expect(result.source).toBe("click");
+    expect(result.edges).toBe(diagramAEdges);
+    expect(result.nodes.map((entry) => entry.id)).toEqual(["valve-a", "pump-a"]);
+    expect(result.nodes[0]?.data).toMatchObject({ label: "Valve A", tag: "V-1" });
+  });
+
+  it("falls back to the click snapshot when only some click-time nodes were deleted", () => {
+    const gutted = [
+      node({
+        id: "valve-a",
+        type: "pidSymbol",
+        data: { label: "Valve A", symbolType: "valve", rotation: 90 }
+      })
+    ];
+    const result = resolvePlaceComponentGraphWrite({
+      placedDiagramId: "d1",
+      currentDiagramId: "d1",
+      liveNodes: gutted,
+      liveEdges: [],
+      nodesAtClick: diagramANodes,
+      edgesAtClick: diagramAEdges,
+      serverNodes: [],
+      serverEdges: [],
+      nodeId: "valve-a",
+      tag: "V-1"
+    });
+    expect(result.source).toBe("click");
+    expect(result.nodes.map((entry) => entry.id)).toEqual(["valve-a", "pump-a"]);
+  });
+
   it("writes the placed diagram's server graph after a mid-place switch — not the other canvas", () => {
     const result = resolvePlaceComponentGraphWrite({
       placedDiagramId: "d1",
       currentDiagramId: "d2",
       liveNodes: diagramBNodes,
       liveEdges: diagramBEdges,
+      nodesAtClick: diagramANodes,
+      edgesAtClick: diagramAEdges,
       serverNodes: diagramANodes,
       serverEdges: diagramAEdges,
       nodeId: "valve-a",
@@ -144,7 +225,7 @@ describe("resolvePlaceComponentGraphWrite", () => {
     });
     expect(result.source).toBe("server");
     expect(result.edges).toBe(diagramAEdges);
-    expect(result.nodes.map((entry) => entry.id)).toEqual(["valve-a"]);
+    expect(result.nodes.map((entry) => entry.id)).toEqual(["valve-a", "pump-a"]);
     expect(result.nodes.map((entry) => entry.id)).not.toContain("valve-b");
     expect(result.nodes[0]?.data).toMatchObject({ label: "Valve A", tag: "V-1" });
   });
