@@ -1154,6 +1154,10 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setSelectedEdgeId("");
   }
 
+  // Diagram Delete/Undo/Redo must not run on other routes: WorkspaceApp keeps the
+  // classic canvas in memory after AppShell navigates to Drafting/Parts/etc., and
+  // RF `selected` flags survive unmount. A window-level Delete there would gut the
+  // in-memory P&ID; Save graph on return would persist the wipe.
   useEffect(() => {
     function handleKeydown(event: KeyboardEvent) {
       if (event.key === "Escape") {
@@ -1161,6 +1165,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
         setContextMenu(null);
         return;
       }
+      if (location.pathname !== "/diagrams") return;
       const target = event.target as HTMLElement | null;
       if (
         target &&
@@ -1184,7 +1189,21 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     }
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [deleteSelection, redo, undo]);
+  }, [deleteSelection, location.pathname, redo, undo]);
+
+  // Drop RF selection when leaving Diagrams so a later remount cannot inherit
+  // selected nodes that off-route keyboard handling used to delete.
+  useEffect(() => {
+    if (location.pathname === "/diagrams") return;
+    setNodes((current) =>
+      current.some((node) => node.selected) ? current.map((node) => (node.selected ? { ...node, selected: false } : node)) : current
+    );
+    setEdges((current) =>
+      current.some((edge) => edge.selected) ? current.map((edge) => (edge.selected ? { ...edge, selected: false } : edge)) : current
+    );
+    setSelectedNodeId("");
+    setSelectedEdgeId("");
+  }, [location.pathname, setEdges, setNodes]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
