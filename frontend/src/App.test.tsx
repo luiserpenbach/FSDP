@@ -232,6 +232,12 @@ function mockWorkspaceFetch(overrides?: {
     if (path === "/projects/p2/bom") return jsonResponse([]);
     if (path === "/parts" && method === "GET") return jsonResponse([]);
     if (path === "/changes") return jsonResponse([]);
+    if (path === "/symbols" && method === "GET") return jsonResponse([]);
+    if (path === "/projects/p1/drawings" && method === "GET") return jsonResponse([]);
+    if (path === "/projects/p1/tag-scheme" && method === "GET") {
+      return jsonResponse({ project_id: "p1", scheme: { kind: "simple", separator: "-", sequenceLength: 2, strictLetters: false, systems: [], classes: [], functionLetters: [] } });
+    }
+    if (path === "/projects/p1/line-classes" && method === "GET") return jsonResponse([]);
     if (path === "/systems/s1/diagrams" && method === "GET") return jsonResponse([DIAGRAM]);
     if (path === "/systems/s2/diagrams" && method === "GET") return jsonResponse([]);
     if (path === "/diagrams/d1" && method === "GET") return jsonResponse(DIAGRAM);
@@ -739,5 +745,43 @@ describe("App", () => {
     expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Discard them?");
     expect(createdSystem).toBe(false);
     confirmSpy.mockRestore();
+  });
+
+  it("does not undo or delete the in-memory classic P&ID from Drafting keybindings", async () => {
+    let graphPut = false;
+    const fetchMock = mockWorkspaceFetch();
+    const wrapped = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/diagrams/d1/graph") && method === "PUT") {
+        graphPut = true;
+        return jsonResponse({ ...DIAGRAM, revision: 2 });
+      }
+      return fetchMock(input, init);
+    });
+    vi.stubGlobal("fetch", wrapped);
+
+    await openDirtyDiagram();
+    expect(screen.getByTitle("Undo (Ctrl+Z)")).not.toBeDisabled();
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/drafting"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Drafting" })).toBeInTheDocument();
+
+    // Off-route classic handlers would consume undo history / gut RF selection.
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "Delete" });
+    fireEvent.keyDown(window, { key: "Backspace" });
+
+    fireEvent.click(
+      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/diagrams"]')!
+    );
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    expect(screen.getByText("Valve A")).toBeInTheDocument();
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    // History must still be intact — off-route Ctrl+Z must not have undone the rotate.
+    expect(screen.getByTitle("Undo (Ctrl+Z)")).not.toBeDisabled();
+    expect(graphPut).toBe(false);
   });
 });
