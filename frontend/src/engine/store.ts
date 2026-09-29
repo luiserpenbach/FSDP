@@ -54,6 +54,11 @@ export class DocumentStore {
     this.emit();
   }
 
+  /**
+   * Mark the current version as saved. After an async save, only call this
+   * when `version` is still the value captured before the request — mid-save
+   * edits bump `version` and must remain dirty.
+   */
   markSaved(): void {
     this.savedVersion = this.version;
   }

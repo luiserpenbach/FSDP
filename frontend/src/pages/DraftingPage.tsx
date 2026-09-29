@@ -481,17 +481,24 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     if (!editor || !sheetId || !drawing) return false;
     try {
       const sheetNo = sheetSummary?.sheet_no ?? 1;
-      const connectorTargets = resolveConnectorTargets({ sheetNo, doc: editor.store.doc }, otherSheets).targets;
+      // Freeze the doc + version before the PUT: JSON.stringify in updateSheet
+      // serializes this snapshot, so mid-save edits must keep dirty (same
+      // contract as App.saveGraph / graphDirtyGeneration).
+      const versionAtSave = editor.store.version;
+      const document = editor.store.doc;
+      const connectorTargets = resolveConnectorTargets({ sheetNo, doc: document }, otherSheets).targets;
       // The index rows travel with the document so lists, BoM, and where-used read the saved state.
-      const index = buildSheetIndex(editor.store.doc, registry, { connectivity: editor.connectivity, connectorTargets });
+      const index = buildSheetIndex(document, registry, { connectivity: editor.connectivity, connectorTargets });
       // The DRC runs on save: open and waived findings plus requirement checks are stored with the sheet.
-      const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
+      const drc = runDrc({ doc: document, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
       await api.updateSheet(sheetId, {
-        document: editor.store.doc,
+        document,
         index,
         drc: { findings: [...drc.findings, ...drc.waived].map(({ key, rule, severity, message, itemId, subject, zone, requirementId }) => ({ key, rule, severity, message, itemId, subject, zone, requirementId })), checks: drc.requirementChecks }
       });
-      editor.store.markSaved();
+      if (editor.store.version === versionAtSave) {
+        editor.store.markSaved();
+      }
       const drcSummary = drc.counts.error || drc.counts.warning ? `; DRC: ${drc.counts.error} error(s), ${drc.counts.warning} warning(s)` : "; DRC clean";
       notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed${drcSummary}).`);
       return true;
