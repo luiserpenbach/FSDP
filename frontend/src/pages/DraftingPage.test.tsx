@@ -198,6 +198,39 @@ describe("DraftingPage", () => {
     expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1 (1 items, 0 lines indexed; DRC: 0 error(s), 1 warning(s)).");
   });
 
+  it("keeps the sheet dirty when edits land during an in-flight save", async () => {
+    let releaseSave!: (value: unknown) => void;
+    apiMock.updateSheet.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseSave = resolve;
+        })
+    );
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+
+    // Mid-save nudge: the PUT payload already froze the earlier document.
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    const [, body] = apiMock.updateSheet.mock.calls[0] as [string, { document: unknown }];
+    releaseSave({ ...sheet, document: body.document });
+
+    await waitFor(() => expect(screen.getByText("Unsaved changes")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    // Discard guards must still protect the mid-save edits.
+    fireEvent.click(screen.getByRole("tab", { name: "2" }));
+    expect(confirmSpy).toHaveBeenCalledWith("Discard unsaved drafting changes?");
+    expect(screen.getByRole("tab", { name: "1" })).toHaveAttribute("aria-selected", "true");
+    confirmSpy.mockRestore();
+  });
+
   it("converts a legacy diagram into a new drawing", async () => {
     apiMock.getSchematic.mockResolvedValue({ diagram_id: "d1", revision: 3, document: null });
     apiMock.getDiagram.mockResolvedValue(legacyDiagram);

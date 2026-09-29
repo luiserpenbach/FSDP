@@ -142,6 +142,28 @@ describe("commands and store", () => {
     const moved = store.doc.items.find((item) => item.id === "hv");
     expect(moved && moved.kind === "symbol" ? moved.position.x : null).toBe(82);
   });
+
+  it("keeps dirty when markSaved is skipped after a mid-save edit", () => {
+    const store = new DocumentStore(smallPanelDocument());
+    store.dispatch({ type: "move", ids: ["hv"], delta: { x: 1, y: 0 } });
+    const versionAtSave = store.version;
+    const snapshot = store.doc;
+    // Simulate an edit that lands while the save request is in flight.
+    store.dispatch({ type: "move", ids: ["hv"], delta: { x: 1, y: 0 } });
+    expect(store.version).toBeGreaterThan(versionAtSave);
+    expect(store.doc).not.toBe(snapshot);
+    // Callers must only markSaved when version is unchanged.
+    if (store.version === versionAtSave) {
+      store.markSaved();
+    }
+    expect(store.dirty).toBe(true);
+    // A clean save with no mid-flight edits still clears dirty.
+    const cleanVersion = store.version;
+    if (store.version === cleanVersion) {
+      store.markSaved();
+    }
+    expect(store.dirty).toBe(false);
+  });
 });
 
 describe("connectivity", () => {
