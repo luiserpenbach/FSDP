@@ -150,4 +150,17 @@ describe("edit helpers", () => {
     expect(suggestTag(smallPanelDocument(), "HV")).toBe("HV-3202");
     expect(suggestTag(smallPanelDocument(), "FV")).toBe("FV-1");
   });
+
+  it("swaps the registry in place without clearing the document store", () => {
+    const { editor, store } = makeEditor();
+    const savedVersion = store.version;
+    editor.select(["hv"]);
+    const next = SymbolRegistry.withBuiltins();
+    editor.setRegistry(next);
+    expect(editor.registry).toBe(next);
+    expect(store.version).toBe(savedVersion);
+    expect(store.dirty).toBe(false);
+    expect(editor.state.selection).toEqual(["hv"]);
+    expect(editor.connectivity.nets.length).toBeGreaterThan(0);
+  });
 });

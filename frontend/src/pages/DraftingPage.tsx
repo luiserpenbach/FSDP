@@ -424,7 +424,9 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawing?.id, drawing?.sheets.length]);
 
-  // Load the sheet document into an editor session.
+  // Load the sheet document into an editor session. Only sheetId may remount the
+  // document — registry refreshes (e.g. after saving custom-symbol metadata) must
+  // not call getSheet or they silently discard dirty local edits.
   useEffect(() => {
     let cancelled = false;
     if (!sheetId) {
@@ -452,8 +454,15 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     return () => {
       cancelled = true;
     };
+    // registry/tagScheme/user are sampled at sheet-open time; live registry updates
+    // go through setRegistry below so dirty docs are preserved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetId, registry]);
+  }, [sheetId]);
+
+  // Keep the live editor's library current without reloading the sheet document.
+  useEffect(() => {
+    editor?.setRegistry(registry);
+  }, [editor, registry]);
 
   // Keep the document's frame template in step with the drawing setting.
   useEffect(() => {

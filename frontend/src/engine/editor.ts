@@ -109,12 +109,16 @@ export class Editor {
   }
   readonly makeId: () => string;
 
+  /** Mutable so hosts can refresh library metadata without remounting the document. */
+  registry: SymbolRegistry;
+
   constructor(
     readonly store: DocumentStore,
-    readonly registry: SymbolRegistry,
+    registry: SymbolRegistry,
     readonly options: EditorOptions = {}
   ) {
     this.makeId = options.makeId ?? defaultId;
+    this.registry = registry;
     this.tagScheme = options.tagScheme ?? DEFAULT_TAG_SCHEME;
     this.stateValue = {
       tool: "select",
@@ -392,6 +396,16 @@ export class Editor {
 
   setTagScheme(scheme: TagScheme): void {
     this.tagScheme = scheme;
+    this.emit();
+  }
+
+  /** Swap the symbol library in place; keeps the DocumentStore (and dirty edits) intact. */
+  setRegistry(registry: SymbolRegistry): void {
+    if (this.registry === registry) return;
+    this.registry = registry;
+    this.index = new SpatialIndex(this.store.doc, this.registry);
+    this.ports = indexPorts(this.store.doc, this.registry);
+    this.connectivityValue = computeConnectivity(this.store.doc, this.registry);
     this.emit();
   }
 
