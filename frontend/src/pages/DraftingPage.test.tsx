@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Diagram, Drawing, DrawingSheet, FluidSystem, Part, User } from "../types";
+import type { Diagram, Drawing, DrawingSheet, FluidSystem, Part, PidSymbolDef, User } from "../types";
 
 const apiMock = vi.hoisted(() => ({
   listDrawings: vi.fn(),
@@ -505,5 +505,68 @@ describe("DraftingPage", () => {
     expect(body.drc.findings.map((finding) => finding.key)).toContain("open_port:hv:in");
     expect(body.drc.findings.find((finding) => finding.key === "requirement:r1:hv")?.requirementId).toBe("r1");
     expect(body.drc.checks).toEqual([{ requirementId: "r1", itemId: "hv", subject: "PT-3222", zone: expect.any(String), status: "fail", message: "AMB2-003 material brass is not one of 316L" }]);
+  });
+
+  it("keeps dirty sheet edits when the custom-symbol registry refreshes", async () => {
+    const custom: PidSymbolDef = {
+      id: "sym-custom",
+      name: "Custom valve",
+      view_box: "0 0 40 40",
+      svg: "<circle cx='20' cy='20' r='10' />",
+      ports: [{ id: "in", x: 0, y: 20, side: "left" }, { id: "out", x: 40, y: 20, side: "right" }],
+      category: "valve",
+      legend: "CUSTOM",
+      tag_prefix: "XV"
+    };
+    const notify = vi.fn();
+    const { rerender } = render(
+      <MemoryRouter>
+        <DraftingPage
+          projectId="p1"
+          projectName="AMB2"
+          systems={systems}
+          diagrams={[legacyDiagram]}
+          selectedSystemId="s1"
+          customSymbols={[custom]}
+          parts={parts}
+          user={user}
+          canWrite
+          notify={notify}
+        />
+      </MemoryRouter>
+    );
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    const tagInput = (await screen.findByLabelText("Tag")) as HTMLInputElement;
+    fireEvent.change(tagInput, { target: { value: "PT-9999" } });
+    await waitFor(() => expect(canvas.textContent).toContain("9999"));
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+
+    const sheetLoadsBefore = apiMock.getSheet.mock.calls.filter((call) => call[0] === "sh1").length;
+
+    // Simulate refreshSymbols() after saving custom-symbol metadata: new array identity.
+    rerender(
+      <MemoryRouter>
+        <DraftingPage
+          projectId="p1"
+          projectName="AMB2"
+          systems={systems}
+          diagrams={[legacyDiagram]}
+          selectedSystemId="s1"
+          customSymbols={[{ ...custom, category: "instrument", legend: "UPDATED", tag_prefix: "PT" }]}
+          parts={parts}
+          user={user}
+          canWrite
+          notify={notify}
+        />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByText("Unsaved changes")).toBeInTheDocument());
+    const sheetLoadsAfter = apiMock.getSheet.mock.calls.filter((call) => call[0] === "sh1").length;
+    expect(sheetLoadsAfter).toBe(sheetLoadsBefore);
+    expect(canvas.textContent).toContain("9999");
   });
 });
