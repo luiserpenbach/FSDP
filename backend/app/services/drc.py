@@ -19,6 +19,7 @@ from app.models import (
     TraceLink,
 )
 from app.schemas import DrcIn
+from app.services.sheet_index import stale_sheets
 
 
 def replace_sheet_drc(db: Session, sheet: DrawingSheet, drc: DrcIn) -> None:
@@ -75,6 +76,7 @@ def sheet_drc(db: Session, sheet: DrawingSheet) -> dict:
     return {
         "sheet_id": sheet.id,
         "sheet_no": sheet.sheet_no,
+        "index_stale": sheet.index_stale,
         "counts": {
             "error": counts.get("error", 0),
             "warning": counts.get("warning", 0),
@@ -175,4 +177,5 @@ def verification_matrix(db: Session, project: Project) -> dict:
                 "failures": [check for check, _, _ in checks if check.status == "fail"],
             }
         )
-    return {"project_id": project.id, "rows": rows}
+    drawing_ids = db.scalars(select(Drawing.id).where(Drawing.project_id == project.id))
+    return {"project_id": project.id, "rows": rows, "stale_sheets": stale_sheets(db, drawing_ids)}

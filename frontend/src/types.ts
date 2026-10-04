@@ -131,6 +131,10 @@ export type DrawingRevision = {
   checked_date: string | null;
   approved_by: string | null;
   approved_date: string | null;
+  /** Stamped by the release workflow (see DrawingRevisionRead). */
+  submitted_by?: string | null;
+  submitted_at?: string | null;
+  approved_at?: string | null;
   created_at: string;
 };
 
@@ -139,6 +143,9 @@ export type DrawingSheetSummary = {
   sheet_no: number;
   title: string | null;
   source_diagram_id: string | null;
+  /** True when the stored index/DRC does not reflect the document (re-save the sheet). */
+  index_stale?: boolean;
+  indexed_at?: string | null;
 };
 
 export type DrawingSheet = DrawingSheetSummary & {
@@ -163,6 +170,7 @@ export type Drawing = {
   notes: string[];
   sheets: DrawingSheetSummary[];
   revisions: DrawingRevision[];
+  current_revision?: DrawingRevision | null;
   created_at: string;
   updated_at: string;
 };
@@ -247,6 +255,7 @@ export type DrcWaiverRead = {
 export type SheetDrcRead = {
   sheet_id: string;
   sheet_no: number;
+  index_stale?: boolean;
   counts: { error: number; warning: number; info: number; waived: number };
   findings: DrcResultRead[];
   waivers: DrcWaiverRead[];
@@ -271,7 +280,7 @@ export type VerificationRow = {
   failures: SheetDrcRead["checks"];
 };
 
-export type VerificationMatrix = { project_id: string; rows: VerificationRow[] };
+export type VerificationMatrix = { project_id: string; rows: VerificationRow[]; stale_sheets?: StaleSheet[] };
 
 export type BomSnapshot = {
   id: string;
@@ -281,6 +290,12 @@ export type BomSnapshot = {
   revision: number;
   status: string;
   rows: Array<Record<string, unknown>>;
+  /** Drawing revision label when the BoM was generated. */
+  drawing_revision?: string | null;
+  /** Sheets whose index was stale at generation; such a BoM cannot be released. */
+  stale_sheets?: StaleSheet[];
+  released_by?: string | null;
+  released_at?: string | null;
   created_at?: string;
 };
 
@@ -314,6 +329,7 @@ export type ListRead = {
   header: Record<string, string | number>;
   columns: ListColumn[];
   rows: Array<Record<string, string | number | boolean | null>>;
+  stale_sheets?: StaleSheet[];
 };
 
 export type BomDiff = {
@@ -345,6 +361,10 @@ export type Impact = {
   direct_links: TraceLink[];
   affected_bom_snapshots: BomSnapshot[];
   affected_components: ComponentInstance[];
+  affected_drawings?: ImpactDrawing[];
+  affected_sheet_items?: ImpactSheetItem[];
+  affected_requirements?: ImpactRequirement[];
+  affected_parts?: ImpactPart[];
 };
 
 export type SymbolPortSide = "left" | "right" | "top" | "bottom";
@@ -369,3 +389,102 @@ export type PidSymbolDef = {
   created_at?: string;
   updated_at?: string;
 };
+
+// --- Release workflow, stale index tracking, and drawing change impact (Phase B) ---
+
+/** Drawing and revision workflow state; changed only by submit/withdraw/release/revise. */
+export type DrawingStatus = "draft" | "in_review" | "released";
+
+/** A sheet whose stored index/DRC is out of date (open and save it to refresh). */
+export type StaleSheet = {
+  sheet_id: string;
+  sheet_no: number;
+  drawing_id: string;
+  drawing_number: string;
+};
+
+export type DrawingRevisionRead = Omit<DrawingRevision, "status" | "submitted_by" | "submitted_at" | "approved_at"> & {
+  status: DrawingStatus;
+  submitted_by: string | null;
+  submitted_at: string | null;
+  approved_at: string | null;
+};
+
+export type DrawingSheetSummaryRead = DrawingSheetSummary & {
+  index_stale: boolean;
+  indexed_at: string | null;
+};
+
+/** GET /drawings/{id} as served since the release workflow. */
+export type DrawingRead = Omit<Drawing, "status" | "sheets" | "revisions" | "current_revision"> & {
+  status: DrawingStatus;
+  sheets: DrawingSheetSummaryRead[];
+  revisions: DrawingRevisionRead[];
+  current_revision: DrawingRevisionRead | null;
+};
+
+/** One reason POST /drawings/{id}/release was refused (409 detail.reasons). */
+export type ReleaseBlocker = {
+  code: "index_stale" | "drc_errors";
+  sheet_id: string;
+  sheet_no: number;
+  count?: number;
+  message: string;
+};
+
+export type ReleaseSnapshotSheet = {
+  id: string;
+  sheet_no: number;
+  title: string | null;
+  document: Record<string, unknown>;
+  items: Array<Record<string, unknown>>;
+  lines: Array<Record<string, unknown>>;
+  drc: { findings: DrcResultRead[]; waivers: Array<{ key: string; reason: string; waived_by: string | null }> };
+};
+
+/** GET /revisions/{id}/snapshot: the immutable copy stored at release. */
+export type RevisionSnapshot = {
+  revision_id: string;
+  drawing_id: string;
+  label: string;
+  sequence: number;
+  status: DrawingStatus;
+  approved_by: string | null;
+  approved_at: string | null;
+  snapshot: {
+    schema_version: number;
+    /** Set on releases recorded before snapshots existed (no index rows). */
+    migrated?: boolean;
+    released_at: string;
+    released_by: string | null;
+    drawing: Record<string, unknown> & { id: string; number: string; title: string };
+    revision: Record<string, unknown> & { id: string; label: string; sequence: number };
+    sheets: ReleaseSnapshotSheet[];
+  };
+};
+
+export type ImpactDrawing = {
+  id: string;
+  project_id: string;
+  number: string;
+  title: string;
+  status: string;
+  revision: string | null;
+  sheets: number[];
+};
+
+export type ImpactSheetItem = {
+  id: string;
+  sheet_id: string;
+  item_id: string;
+  tag: string | null;
+  zone: string | null;
+  part_id: string | null;
+  drawing_id: string;
+  drawing_number: string;
+  sheet_no: number;
+};
+
+export type ImpactRequirement = { id: string; project_id: string; key: string; title: string; status: string | null };
+
+export type ImpactPart = { id: string; part_number: string; description: string };

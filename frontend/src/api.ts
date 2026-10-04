@@ -333,3 +333,105 @@ export const api = {
 export function bomCsvUrl(snapshotId: string): string {
   return `${API_BASE_URL}/bom/${snapshotId}/csv`;
 }
+
+// --- Release workflow, BoM export, and revision snapshots (Phase B) ---
+
+type DrawingRead = import("./types").DrawingRead;
+type RevisionSnapshot = import("./types").RevisionSnapshot;
+type ReleaseBlocker = import("./types").ReleaseBlocker;
+type BomReadinessIssue = import("./types").BomReadinessIssue;
+
+/**
+ * Error from a workflow call. A refused drawing release carries `reasons` (stale
+ * sheets, open DRC errors) and a refused BoM release carries `issues` (blocking
+ * readiness issues); plain-string details such as "Drawing X is released; start a
+ * new revision to change it." arrive as `message` with empty lists.
+ */
+export class WorkflowConflictError extends Error {
+  readonly status: number;
+  readonly reasons: ReleaseBlocker[];
+  readonly issues: BomReadinessIssue[];
+
+  constructor(status: number, message: string, reasons: ReleaseBlocker[] = [], issues: BomReadinessIssue[] = []) {
+    super(message);
+    this.name = "WorkflowConflictError";
+    this.status = status;
+    this.reasons = reasons;
+    this.issues = issues;
+  }
+}
+
+async function workflowRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    ...init
+  });
+  if (response.ok) return response.json() as Promise<T>;
+  if (response.status === 401) unauthorizedHandler?.();
+  const text = await response.text();
+  let detail: unknown = undefined;
+  try {
+    detail = (JSON.parse(text) as { detail?: unknown }).detail;
+  } catch {
+    // Not JSON; fall through to the raw text.
+  }
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const structured = detail as { message?: string; reasons?: ReleaseBlocker[]; issues?: BomReadinessIssue[] };
+    throw new WorkflowConflictError(
+      response.status,
+      structured.message ?? `Request failed (${response.status})`,
+      structured.reasons ?? [],
+      structured.issues ?? []
+    );
+  }
+  if (typeof detail === "string") throw new WorkflowConflictError(response.status, detail);
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => (item as { msg?: string }).msg ?? String(item));
+    throw new WorkflowConflictError(response.status, messages.join("; "));
+  }
+  throw new WorkflowConflictError(response.status, text || `Request failed (${response.status})`);
+}
+
+/** Submit the current revision for review (draft -> in_review); stamps submitted_by. */
+export function submitDrawing(drawingId: string): Promise<DrawingRead> {
+  return workflowRequest<DrawingRead>(`/drawings/${drawingId}/submit`, { method: "POST" });
+}
+
+/** Return a drawing under review to draft (in_review -> draft). */
+export function withdrawDrawing(drawingId: string): Promise<DrawingRead> {
+  return workflowRequest<DrawingRead>(`/drawings/${drawingId}/withdraw`, { method: "POST" });
+}
+
+/**
+ * Release the current revision (draft or in_review -> released) and lock the drawing.
+ * Rejects with WorkflowConflictError whose `reasons` list stale sheets and open DRC errors.
+ */
+export function releaseDrawing(drawingId: string): Promise<DrawingRead> {
+  return workflowRequest<DrawingRead>(`/drawings/${drawingId}/release`, { method: "POST" });
+}
+
+/** Open the next revision of a released drawing (released -> draft); the label defaults to the next letter. */
+export function reviseDrawing(drawingId: string, body?: { label?: string; description?: string }): Promise<DrawingRead> {
+  return workflowRequest<DrawingRead>(`/drawings/${drawingId}/revise`, {
+    method: "POST",
+    body: body ? JSON.stringify(body) : undefined
+  });
+}
+
+/** The immutable sheet snapshot stored when a revision was released (404 before release). */
+export function getRevisionSnapshot(revisionId: string): Promise<RevisionSnapshot> {
+  return workflowRequest<RevisionSnapshot>(`/revisions/${revisionId}/snapshot`);
+}
+
+/** Set a BoM snapshot's status; a refused release rejects with WorkflowConflictError (`issues`). */
+export function setBomStatusChecked(snapshotId: string, status: "draft" | "released"): Promise<BomSnapshot> {
+  return workflowRequest<BomSnapshot>(`/bom/${snapshotId}/status`, {
+    method: "PUT",
+    body: JSON.stringify({ status })
+  });
+}
+
+export function bomXlsxUrl(snapshotId: string): string {
+  return `${API_BASE_URL}/bom/${snapshotId}/xlsx`;
+}

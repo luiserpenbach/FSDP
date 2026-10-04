@@ -349,7 +349,8 @@ def test_bulk_rows_without_size_or_class_are_warnings(client: TestClient) -> Non
                     },
                     {"line_id": "b", "line_type": "process", "size": '1/2"', "length_m": 2.0},
                 ],
-            }
+            },
+            "drc": {"findings": [], "checks": []},
         },
     )
     snapshot = client.post(f"/drawings/{drawing['id']}/bom").json()

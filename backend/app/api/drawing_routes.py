@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -32,6 +33,7 @@ from app.schemas import (
     DrawingCreate,
     DrawingDrcRead,
     DrawingRead,
+    DrawingReviseIn,
     DrawingRevisionCreate,
     DrawingRevisionRead,
     DrawingRevisionUpdate,
@@ -47,6 +49,7 @@ from app.schemas import (
     LineClassRead,
     LineClassUpdate,
     ListRead,
+    RevisionSnapshotRead,
     SheetDrcRead,
     SheetExportIn,
     SheetIndexRead,
@@ -66,7 +69,13 @@ from app.services.lists import (
     rows_to_csv,
     rows_to_xlsx,
 )
-from app.services.sheet_index import replace_sheet_index
+from app.services.release import next_revision_label, release_blockers, release_snapshot
+from app.services.sheet_index import (
+    document_needs_index,
+    replace_sheet_index,
+    stale_sheets,
+    stale_sheets_note,
+)
 from app.services.traceability import (
     delete_trace_links_for_many,
     drawing_trace_endpoints,
@@ -90,15 +99,39 @@ EMPTY_DOCUMENT = {
 MEDIA_TYPES = {"pdf": "application/pdf", "png": "image/png", "svg": "image/svg+xml"}
 
 
+# Sheet summaries only: the documents are loaded on access, not for every listing.
+DRAWING_LOAD_OPTIONS = (
+    selectinload(Drawing.sheets).defer(DrawingSheet.document),
+    selectinload(Drawing.revisions),
+)
+
+
 def _load_drawing(db: Session, drawing_id: str) -> Drawing:
     drawing = db.scalar(
-        select(Drawing)
-        .where(Drawing.id == drawing_id)
-        .options(selectinload(Drawing.sheets), selectinload(Drawing.revisions))
+        select(Drawing).where(Drawing.id == drawing_id).options(*DRAWING_LOAD_OPTIONS)
     )
     if drawing is None:
         raise HTTPException(status_code=404, detail="Drawing not found")
     return drawing
+
+
+def _ensure_editable(drawing: Drawing) -> None:
+    """Released drawings are locked: changes go into a new revision (POST .../revise)."""
+    if drawing.status == "released":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Drawing {drawing.number} is released; start a new revision to change it.",
+        )
+
+
+def _editable_sheet_drawing(db: Session, sheet: DrawingSheet) -> Drawing:
+    drawing = require_model(db, Drawing, sheet.drawing_id)
+    _ensure_editable(drawing)
+    return drawing
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
 
 
 def _next_drawing_number(db: Session, project: Project) -> str:
@@ -180,6 +213,7 @@ def create_drawing(
             title=payload.first_sheet.title if payload.first_sheet else None,
             source_diagram_id=source_diagram_id,
             document=document,
+            index_stale=document_needs_index(document),
         )
     )
     revision = payload.revision or DrawingRevisionCreate()
@@ -205,7 +239,7 @@ def list_drawings(project_id: str, db: Session = Depends(get_db)) -> list[Drawin
         db.scalars(
             select(Drawing)
             .where(Drawing.project_id == project_id)
-            .options(selectinload(Drawing.sheets), selectinload(Drawing.revisions))
+            .options(*DRAWING_LOAD_OPTIONS)
             .order_by(Drawing.number)
         )
     )
@@ -224,7 +258,17 @@ def update_drawing(
     user: User = Depends(require_writer),
 ) -> Drawing:
     drawing = _load_drawing(db, drawing_id)
+    _ensure_editable(drawing)
     data = payload.model_dump(exclude_unset=True)
+    status = data.pop("status", None)
+    if status is not None and status != drawing.status:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Drawing status cannot be set directly; use POST /drawings/{id}/submit, "
+                "/withdraw, /release, or /revise"
+            ),
+        )
     if "number" in data and data["number"] and data["number"] != drawing.number:
         duplicate = db.scalar(
             select(Drawing.id).where(
@@ -257,6 +301,7 @@ def delete_drawing(
     user: User = Depends(require_writer),
 ) -> Response:
     drawing = _load_drawing(db, drawing_id)
+    _ensure_editable(drawing)
     delete_trace_links_for_many(db, drawing_trace_endpoints(db, [drawing.id]))
     record_change(
         db, "drawing", drawing.id, "deleted", f"Deleted drawing {drawing.number}", actor=user.email
@@ -276,6 +321,7 @@ def create_sheet(
     user: User = Depends(require_writer),
 ) -> DrawingSheet:
     drawing = _load_drawing(db, drawing_id)
+    _ensure_editable(drawing)
     document, source_diagram_id = _sheet_source_document(db, payload, drawing.size)
     sheet_no = max((sheet.sheet_no for sheet in drawing.sheets), default=0) + 1
     sheet = DrawingSheet(
@@ -284,6 +330,7 @@ def create_sheet(
         title=payload.title,
         source_diagram_id=source_diagram_id,
         document=document,
+        index_stale=document_needs_index(document),
     )
     db.add(sheet)
     record_change(
@@ -312,6 +359,7 @@ def update_sheet(
     user: User = Depends(require_writer),
 ) -> DrawingSheet:
     sheet = require_model(db, DrawingSheet, sheet_id)
+    drawing = _editable_sheet_drawing(db, sheet)
     data = payload.model_dump(exclude_unset=True)
     if "title" in data:
         sheet.title = data["title"]
@@ -321,7 +369,13 @@ def update_sheet(
         replace_sheet_index(db, sheet, payload.index)
     if payload.drc is not None:
         replace_sheet_drc(db, sheet, payload.drc)
-    drawing = require_model(db, Drawing, sheet.drawing_id)
+    if payload.index is not None and payload.drc is not None:
+        # The engine indexed and checked exactly this document.
+        sheet.index_stale = False
+        sheet.indexed_at = _now()
+    elif data.get("document") is not None or payload.index is not None or payload.drc is not None:
+        # A document without its index, or half of the derived data, leaves it out of date.
+        sheet.index_stale = True
     item_count = len((sheet.document or {}).get("items", []))
     record_change(
         db,
@@ -344,6 +398,7 @@ def delete_sheet(
 ) -> Response:
     sheet = require_model(db, DrawingSheet, sheet_id)
     drawing = _load_drawing(db, sheet.drawing_id)
+    _ensure_editable(drawing)
     if len(drawing.sheets) <= 1:
         raise HTTPException(status_code=409, detail="A drawing must keep at least one sheet")
     removed_no = sheet.sheet_no
@@ -380,6 +435,7 @@ def create_revision(
     user: User = Depends(require_writer),
 ) -> DrawingRevision:
     drawing = _load_drawing(db, drawing_id)
+    _ensure_editable(drawing)
     sequence = max((rev.sequence for rev in drawing.revisions), default=0) + 1
     revision = DrawingRevision(
         drawing_id=drawing.id,
@@ -408,6 +464,13 @@ def update_revision(
     user: User = Depends(require_writer),
 ) -> DrawingRevision:
     revision = require_model(db, DrawingRevision, revision_id)
+    drawing = require_model(db, Drawing, revision.drawing_id)
+    _ensure_editable(drawing)
+    if revision.status == "released":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Revision {revision.label} of {drawing.number} is released and cannot change.",
+        )
     for field, value in payload.model_dump(exclude_unset=True).items():
         if field in {"label", "description"} and (value is None or not str(value).strip()):
             continue
@@ -423,6 +486,180 @@ def update_revision(
     db.commit()
     db.refresh(revision)
     return revision
+
+
+def _workflow_conflict(drawing: Drawing, action: str, allowed: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=f"Drawing {drawing.number} is {drawing.status}; {action} needs a {allowed} drawing.",
+    )
+
+
+def _current_revision(db: Session, drawing: Drawing) -> DrawingRevision:
+    revision = drawing.current_revision
+    if revision is None:
+        # Drawings are created with a revision; this only covers legacy rows without one.
+        revision = DrawingRevision(drawing_id=drawing.id, sequence=1, status="draft")
+        db.add(revision)
+        drawing.revisions.append(revision)
+        db.flush()
+    return revision
+
+
+@drawing_router.post("/drawings/{drawing_id}/submit", response_model=DrawingRead)
+def submit_drawing(
+    drawing_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Drawing:
+    """Submit the current revision for review (draft -> in_review)."""
+    drawing = _load_drawing(db, drawing_id)
+    if drawing.status != "draft":
+        raise _workflow_conflict(drawing, "submitting for review", "draft")
+    revision = _current_revision(db, drawing)
+    drawing.status = "in_review"
+    revision.status = "in_review"
+    revision.submitted_by = user.email
+    revision.submitted_at = _now()
+    record_change(
+        db,
+        "drawing",
+        drawing.id,
+        "submitted",
+        f"Submitted {drawing.number} rev {revision.label} for review",
+        actor=user.email,
+    )
+    db.commit()
+    return _load_drawing(db, drawing.id)
+
+
+@drawing_router.post("/drawings/{drawing_id}/withdraw", response_model=DrawingRead)
+def withdraw_drawing(
+    drawing_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Drawing:
+    """Return a drawing under review to draft (in_review -> draft)."""
+    drawing = _load_drawing(db, drawing_id)
+    if drawing.status != "in_review":
+        raise _workflow_conflict(drawing, "withdrawing from review", "in_review")
+    revision = _current_revision(db, drawing)
+    drawing.status = "draft"
+    revision.status = "draft"
+    record_change(
+        db,
+        "drawing",
+        drawing.id,
+        "withdrawn",
+        f"Withdrew {drawing.number} rev {revision.label} from review",
+        actor=user.email,
+    )
+    db.commit()
+    return _load_drawing(db, drawing.id)
+
+
+@drawing_router.post("/drawings/{drawing_id}/release", response_model=DrawingRead)
+def release_drawing(
+    drawing_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Drawing:
+    """Release the current revision (draft or in_review -> released) and lock the drawing.
+
+    Refused with 409 while any sheet's index/DRC is stale or has open DRC errors;
+    `detail.reasons` lists each blocker. Stamps the approver from the session and
+    stores an immutable snapshot of every sheet on the revision.
+    """
+    drawing = _load_drawing(db, drawing_id)
+    if drawing.status == "released":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Drawing {drawing.number} is already released; start a new revision first.",
+        )
+    reasons = release_blockers(db, drawing)
+    if reasons:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"Drawing {drawing.number} cannot be released yet.",
+                "reasons": reasons,
+            },
+        )
+    revision = _current_revision(db, drawing)
+    released_at = _now()
+    drawing.status = "released"
+    revision.status = "released"
+    revision.approved_by = user.email
+    revision.approved_at = released_at
+    revision.approved_date = released_at.date().isoformat()
+    revision.snapshot = release_snapshot(db, drawing, revision, released_at)
+    record_change(
+        db,
+        "drawing",
+        drawing.id,
+        "released",
+        f"Released {drawing.number} rev {revision.label}",
+        actor=user.email,
+    )
+    db.commit()
+    return _load_drawing(db, drawing.id)
+
+
+@drawing_router.post("/drawings/{drawing_id}/revise", response_model=DrawingRead)
+def revise_drawing(
+    drawing_id: str,
+    payload: DrawingReviseIn | None = Body(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Drawing:
+    """Open the next revision of a released drawing (released -> draft)."""
+    drawing = _load_drawing(db, drawing_id)
+    if drawing.status != "released":
+        raise _workflow_conflict(drawing, "starting a new revision", "released")
+    previous = drawing.current_revision
+    sequence = (previous.sequence if previous else 0) + 1
+    label = (payload.label if payload else None) or next_revision_label(
+        previous.label if previous else None, sequence - 1
+    )
+    revision = DrawingRevision(
+        drawing_id=drawing.id,
+        sequence=sequence,
+        label=label,
+        description=(payload.description if payload else None) or f"Revision {label}",
+        status="draft",
+        drawn_by=user.name,
+        drawn_date=_now().date().isoformat(),
+    )
+    db.add(revision)
+    drawing.status = "draft"
+    record_change(
+        db,
+        "drawing",
+        drawing.id,
+        "revised",
+        f"Started revision {label} of {drawing.number}",
+        actor=user.email,
+    )
+    db.commit()
+    return _load_drawing(db, drawing.id)
+
+
+@drawing_router.get("/revisions/{revision_id}/snapshot", response_model=RevisionSnapshotRead)
+def get_revision_snapshot(revision_id: str, db: Session = Depends(get_db)) -> dict:
+    """The immutable copy of the drawing stored when this revision was released."""
+    revision = require_model(db, DrawingRevision, revision_id)
+    if revision.snapshot is None:
+        raise HTTPException(status_code=404, detail="Revision has not been released")
+    return {
+        "revision_id": revision.id,
+        "drawing_id": revision.drawing_id,
+        "label": revision.label,
+        "sequence": revision.sequence,
+        "status": revision.status,
+        "approved_by": revision.approved_by,
+        "approved_at": revision.approved_at,
+        "snapshot": revision.snapshot,
+    }
 
 
 @drawing_router.post("/sheets/{sheet_id}/export")
@@ -468,6 +705,7 @@ def waive_finding(
 ) -> DrcWaiver:
     """Waive a finding by key with a reason; re-runs keep the waiver."""
     sheet = require_model(db, DrawingSheet, sheet_id)
+    drawing = _editable_sheet_drawing(db, sheet)
     waiver = db.scalar(
         select(DrcWaiver).where(DrcWaiver.sheet_id == sheet.id, DrcWaiver.key == payload.key)
     )
@@ -476,7 +714,6 @@ def waive_finding(
         db.add(waiver)
     waiver.reason = payload.reason
     waiver.waived_by = user.email
-    drawing = require_model(db, Drawing, sheet.drawing_id)
     record_change(
         db,
         "drawing",
@@ -499,12 +736,12 @@ def unwaive_finding(
     user: User = Depends(require_writer),
 ) -> Response:
     sheet = require_model(db, DrawingSheet, sheet_id)
+    drawing = _editable_sheet_drawing(db, sheet)
     waiver = db.scalar(
         select(DrcWaiver).where(DrcWaiver.sheet_id == sheet.id, DrcWaiver.key == key)
     )
     if waiver is None:
         raise HTTPException(status_code=404, detail="Waiver not found")
-    drawing = require_model(db, Drawing, sheet.drawing_id)
     db.delete(waiver)
     record_change(
         db,
@@ -563,7 +800,11 @@ def _list_response(
     columns: list[tuple[str, str]],
     rows: list[dict],
     fmt: str,
+    stale: list[dict],
 ) -> Response | dict:
+    if stale:
+        # Rides along in the CSV/XLSX header block so a printed list carries the warning.
+        header = {**header, "warning": stale_sheets_note(stale)}
     if fmt == "json":
         return {
             "kind": kind,
@@ -572,6 +813,7 @@ def _list_response(
             "header": header,
             "columns": [{"key": key, "label": label} for key, label in columns],
             "rows": rows,
+            "stale_sheets": stale,
         }
     if fmt not in LIST_MEDIA_TYPES:
         raise HTTPException(status_code=400, detail="format must be json, csv, or xlsx")
@@ -605,6 +847,7 @@ def get_drawing_list(
         list_columns(list_kind, "drawing"),
         rows,
         format,
+        stale_sheets(db, [drawing.id]),
     )
 
 
@@ -619,7 +862,7 @@ def get_project_list(
         db.scalars(
             select(Drawing)
             .where(Drawing.project_id == project.id)
-            .options(selectinload(Drawing.sheets), selectinload(Drawing.revisions))
+            .options(*DRAWING_LOAD_OPTIONS)
             .order_by(Drawing.number)
         )
     )
@@ -632,6 +875,7 @@ def get_project_list(
         list_columns(list_kind, "project"),
         rows,
         format,
+        stale_sheets(db, [drawing.id for drawing in drawings]),
     )
 
 

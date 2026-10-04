@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import BomSnapshot, ComponentInstance, Diagram, Drawing, Part
-from app.services.sheet_index import drawing_index_rows
+from app.services.sheet_index import drawing_index_rows, stale_sheets
 
 # Symbol categories that become BoM line items (connectors and actuators do not).
 BOM_ITEM_CATEGORIES = {"valve", "regulator", "inline", "instrument", "equipment", "custom"}
@@ -178,11 +178,15 @@ def drawing_bom_rows(db: Session, drawing: Drawing) -> list[dict]:
 
 
 def generate_drawing_bom_snapshot(db: Session, drawing: Drawing) -> BomSnapshot:
+    current = drawing.current_revision
     snapshot = BomSnapshot(
         drawing_id=drawing.id,
         revision=_next_revision(db, diagram_id=None, drawing_id=drawing.id),
         status="draft",
         rows=drawing_bom_rows(db, drawing),
+        drawing_revision=current.label if current else None,
+        # Recorded so readiness can refuse to release a BoM built from out-of-date rows.
+        stale_sheets=stale_sheets(db, [drawing.id]),
     )
     db.add(snapshot)
     db.flush()
