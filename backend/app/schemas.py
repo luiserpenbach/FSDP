@@ -676,53 +676,6 @@ class TagSchemeRead(BaseModel):
     scheme: dict[str, Any] | None
 
 
-class DiagramCreate(BaseModel):
-    name: str
-    diagram_type: str = "pid"
-
-    @field_validator("name")
-    @classmethod
-    def _required_text(cls, value: str) -> str:
-        return clean_required_text(value)
-
-
-class DiagramUpdate(BaseModel):
-    name: str | None = None
-    diagram_type: str | None = None
-
-    @field_validator("name")
-    @classmethod
-    def _required_text(cls, value: str | None) -> str | None:
-        return clean_optional_text(value)
-
-
-class GraphNodeIn(BaseModel):
-    external_id: str
-    node_type: str
-    label: str
-    position: dict[str, Any] = Field(default_factory=dict)
-    properties: dict[str, Any] = Field(default_factory=dict)
-
-
-class GraphEdgeIn(BaseModel):
-    external_id: str
-    source_node_id: str
-    target_node_id: str
-    fluid: str | None = None
-    pressure_bar: float | None = None
-    temperature_c: float | None = None
-    diameter_mm: float | None = None
-    material: str | None = None
-    flow_direction: str = "forward"
-    properties: dict[str, Any] = Field(default_factory=dict)
-
-
-class DiagramGraphUpdate(BaseModel):
-    graph: dict[str, Any] = Field(default_factory=dict)
-    nodes: list[GraphNodeIn] = Field(default_factory=list)
-    edges: list[GraphEdgeIn] = Field(default_factory=list)
-
-
 SCHEMATIC_SCHEMA_VERSION = 1
 
 
@@ -1322,35 +1275,16 @@ class DiagramRead(DiagramSummaryRead):
     graph: dict[str, Any]
 
 
-class ComponentInstanceCreate(BaseModel):
+class ComponentInstanceRead(OrmModel):
+    """A part placed on a legacy diagram (read-only history)."""
+
+    id: str
+    diagram_id: str
     node_id: str | None = None
     part_id: str | None = None
     tag: str
-    quantity: int = Field(default=1, ge=1)
+    quantity: int
     properties: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("tag")
-    @classmethod
-    def _required_text(cls, value: str) -> str:
-        return clean_required_text(value)
-
-
-class ComponentInstanceUpdate(BaseModel):
-    node_id: str | None = None
-    part_id: str | None = None
-    tag: str | None = None
-    quantity: int | None = Field(default=None, ge=1)
-    properties: dict[str, Any] | None = None
-
-    @field_validator("tag")
-    @classmethod
-    def _required_text(cls, value: str | None) -> str | None:
-        return clean_optional_text(value)
-
-
-class ComponentInstanceRead(ComponentInstanceCreate, OrmModel):
-    id: str
-    diagram_id: str
     created_at: datetime
     updated_at: datetime
 

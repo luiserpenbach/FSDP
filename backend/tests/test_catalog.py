@@ -3,8 +3,10 @@
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
+from tests.legacy import add_legacy_diagram
 
 
 def test_generate_name_uses_prefix_seq(client: TestClient) -> None:
@@ -87,26 +89,20 @@ def test_part_search_and_lifecycle_filters(client: TestClient) -> None:
     assert {row["part_number"] for row in drafts} == {"SRCH-FILTER"}
 
 
-def test_obsolete_blocks_new_placement_and_delete_while_used(client: TestClient) -> None:
+def test_obsolete_part_still_blocks_delete_while_used_on_a_legacy_diagram(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
     project = client.post("/projects", json={"name": "Cat Project"}).json()
     system = client.post(f"/projects/{project['id']}/systems", json={"name": "Sys"}).json()
-    diagram = client.post(f"/systems/{system['id']}/diagrams", json={"name": "P&ID"}).json()
     part = client.post(
         "/parts",
         json={"part_number": "OBS-1", "description": "Valve", "part_type": "valve"},
     ).json()
-    client.post(
-        f"/diagrams/{diagram['id']}/components", json={"tag": "V-1", "part_id": part["id"]}
-    )
+    add_legacy_diagram(session_factory, system["id"], components=[("V-1", part["id"])])
 
     obsolete = client.post(f"/parts/{part['id']}/obsolete")
     assert obsolete.status_code == 200
     assert obsolete.json()["lifecycle_status"] == "obsolete"
-
-    blocked_place = client.post(
-        f"/diagrams/{diagram['id']}/components", json={"tag": "V-2", "part_id": part["id"]}
-    )
-    assert blocked_place.status_code == 409
 
     blocked_delete = client.delete(f"/parts/{part['id']}")
     assert blocked_delete.status_code == 409

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.models import BomSnapshot, ComponentInstance, Diagram, Part
+from app.models import BomSnapshot, ComponentInstance, Diagram, Part, TraceLink
 
 
 @dataclass
@@ -55,6 +55,26 @@ def add_legacy_diagram(
         return created
 
 
+def add_legacy_trace_link(
+    session_factory: sessionmaker[Session],
+    source: tuple[str, str],
+    target: tuple[str, str],
+    link_type: str = "satisfied_by",
+) -> str:
+    """A trace link to a legacy object, as made before such links were refused."""
+    with session_factory() as db:
+        link = TraceLink(
+            source_type=source[0],
+            source_id=source[1],
+            target_type=target[0],
+            target_id=target[1],
+            link_type=link_type,
+        )
+        db.add(link)
+        db.commit()
+        return link.id
+
+
 def add_legacy_bom(
     session_factory: sessionmaker[Session], diagram_id: str, *, status: str = "draft"
 ) -> str:
@@ -75,6 +95,8 @@ def add_legacy_bom(
                     "manufacturer": part.manufacturer if part else None,
                     "material": part.material if part else None,
                     "pressure_rating_bar": part.pressure_rating_bar if part else None,
+                    "mass_kg": part.mass_kg if part else None,
+                    "cv": part.cv if part else None,
                     "quantity": 0,
                     "unit": "ea",
                     "qualification_status": part.qualification_status if part else "unresolved",

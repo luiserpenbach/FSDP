@@ -282,10 +282,16 @@ export const api = {
     requestNoContent(`/trace-links/${linkId}`, { method: "DELETE" }),
   listTraceLinks: (objectType: string, objectId: string) =>
     request<TraceLink[]>(`/objects/${objectType}/${objectId}/trace`),
+  /**
+   * @deprecated The server no longer generates legacy diagram BoMs (the endpoint
+   * answers 405); kept only until the BoM page drops its legacy "Generate" button.
+   */
   generateBom: (diagramId: string) =>
     request<BomSnapshot>(`/diagrams/${diagramId}/bom`, { method: "POST" }),
+  /** Legacy diagram BoM snapshots: read-only history. */
   listDiagramBoms: (diagramId: string) => request<BomSnapshot[]>(`/diagrams/${diagramId}/bom`),
   listProjectBoms: (projectId: string) => request<ProjectBom[]>(`/projects/${projectId}/bom`),
+  /** Release a drawing BoM; legacy diagram BoMs are read-only (409). */
   setBomStatus: (snapshotId: string, status: string) =>
     request<BomSnapshot>(`/bom/${snapshotId}/status`, {
       method: "PUT",
