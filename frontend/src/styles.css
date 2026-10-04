@@ -254,6 +254,50 @@ button.danger:disabled {
   padding: 2px 0 8px;
 }
 
+/* Project / system switcher under the brand. */
+.workspaceSwitcher {
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 2px 10px;
+  padding: 0 2px 10px;
+}
+
+.workspaceSwitcher label {
+  color: var(--text-3);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  margin: 0;
+}
+
+.workspaceSwitcher select {
+  font-size: 12.5px;
+  letter-spacing: 0;
+  margin-top: 3px;
+  padding: 5px 8px;
+  text-transform: none;
+}
+
+.switcherChip {
+  align-self: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+  height: 30px;
+  margin: 0 0 10px;
+  padding: 0;
+  width: 36px;
+}
+
+.switcherChip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .brand {
   align-items: center;
   display: flex;
@@ -734,6 +778,73 @@ button.signOut {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Dashboard: summary cards that link to where each item is handled. */
+.dashboardGrid {
+  align-items: stretch;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.dashCard {
+  color: inherit;
+  display: block;
+  text-decoration: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.dashCard:hover,
+.dashCard:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  outline: none;
+}
+
+.dashCard-good {
+  border-top-color: var(--green-deep);
+}
+
+.dashCard-warn {
+  border-top-color: var(--amber);
+}
+
+.dashCard-bad {
+  border-top-color: var(--red);
+}
+
+.dashCard-bad > strong {
+  color: var(--red);
+}
+
+.dashCardError {
+  color: var(--red-deep);
+}
+
+.dashBreakdown {
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+}
+
+.dashBreakdown li {
+  color: var(--text-2);
+  display: flex;
+  font-size: 12.5px;
+  justify-content: space-between;
+  text-transform: capitalize;
+}
+
+.dashBreakdown li strong {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 0;
 }
 
 /* ---------- Tables ---------- */

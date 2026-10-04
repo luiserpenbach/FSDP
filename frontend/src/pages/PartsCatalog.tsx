@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import { api } from "../api";
 import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { DataTable, FormError, Panel, Select, StatusPill, TextArea, TextInput } from "../components/ui";
 import type { CatalogDocument, CatalogSettings, Part, PartUsage } from "../types";
+import { useWorkspace } from "../workspace/WorkspaceContext";
+import { PageLayout } from "./PageLayout";
 
 const LIFECYCLE_OPTIONS = ["draft", "active", "legacy", "restricted", "obsolete"].map((value) => ({
   value,
@@ -858,5 +861,27 @@ export function PartsCatalog({
       )}
       </section>
     </>
+  );
+}
+
+/** The /parts route: the catalog bound to the workspace's parts and selection. */
+export function PartsPage() {
+  const { parts, setParts, selectedPartId, setSelectedPartId, selectedProjectId } = useWorkspace();
+  // Deep link from drawing part badges: /parts?part=<id>.
+  const location = useLocation();
+  useEffect(() => {
+    const linked = new URLSearchParams(location.search).get("part");
+    if (linked) setSelectedPartId(linked);
+  }, [location.search, setSelectedPartId]);
+  return (
+    <PageLayout className="catalogPage" title="Parts" description="" showHeader={false}>
+      <PartsCatalog
+        parts={parts}
+        selectedPartId={selectedPartId}
+        projectId={selectedProjectId || undefined}
+        onSelectPart={setSelectedPartId}
+        onPartsChanged={setParts}
+      />
+    </PageLayout>
   );
 }

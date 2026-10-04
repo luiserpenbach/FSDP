@@ -34,6 +34,7 @@ import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
 import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, Requirement, User } from "../types";
 import { useUnsavedChanges } from "../unsavedChanges";
+import { useWorkspace } from "../workspace/WorkspaceContext";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
@@ -495,7 +496,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   }, [editor]);
 
   // In-app navigation and sign-out ask before this page's unsaved sheet is dropped.
-  useUnsavedChanges("drafting", () => Boolean(editor?.store.dirty), { routeScoped: true });
+  useUnsavedChanges("drafting", () => Boolean(editor?.store.dirty), { routeScoped: true, scope: "project" });
 
   const context = useMemo(
     () => (drawing && sheetSummary ? buildDrawingContext(drawing, sheetSummary.sheet_no, sheetSummary.title, projectName, systemName) : undefined),
@@ -933,7 +934,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                   {loading
                     ? "Opening sheet…"
                     : !projectId
-                      ? "Select a project on the Systems page first."
+                      ? "Select a project with the project switcher in the sidebar."
                       : drawings.length
                         ? "Select a drawing."
                         : "Create a new drawing, or convert a diagram from the Diagrams page."}
@@ -2226,5 +2227,26 @@ function StatusBar({ editor, cursor, viewport, drcInputs }: { editor: Editor; cu
       </span>
       <span>{editor.store.dirty ? "Unsaved changes" : "Saved"}</span>
     </div>
+  );
+}
+
+/** The /drafting route: the editor bound to the workspace's project, system, and catalog. */
+export function DraftingRoutePage() {
+  const { user, canWrite, notify, selectedProjectId, selectedProject, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  return (
+    <DraftingPage
+      projectId={selectedProjectId}
+      projectName={selectedProject?.name ?? ""}
+      systems={systems}
+      diagrams={diagrams}
+      selectedSystemId={selectedSystemId}
+      customSymbols={customSymbols}
+      refreshSymbols={refreshSymbols}
+      parts={parts}
+      requirements={requirements}
+      user={user}
+      canWrite={canWrite}
+      notify={notify}
+    />
   );
 }

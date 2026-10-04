@@ -254,6 +254,8 @@ async function makeDiagramDirty() {
 function mockWorkspaceFetch(overrides?: {
   onCreateProject?: () => void;
   onCreateSystem?: () => void;
+  projects?: unknown[];
+  systems?: unknown[];
 }) {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -261,12 +263,12 @@ function mockWorkspaceFetch(overrides?: {
     const path = new URL(url, "http://localhost").pathname;
 
     if (path === "/auth/me") return jsonResponse(TEST_USER);
-    if (path === "/projects" && method === "GET") return jsonResponse([PROJECT]);
+    if (path === "/projects" && method === "GET") return jsonResponse(overrides?.projects ?? [PROJECT]);
     if (path === "/projects" && method === "POST") {
       overrides?.onCreateProject?.();
       return jsonResponse({ ...PROJECT, id: "p2", name: "New Project" }, 201);
     }
-    if (path === "/projects/p1/systems" && method === "GET") return jsonResponse([SYSTEM]);
+    if (path === "/projects/p1/systems" && method === "GET") return jsonResponse(overrides?.systems ?? [SYSTEM]);
     if (path === "/projects/p1/systems" && method === "POST") {
       overrides?.onCreateSystem?.();
       return jsonResponse({ ...SYSTEM, id: "s2", name: "New System" }, 201);
@@ -316,6 +318,8 @@ describe("App", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     window.history.pushState({}, "", "/");
+    // The project/system selection persists per browser; start each test fresh.
+    localStorage.clear();
   });
 
   afterEach(() => {
@@ -342,8 +346,12 @@ describe("App", () => {
     expect(screen.getByText("Test Engineer")).toBeInTheDocument();
     expect(screen.getByText("admin")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Project")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("System")).not.toBeInTheDocument();
+    // The project/system switcher sits in the sidebar on every page.
+    expect(screen.getByLabelText("Project")).toBeInTheDocument();
+    expect(screen.getByLabelText("System")).toBeInTheDocument();
+    // Placeholder pages are hidden until they do something.
+    expect(screen.queryByText("Safety")).not.toBeInTheDocument();
+    expect(screen.queryByText("Certification")).not.toBeInTheDocument();
   });
 
   it("shows the login page when there is no session", async () => {
@@ -497,7 +505,8 @@ describe("App", () => {
       screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/requirements"]')!
     );
     expect(await screen.findByRole("heading", { level: 1, name: "Requirements" })).toBeInTheDocument();
-    expect(screen.getByText("V-B")).toBeInTheDocument();
+    // The Requirements page loads the open diagram's components itself.
+    expect(await screen.findByText("V-B")).toBeInTheDocument();
     expect(screen.queryByText("V-A")).not.toBeInTheDocument();
   });
 
@@ -618,7 +627,7 @@ describe("App", () => {
       screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/systems"]')!
     );
     expect(await screen.findByRole("heading", { level: 1, name: "Systems" })).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Project B"));
+    fireEvent.click(within(screen.getByRole("main")).getByText("Project B"));
 
     await waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/systems/s2/diagrams"))).toBe(true);
@@ -731,60 +740,60 @@ describe("App", () => {
     expect(screen.queryByText("Saved", { selector: ".cleanBadge" })).not.toBeInTheDocument();
   });
 
-  it("asks before create project discards unsaved diagram edits", async () => {
+  it("asks before switching project from the sidebar discards unsaved diagram edits", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    let createdProject = false;
-    vi.stubGlobal(
-      "fetch",
-      mockWorkspaceFetch({
-        onCreateProject: () => {
-          createdProject = true;
-        }
-      })
-    );
+    const fetchMock = mockWorkspaceFetch({ projects: [PROJECT, PROJECT_B] });
+    vi.stubGlobal("fetch", fetchMock);
 
     await openDirtyDiagram();
+    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "p2" } });
 
-    fireEvent.click(
-      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/systems"]')!
-    );
-    expect(await screen.findByRole("heading", { level: 1, name: "Systems" })).toBeInTheDocument();
-
-    const nameInputs = screen.getAllByLabelText("Name");
-    fireEvent.change(nameInputs[0]!, { target: { value: "New Project" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create project" }));
-
-    expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Discard them?");
-    expect(createdProject).toBe(false);
+    expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Switch project and discard them?");
+    expect(screen.getByLabelText("Project")).toHaveValue("p1");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/projects/p2/systems"))).toBe(false);
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
     confirmSpy.mockRestore();
   });
 
-  it("asks before create system discards unsaved diagram edits", async () => {
+  it("asks before switching system from the sidebar discards unsaved diagram edits", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    let createdSystem = false;
+    const fetchMock = mockWorkspaceFetch({ systems: [SYSTEM, { ...SYSTEM, id: "s2", name: "Oxidizer" }] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await openDirtyDiagram();
+    fireEvent.change(screen.getByLabelText("System"), { target: { value: "s2" } });
+
+    expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Switch system and discard them?");
+    expect(screen.getByLabelText("System")).toHaveValue("s1");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/systems/s2/diagrams"))).toBe(false);
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it("creates a project on the Systems page and selects it in the switcher", async () => {
+    let created = false;
+    const base = mockWorkspaceFetch({ onCreateProject: () => (created = true) });
     vi.stubGlobal(
       "fetch",
-      mockWorkspaceFetch({
-        onCreateSystem: () => {
-          createdSystem = true;
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/projects" && (init?.method ?? "GET") === "GET" && created) {
+          return jsonResponse([PROJECT, { ...PROJECT, id: "p2", name: "New Project" }]);
         }
+        return base(input, init);
       })
     );
 
-    await openDirtyDiagram();
-
-    fireEvent.click(
-      screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/systems"]')!
-    );
+    render(<App />);
+    await waitForWorkspace();
+    fireEvent.click(screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/systems"]')!);
     expect(await screen.findByRole("heading", { level: 1, name: "Systems" })).toBeInTheDocument();
 
-    const nameInputs = screen.getAllByLabelText("Name");
-    fireEvent.change(nameInputs[1]!, { target: { value: "New System" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create system" }));
+    fireEvent.change(screen.getAllByLabelText("Name")[0]!, { target: { value: "New Project" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create project" }));
 
-    expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Discard them?");
-    expect(createdSystem).toBe(false);
-    confirmSpy.mockRestore();
+    await waitFor(() => expect(screen.getByLabelText("Project")).toHaveValue("p2"));
+    expect(localStorage.getItem("fsdp.selectedProject")).toBe("p2");
   });
 
   it("asks before signing out discards unsaved diagram edits", async () => {
@@ -869,8 +878,8 @@ describe("App", () => {
     confirmSpy.mockRestore();
   });
 
-  it("only handles legacy canvas shortcuts on the Diagrams page, and not keys already handled", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("asks before leaving the Diagrams page with unsaved edits, and handles legacy shortcuts only there", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     vi.stubGlobal("fetch", mockWorkspaceFetch());
     const primaryNav = () => screen.getByRole("navigation", { name: "Primary navigation" });
 
@@ -880,13 +889,12 @@ describe("App", () => {
     await openDirtyDiagram();
     expect(rotor().style.transform).toBe("rotate(90deg)");
 
+    // The canvas unmounts with its page, so leaving with unsaved edits asks first.
     fireEvent.click(primaryNav().querySelector('a[href="/parts"]')!);
-    expect(await screen.findByRole("heading", { level: 1, name: "Parts" })).toBeInTheDocument();
-    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
-
-    fireEvent.click(primaryNav().querySelector('a[href="/diagrams"]')!);
-    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText("Valve A")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Leave this page and discard them?")
+    );
+    expect(screen.getByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
     expect(rotor().style.transform).toBe("rotate(90deg)");
 
     // A handler that already consumed the key wins.
@@ -898,8 +906,19 @@ describe("App", () => {
 
     fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
     await waitFor(() => expect(rotor().style.transform).toBe(""));
-    // Leaving and returning to Diagrams never prompts: the legacy canvas state outlives the page.
-    expect(confirmSpy).not.toHaveBeenCalled();
+
+    // Confirming leaves; the shortcuts go with the page, and coming back
+    // reloads the saved diagram.
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(primaryNav().querySelector('a[href="/parts"]')!);
+    expect(await screen.findByRole("heading", { level: 1, name: "Parts" })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+
+    fireEvent.click(primaryNav().querySelector('a[href="/diagrams"]')!);
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Valve A")).toBeInTheDocument());
+    expect(rotor().style.transform).toBe("");
+    expect(await screen.findByText("Saved", { selector: ".cleanBadge" })).toBeInTheDocument();
     confirmSpy.mockRestore();
   });
 
@@ -933,5 +952,136 @@ describe("App", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(screen.getByText("No trace links for REQ-2 yet.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+  });
+
+  it("asks before a project switch discards an unsaved drafting sheet, but not before a system switch", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const base = mockWorkspaceFetch({ projects: [PROJECT, PROJECT_B], systems: [SYSTEM, { ...SYSTEM, id: "s2", name: "Oxidizer" }] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/projects/p1/drawings") return jsonResponse([DRAWING]);
+        if (path === "/sheets/sh1") return jsonResponse(DRAWING_SHEET);
+        if (path === "/sheets/sh1/drc") return jsonResponse({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
+        if (path === "/projects/p1/tag-scheme") return jsonResponse({ project_id: "p1", scheme: null });
+        if (path === "/projects/p1/line-classes" || path === "/symbols") return jsonResponse([]);
+        return base(input, init);
+      })
+    );
+
+    render(<App />);
+    await waitForWorkspace();
+    fireEvent.click(screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/drafting"]')!);
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    // Drawings belong to the project, not the system.
+    fireEvent.change(screen.getByLabelText("System"), { target: { value: "s2" } });
+    await waitFor(() => expect(screen.getByLabelText("System")).toHaveValue("s2"));
+    expect(confirmSpy).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "p2" } });
+    expect(confirmSpy).toHaveBeenCalledWith("You have unsaved drafting changes. Switch project and discard them?");
+    expect(screen.getByLabelText("Project")).toHaveValue("p1");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    confirmSpy.mockRestore();
+  });
+
+  it("restores the persisted project and remembers a new choice", async () => {
+    localStorage.setItem("fsdp.selectedProject", "p2");
+    vi.stubGlobal("fetch", mockWorkspaceFetch({ projects: [PROJECT, PROJECT_B] }));
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Project")).toHaveValue("p2"));
+
+    fireEvent.change(screen.getByLabelText("Project"), { target: { value: "p1" } });
+    await waitFor(() => expect(screen.getByLabelText("System")).toHaveValue("s1"));
+    expect(localStorage.getItem("fsdp.selectedProject")).toBe("p1");
+    expect(localStorage.getItem("fsdp.selectedSystem")).toBe("s1");
+  });
+
+  it("redirects the retired placeholder routes to the dashboard", async () => {
+    window.history.pushState({}, "", "/certification");
+    vi.stubGlobal("fetch", mockWorkspaceFetch());
+
+    render(<App />);
+    expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/dashboard");
+  });
+
+  it("summarizes the selected project on the dashboard, card by card", async () => {
+    const base = mockWorkspaceFetch();
+    const part = (id: string, lifecycle: string) => ({ id, part_number: id, description: id, part_type: "valve", source_type: "internal", qualification_status: "qualified", certification_status: "unreviewed", lifecycle_status: lifecycle, preferred: false, completeness: 100 });
+    const row = (id: string, verdict: string, linkedDrawings = 0) => ({ requirement_id: id, key: id, title: id, status: "draft", constraint: null, checked: 0, passed: 0, failed: 0, verdict, drawings: [], linked_components: 0, linked_drawings: linkedDrawings, failures: [] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/parts") return jsonResponse([part("a", "draft"), part("b", "released"), part("c", "released")]);
+        if (path === "/projects/p1/drawings") {
+          return jsonResponse([DRAWING, { ...DRAWING, id: "dw2", number: "AMB2-9004", status: "released" }, { ...DRAWING, id: "dw3", number: "AMB2-9005", status: "released" }]);
+        }
+        if (path === "/drawings/dw1/drc") return jsonResponse({ drawing_id: "dw1", counts: { error: 2, warning: 1, info: 0, waived: 0 }, sheets: [] });
+        if (path === "/drawings/dw2/drc") return jsonResponse({ drawing_id: "dw2", counts: { error: 0, warning: 0, info: 0, waived: 0 }, sheets: [] });
+        if (path === "/drawings/dw3/drc") return jsonResponse({ detail: "boom" }, 500);
+        if (path === "/projects/p1/verification-matrix") {
+          return jsonResponse({ project_id: "p1", rows: [row("r1", "no_data"), row("r2", "pass"), row("r3", "manual", 1), row("r4", "manual")] });
+        }
+        return base(input, init);
+      })
+    );
+
+    render(<App />);
+    await waitForWorkspace();
+    const card = async (title: string) => (await screen.findByText(title, { selector: ".dashCard > span" })).closest("a")!;
+
+    const drawingsCard = await card("Drawings");
+    expect(drawingsCard).toHaveAttribute("href", "/drafting");
+    await waitFor(() => expect(drawingsCard.querySelector("strong")).toHaveTextContent("3"));
+    expect(within(drawingsCard).getByText("released").closest("li")).toHaveTextContent("released2");
+    expect(within(drawingsCard).getByText("working").closest("li")).toHaveTextContent("working1");
+
+    const checksCard = await card("Design checks");
+    expect(checksCard).toHaveAttribute("href", "/drafting");
+    await waitFor(() => expect(checksCard.querySelector("strong")).toHaveTextContent("2"));
+    expect(checksCard).toHaveTextContent("1 warning");
+    expect(checksCard).toHaveTextContent("1 drawing(s) unchecked");
+    expect(within(checksCard).getByText("AMB2-9003")).toBeInTheDocument();
+    expect(within(checksCard).queryByText("AMB2-9004")).not.toBeInTheDocument();
+
+    const requirementsCard = await card("Unverified requirements");
+    expect(requirementsCard).toHaveAttribute("href", "/requirements");
+    await waitFor(() => expect(requirementsCard.querySelector("strong")).toHaveTextContent("2"));
+    expect(requirementsCard).toHaveTextContent("of 4 requirements");
+
+    const partsCard = await card("Parts");
+    expect(partsCard).toHaveAttribute("href", "/parts");
+    await waitFor(() => expect(partsCard.querySelector("strong")).toHaveTextContent("3"));
+    expect(within(partsCard).getByText("released").closest("li")).toHaveTextContent("released2");
+  });
+
+  it("keeps the other dashboard cards when one request fails", async () => {
+    // The base mock answers drawings with a 500; the verification matrix still loads.
+    const base = mockWorkspaceFetch();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/projects/p1/verification-matrix") return jsonResponse({ project_id: "p1", rows: [] });
+        return base(input, init);
+      })
+    );
+
+    render(<App />);
+    await waitForWorkspace();
+    const drawingsCard = (await screen.findByText("Drawings", { selector: ".dashCard > span" })).closest("a")!;
+    expect(await within(drawingsCard).findByText("Could not load.")).toBeInTheDocument();
+    const requirementsCard = screen.getByText("Unverified requirements", { selector: ".dashCard > span" }).closest("a")!;
+    await waitFor(() => expect(requirementsCard.querySelector("strong")).toHaveTextContent("0"));
   });
 });
