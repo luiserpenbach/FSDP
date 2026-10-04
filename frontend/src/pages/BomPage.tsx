@@ -6,18 +6,26 @@
  * remain; released snapshots are immutable), compare it with another snapshot of
  * the same drawing, and export CSV or XLSX. BoMs of legacy diagrams stay
  * available read-only as history.
+ *
+ * Every table is a read-only DataGrid (sort, filter, copy, CSV export). BoM rows
+ * carry their readiness as a column and filter by readiness and type; activating
+ * a row opens its first tag (or sheet) in Drafting.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, bomCsvUrl, bomXlsxUrl, setBomStatusChecked, WorkflowConflictError } from "../api";
+import { DataGrid, type DataGridColumn } from "../components/datagrid";
 import { StaleSheetsWarning } from "../components/StaleSheetsWarning";
-import { SortableTable, type SortableColumn } from "../components/SortableTable";
 import { Panel, StatusPill } from "../components/ui";
-import type { BomDiff, BomReadiness, BomReadinessIssue, BomSnapshot, Drawing, ProjectBom } from "../types";
+import type { BomDiff, BomReadiness, BomReadinessIssue, BomSnapshot, Drawing, ProjectBom, ProjectSheetItem } from "../types";
 import { useWorkspace } from "../workspace/WorkspaceContext";
+import { draftingHref, type DraftingTarget } from "./draftingLinks";
 import { PageLayout } from "./PageLayout";
 
 type BomRow = Record<string, unknown>;
-type IndexedRow = { index: number; row: BomRow };
+type Readiness = "blocking" | "warning" | "ok";
+/** A BoM row as a grid row: stable id plus the readiness issue raised for it (if any). */
+type GridRow = { id: string; row: BomRow; readiness: Readiness | null; issue: BomReadinessIssue | undefined };
 
 const DRAWING_KEY = "fsdp.bom.drawing";
 
@@ -37,18 +45,16 @@ function writeStored(key: string, value: string): void {
   }
 }
 
-function text(value: unknown): string {
-  if (value === null || value === undefined || value === "") return "—";
-  if (Array.isArray(value)) return value.length ? value.join(", ") : "—";
-  return String(value);
+function listOf(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
 }
 
 function numberOf(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function listOf(value: unknown): string[] {
-  return Array.isArray(value) ? value.map(String) : [];
+function joined(value: unknown): string {
+  return Array.isArray(value) ? value.join(", ") : "";
 }
 
 function when(value: string | null | undefined): string {
@@ -61,97 +67,162 @@ function issueFor(row: BomRow, readiness: BomReadiness | null): BomReadinessIssu
   return readiness?.issues.find((issue) => (issue.part_number ?? null) === ((row.part_number as string | null | undefined) ?? null) && issue.component_tags.join() === tags);
 }
 
-const SNAPSHOT_COLUMNS: Array<SortableColumn<BomSnapshot>> = [
-  { key: "revision", header: "BoM rev", render: (snapshot) => <span className="mono">{snapshot.revision}</span>, sortValue: (snapshot) => snapshot.revision },
-  { key: "drawing_revision", header: "Drawing rev", render: (snapshot) => <span className="mono">{snapshot.drawing_revision ?? "—"}</span>, sortValue: (snapshot) => snapshot.drawing_revision },
+function toGridRows(prefix: string, rows: BomRow[], readiness: BomReadiness | null): GridRow[] {
+  return rows.map((row, index) => {
+    const issue = issueFor(row, readiness);
+    const level: Readiness | null = !readiness ? null : issue ? (issue.severity === "blocking" ? "blocking" : "warning") : "ok";
+    return { id: `${prefix}:${index}`, row, readiness: level, issue };
+  });
+}
+
+const READINESS_TONE: Record<Readiness, string> = { blocking: "bad", warning: "warn", ok: "good" };
+const READINESS_RANK: Record<Readiness, number> = { blocking: 0, warning: 1, ok: 2 };
+const KINDS = ["part", "unassigned", "bulk"];
+
+/** A text column reading `row[key]` of the BoM row. */
+function field(key: string, header: string, extra: Partial<DataGridColumn<GridRow>> = {}): DataGridColumn<GridRow> {
+  return { key, header, getValue: (entry) => entry.row[key] ?? null, ...extra };
+}
+
+function listField(key: string, header: string, extra: Partial<DataGridColumn<GridRow>> = {}): DataGridColumn<GridRow> {
+  return field(key, header, { mono: true, format: joined, sortValue: (entry) => listOf(entry.row[key])[0] ?? null, ...extra });
+}
+
+const ROW_COLUMNS: DataGridColumn<GridRow>[] = [
   {
-    key: "status",
-    header: "Status",
-    render: (snapshot) => (
-      <>
-        <StatusPill value={snapshot.status} /> {snapshot.stale_sheets?.length ? <span className="pill pill-warn">stale</span> : null}
-      </>
-    ),
-    sortValue: (snapshot) => snapshot.status
+    key: "readiness",
+    header: "Readiness",
+    width: 130,
+    type: "enum",
+    options: ["blocking", "warning", "ok"],
+    frozen: true,
+    render: (entry) =>
+      entry.readiness ? (
+        <span className={`pill pill-${READINESS_TONE[entry.readiness]}`} title={entry.issue?.warnings.join(" ")}>
+          {entry.issue?.code ?? entry.readiness}
+        </span>
+      ) : (
+        "—"
+      ),
+    format: (value, entry) => (entry.issue ? `${String(value)}: ${entry.issue.code ?? "issue"}` : value ? String(value) : ""),
+    sortValue: (entry) => (entry.readiness ? READINESS_RANK[entry.readiness] : null)
   },
-  { key: "rows", header: "Rows", render: (snapshot) => <span className="mono">{snapshot.rows.length}</span>, sortValue: (snapshot) => snapshot.rows.length },
-  { key: "created_at", header: "Generated", render: (snapshot) => <span className="mono">{when(snapshot.created_at)}</span>, sortValue: (snapshot) => snapshot.created_at },
-  {
-    key: "released",
-    header: "Released",
-    render: (snapshot) => (snapshot.released_by ? `${snapshot.released_by} · ${when(snapshot.released_at)}` : "—"),
-    sortValue: (snapshot) => snapshot.released_at
-  }
+  field("kind", "Kind", { width: 110, type: "enum", options: KINDS }),
+  field("part_number", "Part", { width: 140, mono: true, frozen: true }),
+  field("description", "Description", { width: 240 }),
+  field("quantity", "Qty", { width: 80, type: "number", mono: true, getValue: (entry) => numberOf(entry.row.quantity) }),
+  field("unit", "Unit", { width: 70 }),
+  field("spare_quantity", "Spares", { width: 80, type: "number", mono: true, getValue: (entry) => numberOf(entry.row.spare_quantity) }),
+  field("material", "Material", { width: 130 }),
+  listField("component_tags", "Tags", { width: 200 }),
+  listField("sheets", "Sheets", { width: 90, sortValue: (entry) => numberOf(Number(listOf(entry.row.sheets)[0])) }),
+  field("manufacturer", "Manufacturer", { width: 140, hidden: true }),
+  field("revision", "Part rev", { width: 80, hidden: true, mono: true }),
+  field("qualification_status", "Qualification", { width: 120, hidden: true }),
+  field("certification_status", "Certification", { width: 120, hidden: true }),
+  field("pressure_rating_bar", "Rating (bar)", { width: 100, type: "number", hidden: true, getValue: (entry) => numberOf(entry.row.pressure_rating_bar) }),
+  field("mass_kg", "Mass (kg)", { width: 90, type: "number", hidden: true, getValue: (entry) => numberOf(entry.row.mass_kg) }),
+  listField("dnp_tags", "DNP tags", { width: 140, hidden: true })
 ];
 
-const LEGACY_COLUMNS: Array<SortableColumn<ProjectBom>> = [
-  { key: "diagram", header: "Diagram", render: (snapshot) => snapshot.diagram_name, sortValue: (snapshot) => snapshot.diagram_name },
-  { key: "revision", header: "Rev", render: (snapshot) => <span className="mono">{snapshot.revision}</span>, sortValue: (snapshot) => snapshot.revision },
-  { key: "status", header: "Status", render: (snapshot) => <StatusPill value={snapshot.status} />, sortValue: (snapshot) => snapshot.status },
-  { key: "rows", header: "Rows", render: (snapshot) => <span className="mono">{snapshot.rows.length}</span>, sortValue: (snapshot) => snapshot.rows.length },
-  { key: "created_at", header: "Generated", render: (snapshot) => <span className="mono">{when(snapshot.created_at)}</span>, sortValue: (snapshot) => snapshot.created_at },
+const LEGACY_ROW_COLUMNS = ROW_COLUMNS.filter((column) => column.key !== "readiness");
+
+type IssueRow = BomReadinessIssue & { id: string };
+const ISSUE_COLUMNS: DataGridColumn<IssueRow>[] = [
   {
-    key: "csv",
-    header: "Export",
-    render: (snapshot) => (
-      <a className="downloadLink" href={bomCsvUrl(snapshot.id)} onClick={(event) => event.stopPropagation()}>
-        CSV
-      </a>
-    )
-  }
+    key: "severity",
+    header: "Severity",
+    width: 110,
+    type: "enum",
+    options: ["blocking", "warning"],
+    getValue: (issue) => issue.severity ?? "warning",
+    render: (issue) => <span className={`pill pill-${issue.severity === "blocking" ? "bad" : "warn"}`}>{issue.severity ?? "warning"}</span>
+  },
+  { key: "code", header: "Issue", width: 140, mono: true },
+  { key: "part_number", header: "Part", width: 130, mono: true },
+  { key: "component_tags", header: "Tags", width: 150, mono: true, format: joined, sortValue: (issue) => issue.component_tags[0] ?? null },
+  { key: "warnings", header: "Detail", width: 320, format: (value) => (Array.isArray(value) ? value.join(" ") : "") }
 ];
 
-function rowColumns(readiness: BomReadiness | null): Array<SortableColumn<IndexedRow>> {
+
+type DiffRow = {
+  id: string;
+  change: "added" | "removed" | "changed";
+  part_number: string | null;
+  description: string | null;
+  unit: string | null;
+  from_quantity: number | null;
+  to_quantity: number | null;
+};
+
+const CHANGE_TONE: Record<DiffRow["change"], string> = { added: "good", removed: "bad", changed: "info" };
+
+function quantityText(value: number | null): string {
+  return value === null ? "—" : String(value);
+}
+
+const DIFF_COLUMNS: DataGridColumn<DiffRow>[] = [
+  {
+    key: "change",
+    header: "Change",
+    width: 110,
+    type: "enum",
+    options: ["added", "removed", "changed"],
+    render: (row) => <span className={`pill pill-${CHANGE_TONE[row.change]}`}>{row.change}</span>
+  },
+  { key: "part_number", header: "Part", width: 140, mono: true },
+  { key: "description", header: "Description", width: 240 },
+  {
+    key: "quantity",
+    header: "Qty (old → new)",
+    width: 140,
+    mono: true,
+    getValue: (row) => `${quantityText(row.from_quantity)} → ${quantityText(row.to_quantity)}`,
+    sortValue: (row) => (row.to_quantity ?? 0) - (row.from_quantity ?? 0)
+  },
+  {
+    key: "delta",
+    header: "Δ Qty",
+    width: 90,
+    type: "number",
+    mono: true,
+    getValue: (row) => Math.round(((row.to_quantity ?? 0) - (row.from_quantity ?? 0)) * 1000) / 1000
+  },
+  { key: "unit", header: "Unit", width: 70 },
+  { key: "from_quantity", header: "Old qty", width: 90, type: "number", mono: true, hidden: true },
+  { key: "to_quantity", header: "New qty", width: 90, type: "number", mono: true, hidden: true }
+];
+
+function diffRows(diff: BomDiff): DiffRow[] {
+  const text = (value: unknown) => (value === null || value === undefined || value === "" ? null : String(value));
   return [
-    { key: "kind", header: "Kind", render: ({ row }) => text(row.kind), sortValue: ({ row }) => row.kind as string },
-    { key: "part_number", header: "Part", className: "mono", render: ({ row }) => text(row.part_number), sortValue: ({ row }) => row.part_number as string },
-    { key: "description", header: "Description", render: ({ row }) => text(row.description), sortValue: ({ row }) => row.description as string },
-    { key: "quantity", header: "Qty", className: "mono", render: ({ row }) => text(row.quantity), sortValue: ({ row }) => numberOf(row.quantity) },
-    { key: "unit", header: "Unit", render: ({ row }) => text(row.unit), sortValue: ({ row }) => row.unit as string },
-    { key: "spare_quantity", header: "Spares", className: "mono", render: ({ row }) => text(row.spare_quantity), sortValue: ({ row }) => numberOf(row.spare_quantity) },
-    { key: "material", header: "Material", render: ({ row }) => text(row.material), sortValue: ({ row }) => row.material as string },
-    { key: "component_tags", header: "Tags", className: "mono", render: ({ row }) => text(row.component_tags), sortValue: ({ row }) => listOf(row.component_tags)[0] },
-    { key: "sheets", header: "Sheets", className: "mono", render: ({ row }) => text(row.sheets), sortValue: ({ row }) => numberOf(listOf(row.sheets).map(Number)[0]) },
-    {
-      key: "readiness",
-      header: "Readiness",
-      render: ({ row }) => {
-        const issue = issueFor(row, readiness);
-        if (!readiness) return "—";
-        return issue ? <span className={issue.severity === "blocking" ? "pill pill-bad" : "pill pill-warn"} title={issue.warnings.join(" ")}>{issue.code ?? "issue"}</span> : <span className="pill pill-good">ok</span>;
-      },
-      sortValue: ({ row }) => {
-        const issue = issueFor(row, readiness);
-        return issue ? (issue.severity === "blocking" ? 0 : 1) : 2;
-      }
-    }
+    ...diff.added.map((row, index) => ({ id: `a${index}`, change: "added" as const, part_number: text(row.part_number), description: text(row.description), unit: text(row.unit), from_quantity: null, to_quantity: numberOf(row.quantity) })),
+    ...diff.removed.map((row, index) => ({ id: `r${index}`, change: "removed" as const, part_number: text(row.part_number), description: text(row.description), unit: text(row.unit), from_quantity: numberOf(row.quantity), to_quantity: null })),
+    ...diff.changed.map((row, index) => ({ id: `c${index}`, change: "changed" as const, part_number: row.part_number ?? null, description: row.description ?? null, unit: null, from_quantity: row.from_quantity, to_quantity: row.to_quantity }))
   ];
 }
 
-const ISSUE_COLUMNS: Array<SortableColumn<BomReadinessIssue & { index: number }>> = [
-  { key: "code", header: "Issue", render: (issue) => <span className="mono">{issue.code ?? "—"}</span>, sortValue: (issue) => issue.code },
-  { key: "part", header: "Part", className: "mono", render: (issue) => issue.part_number ?? "—", sortValue: (issue) => issue.part_number },
-  { key: "tags", header: "Tags", className: "mono", render: (issue) => issue.component_tags.join(", ") || "—", sortValue: (issue) => issue.component_tags[0] },
-  { key: "warnings", header: "Detail", render: (issue) => issue.warnings.join(" ") }
-];
-
-function IssueList({ title, tone, issues }: { title: string; tone: "bad" | "warn"; issues: BomReadinessIssue[] }) {
-  const rows = useMemo(() => issues.map((issue, index) => ({ ...issue, index })), [issues]);
-  if (!issues.length) return null;
+function DiffView({ diff, fileName }: { diff: BomDiff; fileName: string }) {
+  const rows = useMemo(() => diffRows(diff), [diff]);
   return (
     <>
       <p className="snapshotMeta">
-        <span className={`pill pill-${tone}`}>
-          {issues.length} {title}
-        </span>
+        <span className="pill pill-good">{diff.added.length} added</span>
+        <span className="pill pill-bad">{diff.removed.length} removed</span>
+        <span className="pill pill-info">{diff.changed.length} qty changed</span>
       </p>
-      <SortableTable rows={rows} columns={ISSUE_COLUMNS} getKey={(issue) => String(issue.index)} label={title} />
+      {rows.length ? (
+        <DataGrid rows={rows} columns={DIFF_COLUMNS} getRowId={(row) => row.id} selectable={false} storageKey="bom.diff" exportFileName={fileName} height={360} ariaLabel="BoM differences" />
+      ) : (
+        <p className="hint">No differences.</p>
+      )}
     </>
   );
 }
 
 export function BomPage() {
   const { busy, runAction, notify, canWrite, selectedProjectId } = useWorkspace();
+  const navigate = useNavigate();
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [snapshots, setSnapshots] = useState<BomSnapshot[]>([]);
@@ -162,6 +233,8 @@ export function BomPage() {
   const [diff, setDiff] = useState<BomDiff | null>(null);
   const [legacy, setLegacy] = useState<ProjectBom[]>([]);
   const [legacyId, setLegacyId] = useState("");
+  const [readinessFilter, setReadinessFilter] = useState<Readiness | "">("");
+  const [kindFilter, setKindFilter] = useState("");
 
   const drawing = drawings.find((entry) => entry.id === drawingId) ?? null;
   const bom = snapshots.find((snapshot) => snapshot.id === selectedBomId) ?? null;
@@ -174,6 +247,9 @@ export function BomPage() {
     drawingIdRef.current = drawingId;
     selectedBomIdRef.current = selectedBomId;
   }, [drawingId, selectedBomId]);
+
+  // Tagged sheet items per project, fetched on the first "locate in Drafting".
+  const sheetItemsRef = useRef(new Map<string, Promise<ProjectSheetItem[]>>());
 
   // Drawings of the project and the legacy diagram BoM history.
   useEffect(() => {
@@ -273,14 +349,139 @@ export function BomPage() {
     });
   }
 
-  const indexedRows = useMemo<IndexedRow[]>(() => (bom ? bom.rows.map((row, index) => ({ index, row })) : []), [bom]);
-  const columns = useMemo(() => rowColumns(readiness), [readiness]);
-  const legacyRows = useMemo<IndexedRow[]>(() => (legacyBom ? legacyBom.rows.map((row, index) => ({ index, row })) : []), [legacyBom]);
-  const legacyRowColumns = useMemo(() => rowColumns(null).filter((column) => column.key !== "readiness"), []);
+  /** Open the row's first located tag in Drafting (falls back to its first sheet, then the drawing). */
+  async function locate(entry: GridRow) {
+    if (!drawing) return;
+    const target: DraftingTarget = { projectId: drawing.project_id, drawingId: drawing.id };
+    const firstSheet = drawing.sheets.find((sheet) => String(sheet.sheet_no) === listOf(entry.row.sheets)[0]);
+    if (firstSheet) target.sheetId = firstSheet.id;
+    // Bulk rows list line references, not tagged items.
+    const tags = entry.row.kind === "bulk" ? [] : listOf(entry.row.component_tags);
+    if (tags.length) {
+      let pending = sheetItemsRef.current.get(drawing.project_id);
+      if (!pending) {
+        pending = api.listProjectSheetItems(drawing.project_id);
+        sheetItemsRef.current.set(drawing.project_id, pending);
+        pending.catch(() => sheetItemsRef.current.delete(drawing.project_id));
+      }
+      try {
+        const items = (await pending).filter((item) => item.drawing_id === drawing.id);
+        const hit = tags.map((tag) => items.find((item) => item.tag === tag)).find(Boolean);
+        if (hit) {
+          target.sheetId = hit.sheet_id;
+          target.itemId = hit.item_id;
+        }
+      } catch {
+        /* fall back to the sheet */
+      }
+    }
+    navigate(draftingHref(target));
+  }
+
+  const snapshotColumns = useMemo<DataGridColumn<BomSnapshot>[]>(
+    () => [
+      {
+        key: "revision",
+        header: "BoM rev",
+        width: 90,
+        type: "number",
+        render: (snapshot) => (
+          <button type="button" className="linkButton mono" aria-pressed={snapshot.id === selectedBomId} onClick={() => setSelectedBomId(snapshot.id)}>
+            rev {snapshot.revision}
+          </button>
+        )
+      },
+      { key: "drawing_revision", header: "Drawing rev", width: 100, mono: true },
+      {
+        key: "status",
+        header: "Status",
+        width: 130,
+        format: (value, snapshot) => `${String(value)}${snapshot.stale_sheets?.length ? " (stale)" : ""}`,
+        render: (snapshot) => (
+          <>
+            <StatusPill value={snapshot.status} /> {snapshot.stale_sheets?.length ? <span className="pill pill-warn">stale</span> : null}
+          </>
+        )
+      },
+      { key: "rows", header: "Rows", width: 70, type: "number", mono: true, getValue: (snapshot) => snapshot.rows.length },
+      { key: "created_at", header: "Generated", width: 170, mono: true, format: (value) => when(value as string | null) },
+      {
+        key: "released_at",
+        header: "Released",
+        width: 230,
+        format: (value, snapshot) => (snapshot.released_by ? `${snapshot.released_by} · ${when(value as string | null)}` : "—")
+      }
+    ],
+    [selectedBomId]
+  );
+
+  const legacyColumns = useMemo<DataGridColumn<ProjectBom>[]>(
+    () => [
+      {
+        key: "diagram_name",
+        header: "Diagram",
+        width: 200,
+        render: (snapshot) => (
+          <button type="button" className="linkButton" aria-pressed={snapshot.id === legacyId} onClick={() => setLegacyId(snapshot.id === legacyId ? "" : snapshot.id)}>
+            {snapshot.diagram_name}
+          </button>
+        )
+      },
+      { key: "revision", header: "Rev", width: 70, type: "number", mono: true },
+      { key: "status", header: "Status", width: 110, render: (snapshot) => <StatusPill value={snapshot.status} /> },
+      { key: "rows", header: "Rows", width: 70, type: "number", mono: true, getValue: (snapshot) => snapshot.rows.length },
+      { key: "created_at", header: "Generated", width: 170, mono: true, format: (value) => when(value as string | null) },
+      {
+        key: "csv",
+        header: "Export",
+        width: 80,
+        sortable: false,
+        filterable: false,
+        getValue: () => "CSV",
+        render: (snapshot) => (
+          <a className="downloadLink" href={bomCsvUrl(snapshot.id)}>
+            CSV
+          </a>
+        )
+      }
+    ],
+    [legacyId]
+  );
+
+  const gridRows = useMemo(() => (bom ? toGridRows(bom.id, bom.rows, readiness) : []), [bom, readiness]);
+  const visibleRows = useMemo(
+    () => gridRows.filter((entry) => (!readinessFilter || entry.readiness === readinessFilter) && (!kindFilter || entry.row.kind === kindFilter)),
+    [gridRows, readinessFilter, kindFilter]
+  );
+  const legacyRows = useMemo(() => (legacyBom ? toGridRows(legacyBom.id, legacyBom.rows, null) : []), [legacyBom]);
+  const issueRows = useMemo<IssueRow[]>(
+    () => [...(readiness?.issues ?? [])].sort((a, b) => Number(a.severity !== "blocking") - Number(b.severity !== "blocking")).map((issue, index) => ({ ...issue, id: String(index) })),
+    [readiness]
+  );
   const blocking = readiness?.issues.filter((issue) => issue.severity === "blocking") ?? [];
   const warnings = readiness?.issues.filter((issue) => issue.severity !== "blocking") ?? [];
   const others = snapshots.filter((snapshot) => snapshot.id !== bom?.id);
   const released = bom?.status === "released";
+  const exportName = drawing && bom ? `bom-${drawing.number}-rev${bom.revision}` : "bom";
+
+  const rowFilters = (
+    <>
+      <select className="bomFilter" value={readinessFilter} onChange={(event) => setReadinessFilter(event.target.value as Readiness | "")} aria-label="Filter by readiness" disabled={!readiness}>
+        <option value="">All readiness</option>
+        <option value="blocking">Blocking ({gridRows.filter((entry) => entry.readiness === "blocking").length})</option>
+        <option value="warning">Warning ({gridRows.filter((entry) => entry.readiness === "warning").length})</option>
+        <option value="ok">Ready ({gridRows.filter((entry) => entry.readiness === "ok").length})</option>
+      </select>
+      <select className="bomFilter" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)} aria-label="Filter by type">
+        <option value="">All types</option>
+        {KINDS.map((kind) => (
+          <option key={kind} value={kind}>
+            {kind} ({gridRows.filter((entry) => entry.row.kind === kind).length})
+          </option>
+        ))}
+      </select>
+    </>
+  );
 
   return (
     <PageLayout title="BoM & Procurement" description="Drawing BoMs: readiness, release, diff, and exports">
@@ -314,14 +515,18 @@ export function BomPage() {
       <section className="grid bomGrid">
         <Panel title="Snapshots" className="bomSnapshots">
           {drawing ? (
-            <SortableTable
+            <DataGrid
               rows={snapshots}
-              columns={SNAPSHOT_COLUMNS}
-              getKey={(snapshot) => snapshot.id}
-              selectedKey={selectedBomId}
-              onSelect={(snapshot) => setSelectedBomId(snapshot.id)}
-              emptyText="No BoM generated for this drawing yet."
-              label="BoM snapshots"
+              columns={snapshotColumns}
+              getRowId={(snapshot) => snapshot.id}
+              selectable={false}
+              onRowActivate={(snapshot) => setSelectedBomId(snapshot.id)}
+              rowClassName={(snapshot) => (snapshot.id === selectedBomId ? "dgRowCurrent" : undefined)}
+              storageKey="bom.snapshots"
+              exportFileName={`bom-snapshots-${drawing.number}`}
+              emptyMessage="No BoM generated for this drawing yet."
+              height={280}
+              ariaLabel="BoM snapshots"
             />
           ) : (
             <p className="hint">Create a drawing on the Drafting page; its BoMs appear here.</p>
@@ -339,10 +544,11 @@ export function BomPage() {
           ) : (
             <>
               <p className="snapshotMeta">
-                {readiness.blocking_count ?? blocking.length} blocking issue(s) stop the release; {readiness.warning_count ?? warnings.length} warning(s) do not.
+                <span className="pill pill-bad">{readiness.blocking_count ?? blocking.length} blocking</span>
+                <span className="pill pill-warn">{readiness.warning_count ?? warnings.length} warnings</span>
+                Blocking issues stop the release; warnings do not.
               </p>
-              <IssueList title="blocking" tone="bad" issues={blocking} />
-              <IssueList title="warnings" tone="warn" issues={warnings} />
+              <DataGrid rows={issueRows} columns={ISSUE_COLUMNS} getRowId={(issue) => issue.id} selectable={false} storageKey="bom.issues" exportFileName={`${exportName}-readiness`} height={280} ariaLabel="Readiness issues" />
             </>
           )}
         </Panel>
@@ -395,7 +601,20 @@ export function BomPage() {
               </ul>
             </div>
           )}
-          <SortableTable rows={indexedRows} columns={columns} getKey={(entry) => String(entry.index)} emptyText="This BoM has no rows." label="BoM rows" />
+          <DataGrid
+            rows={visibleRows}
+            columns={ROW_COLUMNS}
+            getRowId={(entry) => entry.id}
+            selectable={false}
+            onRowActivate={(entry) => void locate(entry)}
+            toolbar={rowFilters}
+            storageKey="bom.rows"
+            exportFileName={exportName}
+            emptyMessage={gridRows.length ? "No rows match the filters." : "This BoM has no rows."}
+            height={520}
+            ariaLabel="BoM rows"
+          />
+          <p className="hint">Double-click a row (or press Enter) to locate its first tag in Drafting.</p>
         </Panel>
       )}
       {bom && (
@@ -420,64 +639,30 @@ export function BomPage() {
           ) : (
             <p className="hint">Generate another BoM of this drawing to compare revisions.</p>
           )}
-          {diff && <DiffView diff={diff} />}
+          {diff && <DiffView diff={diff} fileName={`${exportName}-diff`} />}
         </Panel>
       )}
       {legacy.length > 0 && (
         <details className="legacyBoms">
           <summary>Legacy diagram BoMs ({legacy.length}) — read-only history</summary>
           <p className="hint">BoMs generated from diagrams before drawings existed. They can be viewed and exported, not generated or released.</p>
-          <SortableTable rows={legacy} columns={LEGACY_COLUMNS} getKey={(snapshot) => snapshot.id} selectedKey={legacyId} onSelect={(snapshot) => setLegacyId(snapshot.id === legacyId ? "" : snapshot.id)} label="Legacy diagram BoMs" />
-          {legacyBom && <SortableTable rows={legacyRows} columns={legacyRowColumns} getKey={(entry) => String(entry.index)} emptyText="No rows." label="Legacy BoM rows" />}
+          <DataGrid
+            rows={legacy}
+            columns={legacyColumns}
+            getRowId={(snapshot) => snapshot.id}
+            selectable={false}
+            onRowActivate={(snapshot) => setLegacyId(snapshot.id === legacyId ? "" : snapshot.id)}
+            rowClassName={(snapshot) => (snapshot.id === legacyId ? "dgRowCurrent" : undefined)}
+            storageKey="bom.legacy"
+            exportFileName="legacy-boms"
+            height={240}
+            ariaLabel="Legacy diagram BoMs"
+          />
+          {legacyBom && (
+            <DataGrid rows={legacyRows} columns={LEGACY_ROW_COLUMNS} getRowId={(entry) => entry.id} selectable={false} storageKey="bom.legacyRows" exportFileName={`legacy-bom-${legacyBom.diagram_name}-rev${legacyBom.revision}`} emptyMessage="No rows." height={360} ariaLabel="Legacy BoM rows" />
+          )}
         </details>
       )}
     </PageLayout>
-  );
-}
-
-const DIFF_ROW_COLUMNS: Array<SortableColumn<IndexedRow>> = [
-  { key: "part_number", header: "Part", className: "mono", render: ({ row }) => text(row.part_number), sortValue: ({ row }) => row.part_number as string },
-  { key: "description", header: "Description", render: ({ row }) => text(row.description), sortValue: ({ row }) => row.description as string },
-  { key: "quantity", header: "Qty", className: "mono", render: ({ row }) => text(row.quantity), sortValue: ({ row }) => numberOf(row.quantity) }
-];
-
-type Changed = BomDiff["changed"][number] & { index: number };
-const CHANGED_COLUMNS: Array<SortableColumn<Changed>> = [
-  { key: "part_number", header: "Part", className: "mono", render: (row) => row.part_number ?? "—", sortValue: (row) => row.part_number },
-  { key: "description", header: "Description", render: (row) => row.description ?? "—", sortValue: (row) => row.description },
-  { key: "quantity", header: "Qty", className: "mono", render: (row) => `${row.from_quantity} → ${row.to_quantity}`, sortValue: (row) => row.to_quantity - row.from_quantity }
-];
-
-function DiffView({ diff }: { diff: BomDiff }) {
-  const added = useMemo(() => diff.added.map((row, index) => ({ index, row })), [diff]);
-  const removed = useMemo(() => diff.removed.map((row, index) => ({ index, row })), [diff]);
-  const changed = useMemo(() => diff.changed.map((row, index) => ({ ...row, index })), [diff]);
-  return (
-    <>
-      <p className="snapshotMeta">
-        <span className="pill pill-good">{diff.added.length} added</span>
-        <span className="pill pill-bad">{diff.removed.length} removed</span>
-        <span className="pill pill-info">{diff.changed.length} qty changed</span>
-      </p>
-      {added.length > 0 && (
-        <>
-          <h3 className="bomDiffHeading">Added</h3>
-          <SortableTable rows={added} columns={DIFF_ROW_COLUMNS} getKey={(entry) => `a${entry.index}`} label="Added rows" />
-        </>
-      )}
-      {removed.length > 0 && (
-        <>
-          <h3 className="bomDiffHeading">Removed</h3>
-          <SortableTable rows={removed} columns={DIFF_ROW_COLUMNS} getKey={(entry) => `r${entry.index}`} label="Removed rows" />
-        </>
-      )}
-      {changed.length > 0 && (
-        <>
-          <h3 className="bomDiffHeading">Quantity changed</h3>
-          <SortableTable rows={changed} columns={CHANGED_COLUMNS} getKey={(entry) => `c${entry.index}`} label="Changed quantities" />
-        </>
-      )}
-      {!added.length && !removed.length && !changed.length && <p className="hint">No differences.</p>}
-    </>
   );
 }
