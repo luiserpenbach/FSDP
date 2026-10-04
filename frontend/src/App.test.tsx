@@ -1013,4 +1013,75 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Dashboard" })).toBeInTheDocument();
     expect(window.location.pathname).toBe("/dashboard");
   });
+
+  it("summarizes the selected project on the dashboard, card by card", async () => {
+    const base = mockWorkspaceFetch();
+    const part = (id: string, lifecycle: string) => ({ id, part_number: id, description: id, part_type: "valve", source_type: "internal", qualification_status: "qualified", certification_status: "unreviewed", lifecycle_status: lifecycle, preferred: false, completeness: 100 });
+    const row = (id: string, verdict: string, linkedDrawings = 0) => ({ requirement_id: id, key: id, title: id, status: "draft", constraint: null, checked: 0, passed: 0, failed: 0, verdict, drawings: [], linked_components: 0, linked_drawings: linkedDrawings, failures: [] });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/parts") return jsonResponse([part("a", "draft"), part("b", "released"), part("c", "released")]);
+        if (path === "/projects/p1/drawings") {
+          return jsonResponse([DRAWING, { ...DRAWING, id: "dw2", number: "AMB2-9004", status: "released" }, { ...DRAWING, id: "dw3", number: "AMB2-9005", status: "released" }]);
+        }
+        if (path === "/drawings/dw1/drc") return jsonResponse({ drawing_id: "dw1", counts: { error: 2, warning: 1, info: 0, waived: 0 }, sheets: [] });
+        if (path === "/drawings/dw2/drc") return jsonResponse({ drawing_id: "dw2", counts: { error: 0, warning: 0, info: 0, waived: 0 }, sheets: [] });
+        if (path === "/drawings/dw3/drc") return jsonResponse({ detail: "boom" }, 500);
+        if (path === "/projects/p1/verification-matrix") {
+          return jsonResponse({ project_id: "p1", rows: [row("r1", "no_data"), row("r2", "pass"), row("r3", "manual", 1), row("r4", "manual")] });
+        }
+        return base(input, init);
+      })
+    );
+
+    render(<App />);
+    await waitForWorkspace();
+    const card = async (title: string) => (await screen.findByText(title, { selector: ".dashCard > span" })).closest("a")!;
+
+    const drawingsCard = await card("Drawings");
+    expect(drawingsCard).toHaveAttribute("href", "/drafting");
+    await waitFor(() => expect(drawingsCard.querySelector("strong")).toHaveTextContent("3"));
+    expect(within(drawingsCard).getByText("released").closest("li")).toHaveTextContent("released2");
+    expect(within(drawingsCard).getByText("working").closest("li")).toHaveTextContent("working1");
+
+    const checksCard = await card("Design checks");
+    expect(checksCard).toHaveAttribute("href", "/drafting");
+    await waitFor(() => expect(checksCard.querySelector("strong")).toHaveTextContent("2"));
+    expect(checksCard).toHaveTextContent("1 warning");
+    expect(checksCard).toHaveTextContent("1 drawing(s) unchecked");
+    expect(within(checksCard).getByText("AMB2-9003")).toBeInTheDocument();
+    expect(within(checksCard).queryByText("AMB2-9004")).not.toBeInTheDocument();
+
+    const requirementsCard = await card("Unverified requirements");
+    expect(requirementsCard).toHaveAttribute("href", "/requirements");
+    await waitFor(() => expect(requirementsCard.querySelector("strong")).toHaveTextContent("2"));
+    expect(requirementsCard).toHaveTextContent("of 4 requirements");
+
+    const partsCard = await card("Parts");
+    expect(partsCard).toHaveAttribute("href", "/parts");
+    await waitFor(() => expect(partsCard.querySelector("strong")).toHaveTextContent("3"));
+    expect(within(partsCard).getByText("released").closest("li")).toHaveTextContent("released2");
+  });
+
+  it("keeps the other dashboard cards when one request fails", async () => {
+    // The base mock answers drawings with a 500; the verification matrix still loads.
+    const base = mockWorkspaceFetch();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/projects/p1/verification-matrix") return jsonResponse({ project_id: "p1", rows: [] });
+        return base(input, init);
+      })
+    );
+
+    render(<App />);
+    await waitForWorkspace();
+    const drawingsCard = (await screen.findByText("Drawings", { selector: ".dashCard > span" })).closest("a")!;
+    expect(await within(drawingsCard).findByText("Could not load.")).toBeInTheDocument();
+    const requirementsCard = screen.getByText("Unverified requirements", { selector: ".dashCard > span" }).closest("a")!;
+    await waitFor(() => expect(requirementsCard.querySelector("strong")).toHaveTextContent("0"));
+  });
 });

@@ -22,16 +22,6 @@ export function Panel({
   );
 }
 
-export function SummaryCard({ title, value, detail }: { title: string; value: number; detail: string }) {
-  return (
-    <article className="summaryCard">
-      <span>{title}</span>
-      <strong>{value}</strong>
-      <p>{detail}</p>
-    </article>
-  );
-}
-
 export function TextInput({
   label,
   value,

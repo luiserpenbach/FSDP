@@ -780,6 +780,73 @@ button.signOut {
   white-space: nowrap;
 }
 
+/* Dashboard: summary cards that link to where each item is handled. */
+.dashboardGrid {
+  align-items: stretch;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.dashCard {
+  color: inherit;
+  display: block;
+  text-decoration: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.dashCard:hover,
+.dashCard:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+  outline: none;
+}
+
+.dashCard-good {
+  border-top-color: var(--green-deep);
+}
+
+.dashCard-warn {
+  border-top-color: var(--amber);
+}
+
+.dashCard-bad {
+  border-top-color: var(--red);
+}
+
+.dashCard-bad > strong {
+  color: var(--red);
+}
+
+.dashCardError {
+  color: var(--red-deep);
+}
+
+.dashBreakdown {
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 8px 0 0;
+}
+
+.dashBreakdown li {
+  color: var(--text-2);
+  display: flex;
+  font-size: 12.5px;
+  justify-content: space-between;
+  text-transform: capitalize;
+}
+
+.dashBreakdown li strong {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 0;
+}
+
 /* ---------- Tables ---------- */
 
 .tableWrap {
