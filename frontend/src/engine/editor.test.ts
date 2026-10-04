@@ -187,6 +187,90 @@ describe("editor tags and shortcuts", () => {
   });
 });
 
+describe("read-only editor", () => {
+  it("drops document commands and drawing tools but keeps select, find, copy, and measure", () => {
+    const { editor, store } = makeEditor();
+    editor.setTool("wire");
+    editor.pointerDown({ x: 170, y: 80 });
+    expect(editor.state.wire).not.toBeNull();
+    editor.setReadOnly(true);
+    expect(editor.readOnly).toBe(true);
+    // An in-progress wire is abandoned and the tool drops back to select.
+    expect(editor.state.wire).toBeNull();
+    expect(editor.state.tool).toBe("select");
+
+    const before = store.doc;
+    const version = store.version;
+    for (const tool of ["wire", "label", "equipment", "note", "place"] as const) {
+      editor.setTool(tool);
+      expect(editor.state.tool).toBe("select");
+    }
+    editor.startPlacing({ library: BUILTIN_LIBRARY, key: "hand_valve", version: 1 });
+    expect(editor.state.tool).toBe("select");
+
+    // Clicking selects but never starts a move; keyboard edits are ignored.
+    editor.pointerDown({ x: 80, y: 120 });
+    expect(editor.state.selection).toEqual(["hv"]);
+    expect(editor.state.drag).toBeNull();
+    editor.pointerMove({ x: 120, y: 160 });
+    editor.pointerUp({ x: 120, y: 160 });
+    editor.key("Delete");
+    editor.key("r");
+    editor.key("ArrowRight");
+    editor.key("d", { ctrl: true });
+    editor.updateItem("hv", { tag: "HV-9999" });
+    editor.renumberSelection();
+    expect(editor.key("c", { ctrl: true })).toBe(true);
+    expect(editor.paste()).toEqual([]);
+    editor.store.dispatch({ type: "remove", ids: [] });
+    expect(editor.dispatch({ type: "remove", ids: ["hv"] })).toBe(false);
+    expect(editor.undo()).toBe(false);
+    expect(store.doc).toBe(before);
+    expect(store.version).toBe(version);
+    expect(store.dirty).toBe(false);
+
+    // Find, window selection, and measure still work.
+    expect(editor.findTag("PCV")).toEqual(["pcv"]);
+    editor.pointerDown({ x: 30, y: 60 });
+    editor.pointerUp({ x: 210, y: 160 });
+    expect(editor.state.selection.length).toBeGreaterThan(3);
+    editor.setTool("measure");
+    expect(editor.state.tool).toBe("measure");
+    editor.pointerDown({ x: 0, y: 0 });
+    editor.pointerDown({ x: 30, y: 40 });
+    expect(editor.state.measure).toMatchObject({ from: { x: 0, y: 0 }, to: { x: 30, y: 40 }, fixed: true });
+
+    // Unlocking restores editing.
+    editor.setReadOnly(false);
+    editor.select(["hv"]);
+    editor.key("Delete");
+    expect(store.doc.items.some((item) => item.id === "hv")).toBe(false);
+    expect(editor.undo()).toBe(true);
+    expect(store.doc.items.some((item) => item.id === "hv")).toBe(true);
+  });
+});
+
+describe("document store saves", () => {
+  it("keeps edits made while a save is in flight dirty", () => {
+    const store = new DocumentStore(smallPanelDocument());
+    store.dispatch({ type: "remove", ids: ["pt"] });
+    expect(store.dirty).toBe(true);
+    // The save captures the version it sends...
+    const sent = store.version;
+    // ...the user keeps editing while the request is in flight...
+    store.dispatch({ type: "remove", ids: ["psv"] });
+    // ...and the response only covers what was sent.
+    store.markSaved(sent);
+    expect(store.dirty).toBe(true);
+    store.markSaved(store.version);
+    expect(store.dirty).toBe(false);
+    // Without a version the current state counts as saved.
+    store.dispatch({ type: "remove", ids: ["hv"] });
+    store.markSaved();
+    expect(store.dirty).toBe(false);
+  });
+});
+
 describe("edit helpers", () => {
   it("drags end segments by growing a corner", () => {
     expect(dragSegment([{ x: 0, y: 0 }, { x: 20, y: 0 }], 0, 5)).toEqual([

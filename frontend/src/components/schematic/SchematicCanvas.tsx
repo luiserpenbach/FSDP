@@ -88,6 +88,7 @@ function SchematicCanvasInner(
     context,
     connectorTargets,
     partBadges,
+    readOnly = false,
     onCursor,
     onViewport
   }: {
@@ -99,6 +100,8 @@ function SchematicCanvasInner(
     connectorTargets?: Record<string, string>;
     /** Assigned-part badges per item id (canvas only). */
     partBadges?: Record<string, PartBadge>;
+    /** Released drawing or viewer: select, pan, zoom, find, and measure only (see `Editor.setReadOnly`). */
+    readOnly?: boolean;
     onCursor?: (point: Point | null) => void;
     onViewport?: (viewport: Viewport) => void;
   },
@@ -167,6 +170,10 @@ function SchematicCanvasInner(
     fittedFor.current = sheetKey;
     fitToSheet();
   }, [sheetKey, size.width, size.height, fitToSheet]);
+
+  useEffect(() => {
+    editor.setReadOnly(readOnly);
+  }, [editor, readOnly]);
 
   useEffect(() => {
     editor.setTolerance(6 / viewport.zoom);
@@ -245,13 +252,13 @@ function SchematicCanvasInner(
     }
     const ctrl = event.ctrlKey || event.metaKey;
     if (ctrl && (event.key === "z" || event.key === "Z")) {
-      if (event.shiftKey) editor.store.redo();
-      else editor.store.undo();
+      if (event.shiftKey) editor.redo();
+      else editor.undo();
       event.preventDefault();
       return;
     }
     if (ctrl && (event.key === "y" || event.key === "Y")) {
-      editor.store.redo();
+      editor.redo();
       event.preventDefault();
       return;
     }
@@ -285,7 +292,7 @@ function SchematicCanvasInner(
         }
       : null;
   const crossing = state.drag?.kind === "window" && state.drag.current.x < state.drag.origin.x;
-  const cursorClass = state.tool === "select" ? (state.hover ? "canvasHover" : "") : "canvasCrosshair";
+  const cursorClass = `${state.tool === "select" ? (state.hover ? "canvasHover" : "") : "canvasCrosshair"}${state.readOnly ? " canvasReadOnly" : ""}`;
 
   return (
     <div
@@ -301,6 +308,7 @@ function SchematicCanvasInner(
       onKeyUp={handleKeyUp}
       onContextMenu={(event) => event.preventDefault()}
       data-testid="schematic-canvas"
+      data-readonly={state.readOnly || undefined}
     >
       <svg className="schematicSvg" width="100%" height="100%">
         <defs>
