@@ -10,12 +10,25 @@ from app.models import User
 logger = logging.getLogger(__name__)
 
 
-def warn_if_insecure_defaults() -> None:
-    if settings.secret_key == INSECURE_DEFAULT_SECRET_KEY:
+def check_secret_key() -> None:
+    """Refuse to start with the default (or an empty) session-signing secret.
+
+    Local development can opt out with FSDP_ALLOW_INSECURE_SECRET=true.
+    """
+    if settings.secret_key.strip() and settings.secret_key != INSECURE_DEFAULT_SECRET_KEY:
+        return
+    if settings.allow_insecure_secret:
         logger.warning(
             "FSDP_SECRET_KEY is the insecure development default; "
             "set a strong secret before exposing this service."
         )
+        return
+    raise RuntimeError(
+        "FSDP_SECRET_KEY is unset or the insecure development default, so session tokens "
+        "could be forged. Set a strong secret (python -c \"import secrets; "
+        "print(secrets.token_urlsafe(48))\"), or set FSDP_ALLOW_INSECURE_SECRET=true "
+        "for local development only."
+    )
 
 
 def ensure_bootstrap_admin() -> None:

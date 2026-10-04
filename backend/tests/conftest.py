@@ -6,10 +6,14 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.core.config import settings
 from app.core.security import hash_password
 from app.db import get_db
 from app.main import app
 from app.models import Base, User
+
+# The suite runs with the default secret, which startup otherwise refuses.
+settings.allow_insecure_secret = True
 
 TEST_USER_EMAIL = "engineer@fsdp.test"
 TEST_USER_PASSWORD = "fsdp-test-password"

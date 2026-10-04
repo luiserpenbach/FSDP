@@ -23,8 +23,9 @@ All API routes (except `/health` and `/auth/login`) require a signed-in user. Se
 JWTs stored in an httpOnly cookie; the frontend shows a login page until a session exists.
 
 - Configure the backend via environment variables with the `FSDP_` prefix
-  (see `backend/.env.example`). At minimum set a strong `FSDP_SECRET_KEY` in any
-  real deployment, and `FSDP_SESSION_COOKIE_SECURE=true` when serving over HTTPS.
+  (see `backend/.env.example`). Set a strong `FSDP_SECRET_KEY`: the API refuses to
+  start with the built-in default unless `FSDP_ALLOW_INSECURE_SECRET=true` (local
+  development only). Set `FSDP_SESSION_COOKIE_SECURE=true` when serving over HTTPS.
 - The first admin account is created automatically at startup from
   `FSDP_ADMIN_EMAIL` / `FSDP_ADMIN_PASSWORD` (idempotent; skipped if unset).
 - Admins manage further accounts via `POST /auth/users`, `GET /auth/users`, and
@@ -70,12 +71,13 @@ docker compose exec api python -m app.seed   # optional demo data
 
 Serves the app at `http://localhost:8080` (frontend + same-origin `/api` proxy) with
 migrations applied automatically. Configure secrets and the admin login via a `.env`
-file next to `docker-compose.yml` — see [infra/README.md](infra/README.md), which also
+file next to `docker-compose.yml` (Compose refuses to start without `FSDP_SECRET_KEY`) — see [infra/README.md](infra/README.md), which also
 documents the internal Tailscale deployment and the Vercel demo setup.
 
 ## Local Development
 
-1. Start the database:
+1. Start the database (Compose needs `FSDP_SECRET_KEY` set, e.g. in `.env`, even
+   for the database alone):
 
    ```powershell
    docker compose up -d db
@@ -88,6 +90,7 @@ documents the internal Tailscale deployment and the Vercel demo setup.
    .\.venv\Scripts\Activate.ps1
    pip install -e ".[dev]"
    alembic upgrade head
+   $env:FSDP_ALLOW_INSECURE_SECRET = "true"   # or set a real FSDP_SECRET_KEY
    $env:FSDP_ADMIN_EMAIL = "you@example.com"
    $env:FSDP_ADMIN_PASSWORD = "a-strong-local-password"
    uvicorn app.main:app --reload

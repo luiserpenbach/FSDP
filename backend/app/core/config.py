@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173"]
 
     secret_key: str = INSECURE_DEFAULT_SECRET_KEY
+    # Development only: start even though secret_key is the insecure default.
+    allow_insecure_secret: bool = False
     session_ttl_hours: int = 12
     session_cookie_name: str = "fsdp_session"
     session_cookie_secure: bool = False
