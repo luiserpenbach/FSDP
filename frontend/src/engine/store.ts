@@ -54,8 +54,14 @@ export class DocumentStore {
     this.emit();
   }
 
-  markSaved(): void {
-    this.savedVersion = this.version;
+  /**
+   * Record a save. Pass the `version` captured when the save was sent: edits
+   * made while the request was in flight stay dirty, because they were not in
+   * the document that was saved. Without an argument the current version counts
+   * as saved.
+   */
+  markSaved(version: number = this.version): void {
+    this.savedVersion = Math.min(version, this.version);
   }
 
   /** Flag the document as needing a save without recording an undo step (e.g. after conversion). */

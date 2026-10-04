@@ -39,6 +39,9 @@ import {
 
 export type ToolId = "select" | "wire" | "place" | "label" | "equipment" | "note" | "measure";
 
+/** Tools that only look at the sheet; the only ones offered while the editor is read-only. */
+export const READ_ONLY_TOOLS: ReadonlySet<ToolId> = new Set<ToolId>(["select", "measure"]);
+
 export type AlignMode = "left" | "right" | "top" | "bottom" | "centerX" | "centerY";
 
 export type Modifiers = { shift?: boolean; ctrl?: boolean; alt?: boolean };
@@ -68,6 +71,8 @@ export type EditorState = {
   grid: number;
   /** System / class digits used when suggesting structured tags. */
   tagContext: TagContext;
+  /** Released drawing or a viewer: select, pan, zoom, find, copy, and measure only. */
+  readOnly: boolean;
 };
 
 export type EditorSnapshot = {
@@ -83,6 +88,8 @@ export type EditorOptions = {
   tagScheme?: TagScheme;
   /** Tags used on other sheets of the drawing (see `setReservedTags`). */
   reservedTags?: Iterable<string>;
+  /** Start read-only (see `setReadOnly`). */
+  readOnly?: boolean;
 };
 
 function parseLetters(tag: string): string | null {
@@ -141,7 +148,8 @@ export class Editor {
       measure: null,
       lineType: "process",
       grid: store.doc.meta.grid ?? DEFAULT_GRID_MM,
-      tagContext: {}
+      tagContext: {},
+      readOnly: Boolean(options.readOnly)
     };
     this.index = new SpatialIndex(store.doc, registry);
     this.ports = indexPorts(store.doc, registry);
@@ -232,6 +240,41 @@ export class Editor {
     }
   }
 
+  get readOnly(): boolean {
+    return this.stateValue.readOnly;
+  }
+
+  /**
+   * Lock or unlock editing. While read-only every document command is dropped,
+   * drawing tools are unavailable, and an in-progress wire, drag, or placement
+   * is abandoned; selection, find, copy, measure, pan, and zoom keep working.
+   */
+  setReadOnly(readOnly: boolean): void {
+    if (readOnly === this.stateValue.readOnly) return;
+    if (!readOnly) {
+      this.setState({ readOnly });
+      return;
+    }
+    if (this.stateValue.drag) this.store.endCoalescing();
+    const tool = READ_ONLY_TOOLS.has(this.stateValue.tool) ? this.stateValue.tool : "select";
+    this.setState({ readOnly, tool, wire: null, drag: null, place: null, equipmentDraft: null, snap: null });
+  }
+
+  /** Apply a document command unless the editor is read-only; returns whether it ran. */
+  dispatch(command: Command, options: { coalesceKey?: string } = {}): boolean {
+    if (this.stateValue.readOnly) return false;
+    this.store.dispatch(command, options);
+    return true;
+  }
+
+  undo(): boolean {
+    return !this.stateValue.readOnly && this.store.undo();
+  }
+
+  redo(): boolean {
+    return !this.stateValue.readOnly && this.store.redo();
+  }
+
   private setState(patch: Partial<EditorState>): void {
     this.stateValue = { ...this.stateValue, ...patch };
     this.emit();
@@ -291,6 +334,7 @@ export class Editor {
   /* ---------- Tool switching ---------- */
 
   setTool(tool: ToolId): void {
+    if (this.stateValue.readOnly && !READ_ONLY_TOOLS.has(tool)) return;
     this.setState({ tool, wire: null, drag: null, equipmentDraft: null, measure: null, place: tool === "place" ? this.stateValue.place : null });
   }
 
@@ -332,7 +376,7 @@ export class Editor {
       commands.push(command);
       working = applyCommand(working, command);
     }
-    if (commands.length) this.store.dispatch({ type: "batch", commands, label: `Align ${mode}` });
+    if (commands.length) this.dispatch({ type: "batch", commands, label: `Align ${mode}` });
   }
 
   /** Spread the selected items evenly between the two outermost along an axis. */
@@ -357,7 +401,7 @@ export class Editor {
       commands.push(command);
       working = applyCommand(working, command);
     });
-    if (commands.length) this.store.dispatch({ type: "batch", commands, label: `Distribute ${axis}` });
+    if (commands.length) this.dispatch({ type: "batch", commands, label: `Distribute ${axis}` });
   }
 
   copySelection(): number {
@@ -373,7 +417,7 @@ export class Editor {
    * and class digits.
    */
   paste(): string[] {
-    if (!this.clipboard.length) return [];
+    if (!this.clipboard.length || this.stateValue.readOnly) return [];
     this.pasteCount += 1;
     const grid = this.stateValue.grid;
     const offset = { x: grid * 4 * this.pasteCount, y: grid * 4 * this.pasteCount };
@@ -395,7 +439,7 @@ export class Editor {
       items.push(copy);
       working = applyCommand(working, { type: "add", items: [copy] });
     }
-    this.store.dispatch({ type: "add", items });
+    this.dispatch({ type: "add", items });
     this.setState({ selection: items.map((item) => item.id) });
     return items.map((item) => item.id);
   }
@@ -423,23 +467,24 @@ export class Editor {
     const line = this.itemById(lineId);
     if (!line || line.kind !== "line") return;
     const annotations = [...(line.annotations ?? []), { id: this.makeId(), ...annotation }];
-    this.store.dispatch({ type: "update", id: lineId, patch: { annotations } });
+    this.dispatch({ type: "update", id: lineId, patch: { annotations } });
   }
 
   removeLineAnnotation(lineId: string, annotationId: string): void {
     const line = this.itemById(lineId);
     if (!line || line.kind !== "line") return;
-    this.store.dispatch({ type: "update", id: lineId, patch: { annotations: (line.annotations ?? []).filter((entry) => entry.id !== annotationId) } });
+    this.dispatch({ type: "update", id: lineId, patch: { annotations: (line.annotations ?? []).filter((entry) => entry.id !== annotationId) } });
   }
 
   startPlacing(symbol: SymbolRef): void {
+    if (this.stateValue.readOnly) return;
     this.setState({ tool: "place", place: { symbol, rotation: 0, mirror: false }, wire: null, drag: null, selection: [] });
   }
 
   setLineType(lineType: LineType): void {
     const selectedLines = this.selectedItems().filter((item): item is LineItem => item.kind === "line");
     if (selectedLines.length) {
-      this.store.dispatch({
+      this.dispatch({
         type: "batch",
         label: "Line type",
         commands: selectedLines.map((line) => ({
@@ -480,7 +525,7 @@ export class Editor {
   /** Re-sequence the selected symbols' tags per letter group in reading order. */
   renumberSelection(startAt = 1): void {
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(renumberCommand(this.store.doc, this.tagScheme, this.stateValue.selection, this.stateValue.tagContext, startAt, this.reservedTags));
+    this.dispatch(renumberCommand(this.store.doc, this.tagScheme, this.stateValue.selection, this.stateValue.tagContext, startAt, this.reservedTags));
   }
 
   /** Escape: cancel the in-progress action, else drop back to select. */
@@ -518,7 +563,7 @@ export class Editor {
 
   deleteSelection(): void {
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch({ type: "remove", ids: this.stateValue.selection });
+    this.dispatch({ type: "remove", ids: this.stateValue.selection });
   }
 
   rotateSelection(by = 90): void {
@@ -527,7 +572,7 @@ export class Editor {
       return;
     }
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(rotateItemsCommand(this.store.doc, this.registry, this.stateValue.selection, by));
+    this.dispatch(rotateItemsCommand(this.store.doc, this.registry, this.stateValue.selection, by));
   }
 
   mirrorSelection(): void {
@@ -536,29 +581,29 @@ export class Editor {
       return;
     }
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(mirrorItemsCommand(this.store.doc, this.registry, this.stateValue.selection));
+    this.dispatch(mirrorItemsCommand(this.store.doc, this.registry, this.stateValue.selection));
   }
 
   duplicateSelection(): void {
-    if (!this.stateValue.selection.length) return;
+    if (!this.stateValue.selection.length || this.stateValue.readOnly) return;
     const grid = this.stateValue.grid;
     const copies = duplicateItems(this.store.doc, this.stateValue.selection, { x: grid * 4, y: grid * 4 }, this.makeId);
-    this.store.dispatch({ type: "add", items: copies });
+    this.dispatch({ type: "add", items: copies });
     this.setState({ selection: copies.map((item) => item.id) });
   }
 
   nudgeSelection(delta: Point): void {
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(moveItemsCommand(this.store.doc, this.registry, this.stateValue.selection, delta));
+    this.dispatch(moveItemsCommand(this.store.doc, this.registry, this.stateValue.selection, delta));
   }
 
   updateItem(id: string, patch: Record<string, unknown>): void {
-    this.store.dispatch({ type: "update", id, patch });
+    this.dispatch({ type: "update", id, patch });
   }
 
   updateSelection(patch: Record<string, unknown>): void {
     const commands: Command[] = this.stateValue.selection.map((id) => ({ type: "update", id, patch }));
-    this.store.dispatch({ type: "batch", commands, label: "Edit" });
+    this.dispatch({ type: "batch", commands, label: "Edit" });
   }
 
   /* ---------- Pointer events (sheet mm) ---------- */
@@ -625,7 +670,7 @@ export class Editor {
       const horizontal = a.y === b.y;
       const coordinate = modifiers.alt ? (horizontal ? raw.y : raw.x) : (horizontal ? snapPoint(raw, grid).y : snapPoint(raw, grid).x);
       const points = dragSegment(line.points, drag.index, coordinate);
-      this.store.dispatch({ type: "set-points", id: line.id, points }, { coalesceKey: drag.key });
+      this.dispatch({ type: "set-points", id: line.id, points }, { coalesceKey: drag.key });
       // Re-resolve the segment index after simplification: pick the segment at the new coordinate.
       const updated = this.itemById(drag.lineId);
       if (updated && updated.kind === "line") {
@@ -645,7 +690,7 @@ export class Editor {
       this.setState({ cursor: raw });
       return;
     }
-    this.store.dispatch(moveItemsCommand(this.store.doc, this.registry, drag.ids, step), { coalesceKey: drag.key });
+    this.dispatch(moveItemsCommand(this.store.doc, this.registry, drag.ids, step), { coalesceKey: drag.key });
     this.setState({ cursor: raw, drag: { ...drag, applied: wanted, moved: true } });
   }
 
@@ -697,6 +742,11 @@ export class Editor {
       return;
     }
     if (!alreadySelected) selection = [id];
+    if (this.stateValue.readOnly) {
+      // Nothing moves: a click just selects what is under the cursor.
+      this.setState({ selection: [id] });
+      return;
+    }
     // Dragging a segment of a single selected line slides that segment.
     if (hit.item.kind === "line" && hit.part.type === "segment" && selection.length === 1 && selection[0] === id) {
       this.setState({ selection, drag: { kind: "segment", lineId: id, index: hit.part.index, key: `segment-${Date.now()}` } });
@@ -797,7 +847,7 @@ export class Editor {
       showArrow: false,
       fields: {}
     };
-    this.store.dispatch({ type: "add", items: [line] });
+    this.dispatch({ type: "add", items: [line] });
     this.setState({ wire: null, selection: [line.id] });
   }
 
@@ -826,7 +876,7 @@ export class Editor {
       tag: this.suggestTagFor(definition.tagPrefix),
       fields: {}
     };
-    this.store.dispatch({ type: "add", items: [item] });
+    this.dispatch({ type: "add", items: [item] });
     this.setState({ selection: [item.id], cursor: position });
   }
 
@@ -842,7 +892,7 @@ export class Editor {
       tag: this.suggestTagFor(definition.tagPrefix),
       fields: {}
     };
-    this.store.dispatch({ type: "add", items: [item] });
+    this.dispatch({ type: "add", items: [item] });
     this.setState({ selection: [item.id] });
     return item;
   }
@@ -858,7 +908,7 @@ export class Editor {
       rotation: 0,
       anchor: "start"
     };
-    this.store.dispatch({ type: "add", items: [item] });
+    this.dispatch({ type: "add", items: [item] });
     this.setState({ selection: [item.id], tool: "select" });
   }
 
@@ -872,7 +922,7 @@ export class Editor {
       author: this.options.author,
       createdAt: new Date().toISOString()
     };
-    this.store.dispatch({ type: "add", items: [item] });
+    this.dispatch({ type: "add", items: [item] });
     this.setState({ selection: [item.id], tool: "select" });
   }
 
@@ -888,7 +938,7 @@ export class Editor {
       fields: {}
     };
     // Equipment goes to the back so its contents stay clickable and draw on top.
-    this.store.dispatch({ type: "add", items: [item], indices: [0] });
+    this.dispatch({ type: "add", items: [item], indices: [0] });
     this.setState({ selection: [item.id], tool: "select" });
   }
 

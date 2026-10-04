@@ -8,20 +8,23 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { api } from "../api";
+import { api, releaseDrawing, reviseDrawing, submitDrawing, withdrawDrawing, WorkflowConflictError } from "../api";
 import { AssignPartModal } from "../components/schematic/AssignPartModal";
 import { DrcPanel, useDrc, type DrcInputs } from "../components/schematic/DrcPanel";
+import { IndexStatusNote, RevisionSnapshotModal, RevisionTable, WorkflowPanel, drawingStatusOf } from "../components/schematic/DrawingWorkflow";
 import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
+import { useStaleReindex, type ReindexOutcome } from "../components/schematic/useStaleReindex";
 import { convertLegacyGraph } from "../engine/convert";
-import { Editor, type AlignMode, type ToolId } from "../engine/editor";
+import { deriveSheetData } from "../engine/derived";
+import { Editor, READ_ONLY_TOOLS, type AlignMode, type ToolId } from "../engine/editor";
 import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
 import { polylineLength } from "../engine/geometry";
 import { runDrc, type DrcResult, type DrcWaiver, type RequirementRef } from "../engine/drc";
 import { renderFindingsSheet } from "../engine/drcSheet";
-import { buildSheetIndex, lineLengthM } from "../engine/index";
+import { lineLengthM } from "../engine/index";
 import type { ListKind } from "../engine/lists";
 import { partBadge, partWarnings } from "../engine/parts";
 import { SymbolRegistry } from "../engine/library";
@@ -32,7 +35,7 @@ import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, tagsOf, validateTag, ty
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
-import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, Requirement, User } from "../types";
+import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRead, DrawingRevision, DrawingSheet, FluidSystem, LineClass, Part, PidSymbolDef, ReleaseBlocker, ReleaseSnapshotSheet, Requirement, RevisionSnapshot, User } from "../types";
 import { useUnsavedChanges } from "../unsavedChanges";
 import { useWorkspace } from "../workspace/WorkspaceContext";
 import { PageLayout } from "./PageLayout";
@@ -213,6 +216,7 @@ function DrawingCanvas({
   sheetNo,
   otherSheets,
   parts,
+  readOnly,
   canvasRef,
   onCursor,
   onViewport
@@ -226,6 +230,7 @@ function DrawingCanvas({
   sheetNo: number;
   otherSheets: SheetDoc[];
   parts: Part[];
+  readOnly: boolean;
   canvasRef: React.RefObject<SchematicCanvasHandle | null>;
   onCursor: (point: Point | null) => void;
   onViewport: (viewport: Viewport) => void;
@@ -247,7 +252,7 @@ function DrawingCanvas({
     () => (baseContext ? withLegends(baseContext, doc, registry, scheme, flags, connectorTargets) : undefined),
     [baseContext, doc, registry, scheme, flags, connectorTargets]
   );
-  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} onCursor={onCursor} onViewport={onViewport} />;
+  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} readOnly={readOnly} onCursor={onCursor} onViewport={onViewport} />;
 }
 
 export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify }: Props) {
@@ -278,6 +283,13 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [listsBusy, setListsBusy] = useState(false);
   const [waivers, setWaivers] = useState<DrcWaiver[]>([]);
   const [exportFindings, setExportFindings] = useState(false);
+  const [tagSchemeReady, setTagSchemeReady] = useState(false);
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  /** Reasons the last release attempt was refused. */
+  const [blockers, setBlockers] = useState<ReleaseBlocker[]>([]);
+  const [snapshotRevision, setSnapshotRevision] = useState<DrawingRevision | null>(null);
+  /** Sheet whose design rule check to bring into view once it is open. */
+  const [focusDrcSheet, setFocusDrcSheet] = useState<string | null>(null);
   const [libraryWidth, setLibraryWidth] = useStoredWidth("fsdp.draftingLibraryWidth", 248, 200, 420);
   const [sideWidth, setSideWidth] = useStoredWidth("fsdp.draftingSideWidth", 340, 280, 560);
   const pendingLocate = useRef<LocateTarget | null>(null);
@@ -295,12 +307,44 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const flags = useMemo(() => legendFlags(drawings.find((entry) => entry.id === drawingId) ?? null), [drawings, drawingId]);
   const drawing = drawings.find((entry) => entry.id === drawingId) ?? null;
   const sheetSummary = drawing?.sheets.find((entry) => entry.id === sheetId) ?? null;
+  const status = drawingStatusOf(drawing?.status);
+  // Released drawings are locked: edits go into a new revision. Viewers never edit.
+  const locked = status === "released";
+  const canEdit = canWrite && !locked;
+  const staleSheets = useMemo(() => drawing?.sheets.filter((entry) => entry.index_stale) ?? [], [drawing]);
   const systemName = systems.find((system) => system.id === drawing?.system_id)?.name;
 
   const projectIdRef = useRef(projectId);
   useEffect(() => {
     projectIdRef.current = projectId;
   }, [projectId]);
+
+  // Latest values for async work (sheet loads, background re-indexing).
+  const canEditRef = useRef(canEdit);
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    canEditRef.current = canEdit;
+    sessionRef.current = session;
+  }, [canEdit, session]);
+  /** Bumped when a sheet is saved: a background re-index that read it earlier stands down. */
+  const sheetTouches = useRef(new Map<string, number>());
+  const touchSheet = useCallback((id: string) => {
+    sheetTouches.current.set(id, (sheetTouches.current.get(id) ?? 0) + 1);
+  }, []);
+
+  /** Record that the server holds a fresh index for a sheet (after a save or a re-index). */
+  const markSheetIndexed = useCallback((targetDrawingId: string, targetSheetId: string, drcErrors?: number) => {
+    const indexedAt = new Date().toISOString();
+    setDrawings((current) =>
+      current.map((entry) =>
+        entry.id === targetDrawingId && entry.sheets.some((sheetEntry) => sheetEntry.id === targetSheetId && sheetEntry.index_stale)
+          ? { ...entry, sheets: entry.sheets.map((sheetEntry) => (sheetEntry.id === targetSheetId ? { ...sheetEntry, index_stale: false, indexed_at: indexedAt } : sheetEntry)) }
+          : entry
+      )
+    );
+    // The sheet is no longer stale, and a clean DRC clears its error blocker too.
+    setBlockers((current) => current.filter((blocker) => blocker.sheet_id !== targetSheetId || (blocker.code === "drc_errors" && drcErrors !== 0)));
+  }, []);
 
   /** Reload the drawing list; resolves null (and changes nothing) if the project changed meanwhile. */
   const refreshDrawings = useCallback(
@@ -349,8 +393,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     let cancelled = false;
     if (!projectId) {
       setTagScheme(DEFAULT_TAG_SCHEME);
+      setTagSchemeReady(true);
       return;
     }
+    // Background re-indexing waits for the project's scheme: the DRC checks tags against it.
+    setTagSchemeReady(false);
     api
       .getTagScheme(projectId)
       .then((read) => {
@@ -358,6 +405,9 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       })
       .catch(() => {
         if (!cancelled) setTagScheme(DEFAULT_TAG_SCHEME);
+      })
+      .finally(() => {
+        if (!cancelled) setTagSchemeReady(true);
       });
     return () => {
       cancelled = true;
@@ -460,7 +510,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
         if (cancelled) return;
         const document = withFrameTemplate(sheet.document as unknown as SchematicDocument, drawing?.frame_template ?? "basic");
         const store = new DocumentStore(document);
-        setSession({ editor: new Editor(store, registry, { author: user.name, tagScheme }), sheetId: loadingSheetId });
+        setSession({ editor: new Editor(store, registry, { author: user.name, tagScheme, readOnly: !canEditRef.current }), sheetId: loadingSheetId });
       })
       .catch((error) => {
         if (!cancelled) notify(error instanceof Error ? error.message : "Could not open the sheet.", true);
@@ -482,7 +532,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   useEffect(() => {
     if (!editor || !drawing) return;
     const next = withFrameTemplate(editor.store.doc, drawing.frame_template);
-    if (next !== editor.store.doc) editor.store.dispatch({ type: "sheet", sheet: next.sheet });
+    if (next !== editor.store.doc) editor.dispatch({ type: "sheet", sheet: next.sheet });
   }, [editor, drawing]);
 
   useEffect(() => () => sessionEditor?.dispose(), [sessionEditor]);
@@ -505,20 +555,31 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
 
   const save = useCallback(async (): Promise<boolean> => {
     // `editor` is only set while it holds `sheetId`'s document (see `session`).
-    if (!editor || !sheetId || !drawing) return false;
+    if (!editor || !sheetId || !drawing || !canEdit) return false;
     try {
       const sheetNo = sheetSummary?.sheet_no ?? 1;
-      const connectorTargets = resolveConnectorTargets({ sheetNo, doc: editor.store.doc }, otherSheets).targets;
-      // The index rows travel with the document so lists, BoM, and where-used read the saved state.
-      const index = buildSheetIndex(editor.store.doc, registry, { connectivity: editor.connectivity, connectorTargets });
-      // The DRC runs on save: open and waived findings plus requirement checks are stored with the sheet.
-      const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers, reservedTags: editor.reservedTags });
-      await api.updateSheet(sheetId, {
-        document: editor.store.doc,
-        index,
-        drc: { findings: [...drc.findings, ...drc.waived].map(({ key, rule, severity, message, itemId, subject, zone, requirementId }) => ({ key, rule, severity, message, itemId, subject, zone, requirementId })), checks: drc.requirementChecks }
+      // Capture the document and its version together: edits made while the
+      // request is in flight are not in this save and must stay dirty.
+      const version = editor.store.version;
+      const doc = editor.store.doc;
+      // The index rows and the DRC (open and waived findings, requirement checks) travel with the
+      // document so lists, BoM, where-used, and release read the saved state.
+      const { index, drc, payload } = deriveSheetData({
+        doc,
+        sheetId,
+        sheetNo,
+        otherSheets,
+        registry,
+        connectivity: editor.connectivity,
+        tagScheme,
+        parts: partMap,
+        requirements: requirementRefs,
+        waivers
       });
-      editor.store.markSaved();
+      touchSheet(sheetId);
+      await api.updateSheet(sheetId, { document: doc, ...payload });
+      editor.store.markSaved(version);
+      markSheetIndexed(drawing.id, sheetId, drc.counts.error);
       const drcSummary = drc.counts.error || drc.counts.warning ? `; DRC: ${drc.counts.error} error(s), ${drc.counts.warning} warning(s)` : "; DRC clean";
       notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed${drcSummary}).`);
       return true;
@@ -526,7 +587,177 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       notify(error instanceof Error ? error.message : "Save failed.", true);
       return false;
     }
-  }, [editor, sheetId, drawing, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify]);
+  }, [editor, sheetId, drawing, canEdit, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify, touchSheet, markSheetIndexed]);
+
+  // Inputs of the background re-index, read when each sheet's turn comes.
+  const reindexInputs = useRef({ drawing, registry, tagScheme, partMap, requirementRefs });
+  useEffect(() => {
+    reindexInputs.current = { drawing, registry, tagScheme, partMap, requirementRefs };
+  }, [drawing, registry, tagScheme, partMap, requirementRefs]);
+
+  /**
+   * Re-derive one stale sheet from its stored document, exactly as a save would
+   * (same index and DRC inputs), and store it. The open sheet is left alone
+   * while it has unsaved edits: its save indexes it.
+   */
+  const reindexSheet = useCallback(
+    async (targetId: string, isCancelled: () => boolean): Promise<ReindexOutcome> => {
+      const openWithEdits = () => {
+        const open = sessionRef.current;
+        return Boolean(open && open.sheetId === targetId && open.editor.store.dirty);
+      };
+      const current = reindexInputs.current;
+      const target = current.drawing?.sheets.find((entry) => entry.id === targetId);
+      if (!current.drawing || !target || openWithEdits()) return "skipped";
+      const touched = sheetTouches.current.get(targetId) ?? 0;
+      const sheets: DrawingSheet[] = [];
+      for (const entry of current.drawing.sheets) sheets.push(await api.getSheet(entry.id));
+      const stored = await api.getSheetDrc(targetId);
+      // Stand down if the drawing changed, the sheet was saved meanwhile, or it now has unsaved edits.
+      if (isCancelled() || !canEditRef.current || openWithEdits() || (sheetTouches.current.get(targetId) ?? 0) !== touched) return "skipped";
+      const { drawing: latestDrawing, registry: latestRegistry, tagScheme: latestScheme, partMap: latestParts, requirementRefs: latestRequirements } = reindexInputs.current;
+      if (!latestDrawing) return "skipped";
+      const own = sheets.find((entry) => entry.id === targetId);
+      if (!own) return "skipped";
+      const doc = withFrameTemplate(own.document as unknown as SchematicDocument, latestDrawing.frame_template);
+      const { drc, payload } = deriveSheetData({
+        doc,
+        sheetId: targetId,
+        sheetNo: own.sheet_no,
+        otherSheets: sheets.map((entry) => ({ sheetId: entry.id, sheetNo: entry.sheet_no, doc: entry.document as unknown as SchematicDocument })),
+        registry: latestRegistry,
+        tagScheme: latestScheme,
+        parts: latestParts,
+        requirements: latestRequirements,
+        waivers: stored.waivers.map((waiver) => ({ key: waiver.key, reason: waiver.reason, by: waiver.waived_by, at: waiver.created_at }))
+      });
+      await api.updateSheet(targetId, { document: doc, ...payload });
+      markSheetIndexed(latestDrawing.id, targetId, drc.counts.error);
+      return "indexed";
+    },
+    [markSheetIndexed]
+  );
+
+  const staleSheetIds = useMemo(() => staleSheets.map((entry) => entry.id), [staleSheets]);
+  const { status: reindexStatus, reindexNow } = useStaleReindex({
+    drawingId: drawing?.id ?? null,
+    staleSheetIds,
+    enabled: Boolean(drawing) && canEdit && tagSchemeReady,
+    reindex: reindexSheet
+  });
+
+  /** "Re-index now": the open sheet with unsaved edits is saved; the others re-index in the background. */
+  function requestReindex(sheetIds?: string[]) {
+    const ids = sheetIds ?? staleSheets.map((entry) => entry.id);
+    if (editor?.store.dirty && ids.includes(sheetId)) void save();
+    reindexNow(ids.filter((id) => !(editor?.store.dirty && id === sheetId)));
+  }
+
+  // Forget refused-release reasons when another drawing opens.
+  useEffect(() => {
+    setBlockers([]);
+    setSnapshotRevision(null);
+  }, [drawing?.id]);
+
+  function replaceDrawing(updated: DrawingRead) {
+    setDrawings((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
+  }
+
+  async function runWorkflow(action: (id: string) => Promise<DrawingRead>, success: (updated: DrawingRead) => string): Promise<void> {
+    if (!drawing) return;
+    const id = drawing.id;
+    setWorkflowBusy(true);
+    try {
+      const updated = await action(id);
+      replaceDrawing(updated);
+      setBlockers([]);
+      notify(success(updated));
+    } catch (error) {
+      if (error instanceof WorkflowConflictError && error.reasons.length) {
+        setBlockers(error.reasons);
+        // The server's view of which sheets are stale feeds the background re-index.
+        await refreshDrawings().catch(() => null);
+      }
+      notify(error instanceof Error ? error.message : "The workflow action failed.", true);
+    } finally {
+      setWorkflowBusy(false);
+    }
+  }
+
+  async function submitForReview() {
+    if (!drawing || !(await ensureSaved())) return;
+    await runWorkflow(submitDrawing, (updated) => `Submitted ${updated.number} rev ${updated.current_revision?.label ?? ""} for review.`);
+  }
+
+  async function withdrawFromReview() {
+    await runWorkflow(withdrawDrawing, (updated) => `Withdrew ${updated.number} from review.`);
+  }
+
+  async function release() {
+    if (!drawing) return;
+    const label = drawing.current_revision?.label ?? drawing.revisions[drawing.revisions.length - 1]?.label ?? "-";
+    const question = `Release ${drawing.number} rev ${label}?\n\nThe drawing locks and you are recorded as the approver. Later changes need a new revision.`;
+    if (!window.confirm(question)) return;
+    // Release reads the stored index, so unsaved edits go in first.
+    if (!(await ensureSaved())) return;
+    await runWorkflow(releaseDrawing, (updated) => `Released ${updated.number} rev ${updated.current_revision?.label ?? label}.`);
+  }
+
+  async function startRevision(body: { label?: string; description?: string }) {
+    await runWorkflow(
+      (id) => reviseDrawing(id, body.label || body.description ? body : undefined),
+      (updated) => `Started revision ${updated.current_revision?.label ?? ""} of ${updated.number}; the drawing is editable again.`
+    );
+  }
+
+  /** A release blocker was clicked: open its sheet, and its DRC for open errors. */
+  function openBlocker(blocker: ReleaseBlocker) {
+    if (blocker.sheet_id !== sheetId) {
+      if (!confirmDiscard()) return;
+      setSheetId(blocker.sheet_id);
+    }
+    if (blocker.code === "drc_errors") setFocusDrcSheet(blocker.sheet_id);
+  }
+
+  // Bring the design rule check into view once the blocker's sheet is open.
+  useEffect(() => {
+    if (!editor || !focusDrcSheet || focusDrcSheet !== sheetId) return;
+    setFocusDrcSheet(null);
+    const handle = window.setTimeout(() => {
+      const panel = document.querySelector<HTMLElement>(".draftingSide .drcPanel");
+      panel?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      panel?.classList.add("drcPanelFocus");
+      window.setTimeout(() => panel?.classList.remove("drcPanelFocus"), 1600);
+    }, 50);
+    return () => window.clearTimeout(handle);
+  }, [editor, focusDrcSheet, sheetId]);
+
+  const snapshotContext = useCallback(
+    (snapshot: RevisionSnapshot, snapshotSheet: ReleaseSnapshotSheet): DrawingContext | undefined => {
+      if (!drawing) return undefined;
+      const meta = snapshot.snapshot.drawing as Partial<Drawing>;
+      const frozen: Drawing = {
+        ...drawing,
+        number: meta.number ?? drawing.number,
+        title: meta.title ?? drawing.title,
+        size: meta.size ?? drawing.size,
+        units: meta.units ?? drawing.units,
+        discipline: meta.discipline ?? drawing.discipline,
+        fields: meta.fields ?? drawing.fields,
+        notes: meta.notes ?? drawing.notes,
+        status: "released",
+        sheets: snapshot.snapshot.sheets.map((entry) => ({ id: entry.id, sheet_no: entry.sheet_no, title: entry.title, source_diagram_id: null })),
+        revisions: drawing.revisions.filter((revision) => revision.sequence <= snapshot.sequence)
+      };
+      const docOf = (entry: ReleaseSnapshotSheet) => entry.document as unknown as SchematicDocument;
+      const others = snapshot.snapshot.sheets.filter((entry) => entry.id !== snapshotSheet.id).map((entry) => ({ sheetId: entry.id, sheetNo: entry.sheet_no, doc: docOf(entry) }));
+      return {
+        ...buildDrawingContext(frozen, snapshotSheet.sheet_no, snapshotSheet.title, projectName, systemName),
+        connectorTargets: resolveConnectorTargets({ sheetNo: snapshotSheet.sheet_no, doc: docOf(snapshotSheet) }, others).targets
+      };
+    },
+    [drawing, projectName, systemName]
+  );
 
   async function waiveFinding(key: string, reason: string) {
     if (!sheetId) return;
@@ -559,7 +790,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   /** Exports and the BoM read the saved index, so save a dirty sheet first. */
   async function ensureSaved(): Promise<boolean> {
     if (!editor?.store.dirty) return true;
-    if (!canWrite) {
+    if (!canEdit) {
       notify("Unsaved changes are not in the stored index; a writer must save the sheet first.", true);
       return false;
     }
@@ -608,11 +839,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "s") return;
       event.preventDefault();
-      if (canWrite && editor?.store.dirty) void save();
+      if (canEdit && editor?.store.dirty) void save();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [canWrite, editor, save]);
+  }, [canEdit, editor, save]);
 
   const focusItem = useCallback(
     (itemId: string) => {
@@ -790,26 +1021,6 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     }
   }
 
-  async function addRevision(body: Parameters<typeof api.createRevision>[1]) {
-    if (!drawing) return;
-    try {
-      await api.createRevision(drawing.id, body);
-      await refreshDrawings(drawing.id);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Could not add the revision.", true);
-    }
-  }
-
-  async function updateRevision(revisionId: string, body: Parameters<typeof api.updateRevision>[1]) {
-    if (!drawing) return;
-    try {
-      await api.updateRevision(revisionId, body);
-      await refreshDrawings(drawing.id);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Could not update the revision.", true);
-    }
-  }
-
   return (
     <PageLayout className="draftingPage" title="Drafting" description="Paper-space P&ID drawings" showHeader={false}>
       <header className="draftingHeader">
@@ -834,14 +1045,14 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 type="button"
                 role="tab"
                 aria-selected={sheet.id === sheetId}
-                className={sheet.id === sheetId ? "sheetTab active" : "sheetTab"}
+                className={`sheetTab${sheet.id === sheetId ? " active" : ""}${sheet.index_stale ? " stale" : ""}`}
                 onClick={() => switchSheet(sheet.id)}
-                title={sheet.title ?? `Sheet ${sheet.sheet_no}`}
+                title={`${sheet.title ?? `Sheet ${sheet.sheet_no}`}${sheet.index_stale ? " (index out of date)" : ""}`}
               >
                 {sheet.sheet_no}
               </button>
             ))}
-            <button type="button" className="sheetTab sheetTabAdd" disabled={!canWrite} onClick={() => void addSheet()} title="Add sheet">
+            <button type="button" className="sheetTab sheetTabAdd" disabled={!canEdit} onClick={() => void addSheet()} title={locked ? "Released: start a new revision to add sheets" : "Add sheet"}>
               +
             </button>
           </div>
@@ -871,7 +1082,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                   <span>DRC page</span>
                 </label>
               </div>
-              <SaveButton editor={editor} canWrite={canWrite} onSave={() => void save()} />
+              <SaveButton editor={editor} canWrite={canEdit} onSave={() => void save()} />
             </>
           )}
         </div>
@@ -892,7 +1103,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           <EditorToolbar
             editor={editor}
             registry={registry}
-            canWrite={canWrite}
+            canWrite={canEdit}
             showGrid={showGrid}
             onToggleGrid={() => setShowGrid((current) => !current)}
             onFit={() => canvasRef.current?.fitToSheet()}
@@ -913,6 +1124,25 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
             </>
           )}
           <div className="draftingCenter">
+            {drawing && locked && (
+              <div className="lockBanner" role="status">
+                <span>
+                  <strong>Released</strong> — start a new revision to edit.
+                </span>
+                {canWrite && (
+                  <button type="button" className="primary" disabled={workflowBusy} onClick={() => void startRevision({})}>
+                    Start new revision
+                  </button>
+                )}
+              </div>
+            )}
+            {drawing && !canWrite && !locked && (
+              <div className="lockBanner" role="status">
+                <span>
+                  <strong>View only</strong> — your role can look, find, and measure, but not edit.
+                </span>
+              </div>
+            )}
             {editor ? (
               <DrawingCanvas
                 editor={editor}
@@ -924,6 +1154,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 sheetNo={sheetSummary?.sheet_no ?? 1}
                 otherSheets={otherSheets}
                 parts={parts}
+                readOnly={!canEdit}
                 canvasRef={canvasRef}
                 onCursor={setCursor}
                 onViewport={setViewport}
@@ -951,6 +1182,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 projectId={projectId}
                 drawing={drawing}
                 canWrite={canWrite}
+                staleSheetNos={staleSheets.map((entry) => entry.sheet_no)}
                 tab={listTab}
                 onTab={setListTab}
                 onLocate={locate}
@@ -972,21 +1204,43 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                     drawing={drawing}
                     systems={systems}
                     sheetCount={drawing.sheets.length}
-                    canWrite={canWrite}
+                    canEdit={canEdit}
                     open={showDrawingPanel}
                     onToggle={() => setShowDrawingPanel((current) => !current)}
                     onUpdate={(patch) => void updateDrawing(patch)}
-                    onAddRevision={(body) => void addRevision(body)}
-                    onUpdateRevision={(id, body) => void updateRevision(id, body)}
+                    onViewRevision={setSnapshotRevision}
                     onDeleteSheet={drawing.sheets.length > 1 ? () => void removeSheet() : undefined}
                     onDeleteDrawing={() => void removeDrawing()}
-                  />
+                  >
+                    <WorkflowPanel
+                      status={status}
+                      revisionLabel={drawing.current_revision?.label ?? drawing.revisions[drawing.revisions.length - 1]?.label ?? "-"}
+                      canWrite={canWrite}
+                      busy={workflowBusy}
+                      blockers={blockers}
+                      onSubmit={() => void submitForReview()}
+                      onWithdraw={() => void withdrawFromReview()}
+                      onRelease={() => void release()}
+                      onRevise={(body) => void startRevision(body)}
+                      onBlocker={openBlocker}
+                      onReindex={(id) => requestReindex([id])}
+                      onDismissBlockers={() => setBlockers([])}
+                    />
+                    {!locked && (
+                      <IndexStatusNote
+                        staleSheetNos={staleSheets.map((entry) => entry.sheet_no)}
+                        status={reindexStatus}
+                        canReindex={canEdit}
+                        onReindex={() => requestReindex()}
+                      />
+                    )}
+                  </DrawingPanel>
                 )}
                 {editor && (
                   <Inspector
                     editor={editor}
                     registry={registry}
-                    canWrite={canWrite}
+                    canWrite={canEdit}
                     lineClasses={lineClasses}
                     otherSheets={otherSheets}
                     sheetNo={sheetSummary?.sheet_no ?? 1}
@@ -1004,6 +1258,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
         </div>
         {editor && <StatusBar editor={editor} cursor={cursor} viewport={viewport} drcInputs={drcInputs} />}
       </section>
+      {snapshotRevision && <RevisionSnapshotModal revision={snapshotRevision} registry={registry} contextFor={snapshotContext} onClose={() => setSnapshotRevision(null)} />}
     </PageLayout>
   );
 }
@@ -1139,79 +1394,61 @@ function NewDrawingForm({
   );
 }
 
-function DrawingPanel({
-  drawing,
-  systems,
-  sheetCount,
-  canWrite,
-  open,
-  onToggle,
-  onUpdate,
-  onAddRevision,
-  onUpdateRevision,
-  onDeleteSheet,
-  onDeleteDrawing
-}: {
-  drawing: Drawing;
-  systems: FluidSystem[];
-  sheetCount: number;
-  canWrite: boolean;
-  open: boolean;
-  onToggle: () => void;
-  onUpdate: (patch: Parameters<typeof api.updateDrawing>[1]) => void;
-  onAddRevision: (body: Parameters<typeof api.createRevision>[1]) => void;
-  onUpdateRevision: (id: string, body: Parameters<typeof api.updateRevision>[1]) => void;
-  onDeleteSheet?: () => void;
-  onDeleteDrawing: () => void;
-}) {
-  const [form, setForm] = useState({
+function drawingForm(drawing: Drawing) {
+  const legends = legendFlags(drawing);
+  return {
     number: drawing.number,
     title: drawing.title,
     size: drawing.size,
     units: drawing.units,
-    status: drawing.status,
     frame_template: drawing.frame_template,
     system_id: drawing.system_id ?? "",
     company: stringField(drawing.fields, "company") ?? "",
     scale: stringField(drawing.fields, "scale") ?? "NO SCALE",
     notes: (drawing.notes ?? []).join("\n"),
-    legendSymbols: legendFlags(drawing).symbols,
-    legendLetters: legendFlags(drawing).letters,
-    legendLines: legendFlags(drawing).lines
-  });
-  const [revision, setRevision] = useState({ label: "", description: "", checked_by: "", approved_by: "" });
+    legendSymbols: legends.symbols,
+    legendLetters: legends.letters,
+    legendLines: legends.lines
+  };
+}
+
+function DrawingPanel({
+  drawing,
+  systems,
+  sheetCount,
+  canEdit,
+  open,
+  onToggle,
+  onUpdate,
+  onViewRevision,
+  onDeleteSheet,
+  onDeleteDrawing,
+  children
+}: {
+  drawing: Drawing;
+  systems: FluidSystem[];
+  sheetCount: number;
+  /** Writer on a drawing that is not released. */
+  canEdit: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onUpdate: (patch: Parameters<typeof api.updateDrawing>[1]) => void;
+  onViewRevision: (revision: DrawingRevision) => void;
+  onDeleteSheet?: () => void;
+  onDeleteDrawing: () => void;
+  /** Release workflow controls, always shown. */
+  children?: React.ReactNode;
+}) {
+  const saved = useMemo(() => drawingForm(drawing), [drawing]);
+  // Reset the form only when the stored metadata changes, not when a background
+  // re-index or a workflow action replaces the drawing object.
+  const savedKey = JSON.stringify(saved);
+  const [form, setForm] = useState(saved);
   useEffect(() => {
-    setForm({
-      number: drawing.number,
-      title: drawing.title,
-      size: drawing.size,
-      units: drawing.units,
-      status: drawing.status,
-      frame_template: drawing.frame_template,
-      system_id: drawing.system_id ?? "",
-      company: stringField(drawing.fields, "company") ?? "",
-      scale: stringField(drawing.fields, "scale") ?? "NO SCALE",
-      notes: (drawing.notes ?? []).join("\n"),
-      legendSymbols: legendFlags(drawing).symbols,
-      legendLetters: legendFlags(drawing).letters,
-      legendLines: legendFlags(drawing).lines
-    });
-  }, [drawing]);
+    setForm(JSON.parse(savedKey) as typeof saved);
+  }, [savedKey]);
   const update = (patch: Partial<typeof form>) => setForm((current) => ({ ...current, ...patch }));
-  const dirty =
-    form.number !== drawing.number ||
-    form.title !== drawing.title ||
-    form.size !== drawing.size ||
-    form.units !== drawing.units ||
-    form.status !== drawing.status ||
-    form.frame_template !== drawing.frame_template ||
-    form.system_id !== (drawing.system_id ?? "") ||
-    form.company !== (stringField(drawing.fields, "company") ?? "") ||
-    form.scale !== (stringField(drawing.fields, "scale") ?? "NO SCALE") ||
-    form.notes !== (drawing.notes ?? []).join("\n") ||
-    form.legendSymbols !== legendFlags(drawing).symbols ||
-    form.legendLetters !== legendFlags(drawing).letters ||
-    form.legendLines !== legendFlags(drawing).lines;
+  const dirty = JSON.stringify(form) !== savedKey;
 
   function apply() {
     onUpdate({
@@ -1219,7 +1456,6 @@ function DrawingPanel({
       title: form.title.trim() || drawing.title,
       size: form.size,
       units: form.units,
-      status: form.status,
       frame_template: form.frame_template,
       system_id: form.system_id || null,
       fields: {
@@ -1240,32 +1476,31 @@ function DrawingPanel({
       <div className="panelHead">
         <h2>Drawing {drawing.number}</h2>
         <button type="button" className="linkButton" onClick={onToggle}>
-          {open ? "Hide" : "Edit"}
+          {open ? "Hide" : canEdit ? "Edit" : "Details"}
         </button>
       </div>
+      {children}
       {!open && (
         <p className="drawingSummary">
           <span>{drawing.title.split("\n")[0]}</span>
           <span className="mono">{SHEET_SIZES[drawing.size as SheetSizeId]?.label ?? drawing.size}</span>
           <span>{sheetCount} sheet(s)</span>
-          <span>rev {drawing.revisions[drawing.revisions.length - 1]?.label ?? "-"}</span>
-          <span className="pill pill-muted">{drawing.status}</span>
         </p>
       )}
       {open && (
         <>
           <label>
             Number
-            <input value={form.number} onChange={(event) => update({ number: event.target.value })} disabled={!canWrite} />
+            <input value={form.number} onChange={(event) => update({ number: event.target.value })} disabled={!canEdit} />
           </label>
           <label>
             Title (up to 3 lines)
-            <textarea value={form.title} onChange={(event) => update({ title: event.target.value })} disabled={!canWrite} rows={3} />
+            <textarea value={form.title} onChange={(event) => update({ title: event.target.value })} disabled={!canEdit} rows={3} />
           </label>
           <div className="fieldRow">
             <label>
               Size
-              <select value={form.size} onChange={(event) => update({ size: event.target.value })} disabled={!canWrite}>
+              <select value={form.size} onChange={(event) => update({ size: event.target.value })} disabled={!canEdit}>
                 {(Object.keys(SHEET_SIZES) as SheetSizeId[]).map((size) => (
                   <option key={size} value={size}>
                     {SHEET_SIZES[size].label}
@@ -1275,7 +1510,7 @@ function DrawingPanel({
             </label>
             <label>
               Units
-              <select value={form.units} onChange={(event) => update({ units: event.target.value })} disabled={!canWrite}>
+              <select value={form.units} onChange={(event) => update({ units: event.target.value })} disabled={!canEdit}>
                 <option value="mm">mm</option>
                 <option value="in">in</option>
               </select>
@@ -1283,7 +1518,7 @@ function DrawingPanel({
           </div>
           <label>
             Frame
-            <select value={form.frame_template} onChange={(event) => update({ frame_template: event.target.value })} disabled={!canWrite}>
+            <select value={form.frame_template} onChange={(event) => update({ frame_template: event.target.value })} disabled={!canEdit}>
               {(Object.keys(FRAME_TEMPLATE_LABELS) as FrameTemplateId[]).map((id) => (
                 <option key={id} value={id}>
                   {FRAME_TEMPLATE_LABELS[id]}
@@ -1293,7 +1528,7 @@ function DrawingPanel({
           </label>
           <label>
             System
-            <select value={form.system_id} onChange={(event) => update({ system_id: event.target.value })} disabled={!canWrite}>
+            <select value={form.system_id} onChange={(event) => update({ system_id: event.target.value })} disabled={!canEdit}>
               <option value="">None</option>
               {systems.map((system) => (
                 <option key={system.id} value={system.id}>
@@ -1305,105 +1540,49 @@ function DrawingPanel({
           <div className="fieldRow">
             <label>
               Company
-              <input value={form.company} onChange={(event) => update({ company: event.target.value })} disabled={!canWrite} />
+              <input value={form.company} onChange={(event) => update({ company: event.target.value })} disabled={!canEdit} />
             </label>
             <label>
               Scale
-              <input value={form.scale} onChange={(event) => update({ scale: event.target.value })} disabled={!canWrite} />
+              <input value={form.scale} onChange={(event) => update({ scale: event.target.value })} disabled={!canEdit} />
             </label>
           </div>
           <label>
-            Status
-            <select value={form.status} onChange={(event) => update({ status: event.target.value })} disabled={!canWrite}>
-              <option value="working">Working</option>
-              <option value="for_review">For review</option>
-              <option value="released">Released</option>
-            </select>
-          </label>
-          <label>
             General notes (one per line)
-            <textarea value={form.notes} onChange={(event) => update({ notes: event.target.value })} disabled={!canWrite} rows={4} />
+            <textarea value={form.notes} onChange={(event) => update({ notes: event.target.value })} disabled={!canEdit} rows={4} />
           </label>
           <div className="fieldRow">
             <label className="checkRow">
-              <input type="checkbox" checked={form.legendSymbols} onChange={(event) => update({ legendSymbols: event.target.checked })} disabled={!canWrite} />
+              <input type="checkbox" checked={form.legendSymbols} onChange={(event) => update({ legendSymbols: event.target.checked })} disabled={!canEdit} />
               <span>Symbol legend</span>
             </label>
             <label className="checkRow">
-              <input type="checkbox" checked={form.legendLetters} onChange={(event) => update({ legendLetters: event.target.checked })} disabled={!canWrite} />
+              <input type="checkbox" checked={form.legendLetters} onChange={(event) => update({ legendLetters: event.target.checked })} disabled={!canEdit} />
               <span>Instrument letter table</span>
             </label>
             <label className="checkRow">
-              <input type="checkbox" checked={form.legendLines} onChange={(event) => update({ legendLines: event.target.checked })} disabled={!canWrite} />
+              <input type="checkbox" checked={form.legendLines} onChange={(event) => update({ legendLines: event.target.checked })} disabled={!canEdit} />
               <span>Line legend</span>
             </label>
           </div>
           <div className="toolGroup">
-            <button type="button" className="primary" disabled={!canWrite || !dirty} onClick={apply}>
+            <button type="button" className="primary" disabled={!canEdit || !dirty} onClick={apply}>
               Apply
             </button>
             {onDeleteSheet && (
-              <button type="button" disabled={!canWrite} onClick={onDeleteSheet}>
+              <button type="button" disabled={!canEdit} onClick={onDeleteSheet}>
                 Delete sheet
               </button>
             )}
-            <button type="button" className="danger" disabled={!canWrite} onClick={onDeleteDrawing}>
+            <button type="button" className="danger" disabled={!canEdit} onClick={onDeleteDrawing}>
               Delete drawing
             </button>
           </div>
           <p>
             <strong>Revisions</strong> · {sheetCount} sheet(s)
           </p>
-          <table className="revisionTable">
-            <thead>
-              <tr>
-                <th>Rev</th>
-                <th>Description</th>
-                <th>By</th>
-                <th>Approved</th>
-              </tr>
-            </thead>
-            <tbody>
-              {drawing.revisions.map((row: DrawingRevision) => (
-                <tr key={row.id}>
-                  <td className="mono">{row.label}</td>
-                  <td>{row.description}</td>
-                  <td>{row.drawn_by ?? ""}</td>
-                  <td>
-                    <input
-                      value={row.approved_by ?? ""}
-                      placeholder="—"
-                      disabled={!canWrite}
-                      onChange={(event) => onUpdateRevision(row.id, { approved_by: event.target.value })}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {canWrite && (
-            <form
-              className="revisionForm"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!revision.label.trim() || !revision.description.trim()) return;
-                onAddRevision({
-                  label: revision.label.trim(),
-                  description: revision.description.trim(),
-                  checked_by: revision.checked_by || null,
-                  approved_by: revision.approved_by || null,
-                  drawn_date: todayIso()
-                });
-                setRevision({ label: "", description: "", checked_by: "", approved_by: "" });
-              }}
-            >
-              <input value={revision.label} onChange={(event) => setRevision({ ...revision, label: event.target.value })} placeholder="Rev" aria-label="Revision label" />
-              <input value={revision.description} onChange={(event) => setRevision({ ...revision, description: event.target.value })} placeholder="Description" aria-label="Revision description" />
-              <button type="submit" disabled={!revision.label.trim() || !revision.description.trim()}>
-                Add revision
-              </button>
-            </form>
-          )}
+          <RevisionTable revisions={drawing.revisions} onView={onViewRevision} />
+          <p className="hint">Signatures are stamped by the workflow: drawn when a revision opens, submitted on review, approved on release.</p>
         </>
       )}
     </article>
@@ -1458,18 +1637,18 @@ function EditorToolbar({
   const { state } = useEditorSnapshot(editor);
   const store = editor.store;
   void registry;
-  void canWrite;
-  const hasSelection = state.selection.length > 0;
+  // `canWrite` is false for viewers and released drawings: only looking tools stay available.
+  const hasSelection = state.selection.length > 0 && canWrite;
 
   return (
     <div className="draftingRibbon" role="toolbar" aria-label="Editor tools">
       <div className="ribbonGroup" role="group" aria-label="Tools">
         {TOOLS.map((tool) => (
-          <RibbonButton key={tool.id} active={state.tool === tool.id} onClick={() => editor.setTool(tool.id)} title={`${tool.label} (${tool.key})`}>
+          <RibbonButton key={tool.id} active={state.tool === tool.id} disabled={!canWrite && !READ_ONLY_TOOLS.has(tool.id)} onClick={() => editor.setTool(tool.id)} title={`${tool.label} (${tool.key})`}>
             {tool.label}
           </RibbonButton>
         ))}
-        <select className="ribbonSelect" value={state.lineType} onChange={(event) => editor.setLineType(event.target.value as LineType)} aria-label="Line type" title="Line type for new wires">
+        <select className="ribbonSelect" value={state.lineType} onChange={(event) => editor.setLineType(event.target.value as LineType)} disabled={!canWrite} aria-label="Line type" title="Line type for new wires">
           {(Object.keys(LINE_TYPE_LABELS) as LineType[]).map((type) => (
             <option key={type} value={type}>
               {LINE_TYPE_LABELS[type]}
@@ -1479,16 +1658,16 @@ function EditorToolbar({
       </div>
       <span className="ribbonDivider" />
       <div className="ribbonGroup" role="group" aria-label="Edit">
-        <RibbonButton disabled={!store.canUndo} onClick={() => store.undo()} title="Undo (Ctrl+Z)">
+        <RibbonButton disabled={!canWrite || !store.canUndo} onClick={() => editor.undo()} title="Undo (Ctrl+Z)">
           Undo
         </RibbonButton>
-        <RibbonButton disabled={!store.canRedo} onClick={() => store.redo()} title="Redo (Ctrl+Shift+Z)">
+        <RibbonButton disabled={!canWrite || !store.canRedo} onClick={() => editor.redo()} title="Redo (Ctrl+Shift+Z)">
           Redo
         </RibbonButton>
-        <RibbonButton disabled={!hasSelection && state.tool !== "place"} onClick={() => editor.rotateSelection()} title="Rotate (R)">
+        <RibbonButton disabled={!hasSelection && !(canWrite && state.tool === "place")} onClick={() => editor.rotateSelection()} title="Rotate (R)">
           Rotate
         </RibbonButton>
-        <RibbonButton disabled={!hasSelection && state.tool !== "place"} onClick={() => editor.mirrorSelection()} title="Mirror (X)">
+        <RibbonButton disabled={!hasSelection && !(canWrite && state.tool === "place")} onClick={() => editor.mirrorSelection()} title="Mirror (X)">
           Mirror
         </RibbonButton>
         <RibbonButton disabled={!hasSelection} onClick={() => editor.deleteSelection()} title="Delete (Del)">
@@ -1593,7 +1772,7 @@ function Inspector({
                 Paper size
                 <select
                   value={doc.sheet.size}
-                  onChange={(event) => editor.store.dispatch({ type: "sheet", sheet: makeSheet(event.target.value as SheetSizeId, doc.sheet.orientation) })}
+                  onChange={(event) => editor.dispatch({ type: "sheet", sheet: makeSheet(event.target.value as SheetSizeId, doc.sheet.orientation) })}
                   disabled={!canWrite}
                 >
                   {(Object.keys(SHEET_SIZES) as SheetSizeId[]).map((size) => (
@@ -1605,7 +1784,7 @@ function Inspector({
               </label>
               <label>
                 Orientation
-                <select value={doc.sheet.orientation} onChange={(event) => editor.store.dispatch({ type: "sheet", sheet: makeSheet(doc.sheet.size, event.target.value as "landscape" | "portrait") })} disabled={!canWrite}>
+                <select value={doc.sheet.orientation} onChange={(event) => editor.dispatch({ type: "sheet", sheet: makeSheet(doc.sheet.size, event.target.value as "landscape" | "portrait") })} disabled={!canWrite}>
                   <option value="landscape">Landscape</option>
                   <option value="portrait">Portrait</option>
                 </select>

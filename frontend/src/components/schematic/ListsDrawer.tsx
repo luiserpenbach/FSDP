@@ -14,6 +14,7 @@ import type { SchematicDocument } from "../../engine/types";
 import { LIST_DEFINITIONS, listRows, type IndexedSheet, type ListKind } from "../../engine/lists";
 import type { BomReadiness, BomSnapshot, Drawing, ListRead, Part } from "../../types";
 import { useSettledSnapshot } from "./useSettledSnapshot";
+import { StaleSheetsWarning } from "../StaleSheetsWarning";
 
 export type DrawerTab = ListKind | "bom";
 export type ListScope = "drawing" | "project";
@@ -78,6 +79,7 @@ export function ListsDrawer({
   projectId,
   drawing,
   canWrite,
+  staleSheetNos = [],
   tab,
   onTab,
   onLocate,
@@ -96,6 +98,8 @@ export function ListsDrawer({
   projectId: string;
   drawing: Drawing | null;
   canWrite: boolean;
+  /** Sheets of this drawing whose stored index is out of date (exports and the BoM read it). */
+  staleSheetNos?: number[];
   tab: DrawerTab;
   onTab: (tab: DrawerTab) => void;
   onLocate: (target: LocateTarget) => void;
@@ -195,6 +199,8 @@ export function ListsDrawer({
       {tab !== "bom" ? (
         <div className="listScroll">
           {scope === "project" && projectError && <p className="formError">{projectError}</p>}
+          {scope === "project" && projectList?.kind === listKind && <StaleSheetsWarning sheets={projectList.stale_sheets ?? []}>These rows show their last saved state.</StaleSheetsWarning>}
+          {scope === "drawing" && <StaleSheetsWarning sheets={staleSheetNos.map((sheet_no) => ({ sheet_no }))}>The rows here are live; CSV and XLSX exports read the stored index until the re-index finishes.</StaleSheetsWarning>}
           {scope === "project" && !projectList && !projectError && <p className="hint">Loading project list…</p>}
           <table className="listTable">
             <thead>
@@ -246,6 +252,11 @@ export function ListsDrawer({
               </span>
             )}
           </div>
+          {bom ? (
+            <StaleSheetsWarning sheets={bom.stale_sheets ?? []}>This BoM cannot be released; generate a new one once the sheets are re-indexed.</StaleSheetsWarning>
+          ) : (
+            <StaleSheetsWarning sheets={staleSheetNos.map((sheet_no) => ({ sheet_no }))}>A BoM generated now would read their last saved state and could not be released.</StaleSheetsWarning>
+          )}
           {!bom && <p className="hint">The BoM rolls tagged valves, instruments, and equipment up by assigned part and adds tubing, fittings, and tees from the lines. Save the sheet first: it reads the saved index.</p>}
           {bom && (
             <table className="listTable">

@@ -1304,6 +1304,106 @@ button.catalogToolButton:hover:not(:disabled) {
   text-decoration: underline;
 }
 
+/* ---------- Sortable tables ---------- */
+
+th .sortButton {
+  align-items: center;
+  background: none;
+  border: none;
+  color: inherit;
+  display: inline-flex;
+  font: inherit;
+  gap: 4px;
+  letter-spacing: inherit;
+  margin: 0;
+  padding: 0;
+  text-transform: inherit;
+}
+
+th .sortButton:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+th .sortButton.active {
+  color: var(--accent-strong);
+}
+
+.sortIndicator {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+/* ---------- Drawing BoM page ---------- */
+
+.bomToolbar {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+
+.bomToolbar label {
+  margin: 0;
+  min-width: 280px;
+}
+
+.bomToolbar .snapshotMeta {
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.bomGrid {
+  margin-bottom: 16px;
+}
+
+.bomDetail,
+.bomCompare {
+  margin-bottom: 16px;
+}
+
+.bomActions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.bomActions .downloadLink {
+  margin: 0;
+}
+
+.bomCompareControls {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bomCompareControls label {
+  margin: 0;
+  min-width: 240px;
+}
+
+.bomDiffHeading {
+  font-size: 13px;
+  margin: 12px 0 0;
+}
+
+.legacyBoms {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  padding: 10px 14px;
+}
+
+.legacyBoms summary {
+  color: var(--text-2);
+  cursor: pointer;
+  font-weight: 600;
+}
+
 .impact {
   background: var(--surface-2);
   border: 1px solid var(--line-soft);
@@ -3187,6 +3287,165 @@ span.symbolListPendingName.untitled {
 
 .revisionForm input {
   font-size: 12px;
+}
+
+/* ---------- Release workflow (Phase B) ---------- */
+
+.workflowPanel {
+  border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+}
+
+.workflowState {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.workflowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.workflowActions button {
+  font-size: 12px;
+  margin: 0;
+  padding: 4px 9px;
+}
+
+.reviseForm {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 56px 1fr auto auto;
+  margin-top: 8px;
+}
+
+.reviseForm input,
+.reviseForm button {
+  font-size: 12px;
+  margin: 0;
+}
+
+.releaseBlockers {
+  background: var(--red-soft);
+  border: 1px solid #ecc8c5;
+  border-radius: var(--radius-sm);
+  color: var(--red-deep);
+  font-size: 12.5px;
+  margin-top: 8px;
+  padding: 7px 10px;
+}
+
+.releaseBlockersHead {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.releaseBlockers ul {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.releaseBlockers .blockerLink {
+  color: var(--red-deep);
+  font-size: 12.5px;
+  text-align: left;
+  text-decoration: underline;
+}
+
+.releaseBlockers .blockerAction {
+  font-size: 11.5px;
+  margin: 2px 0 0 6px;
+  padding: 2px 8px;
+}
+
+.indexStatus {
+  font-size: 12px;
+  margin: 6px 0 0;
+}
+
+.revisionStamps {
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.revisionStamps span {
+  display: block;
+  white-space: nowrap;
+}
+
+.lockBanner {
+  align-items: center;
+  background: var(--amber-soft);
+  border: 1px solid #f0d58f;
+  border-radius: var(--radius-sm);
+  color: var(--amber-deep);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  padding: 6px 10px;
+}
+
+.lockBanner button {
+  font-size: 12px;
+  margin: 0;
+  padding: 4px 10px;
+}
+
+.sheetTab.stale {
+  box-shadow: inset 0 -2px 0 var(--amber);
+}
+
+.schematicCanvas.canvasReadOnly {
+  cursor: default;
+}
+
+.staleWarning {
+  background: var(--amber-soft);
+  border-radius: var(--radius-sm);
+  color: var(--amber-deep);
+  font-size: 12px;
+  margin: 6px 0;
+  padding: 5px 8px;
+}
+
+.drcPanel.drcPanelFocus {
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.snapshotModal {
+  width: min(1080px, 100%);
+}
+
+.snapshotBody {
+  overflow: auto;
+  padding: 12px 18px 16px;
+}
+
+.snapshotSheets tbody tr {
+  cursor: pointer;
+}
+
+.snapshotPreview {
+  margin-top: 10px;
+}
+
+.snapshotPreview img {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  display: block;
+  max-height: 60vh;
+  max-width: 100%;
 }
 
 /* ---------- Library panel and tag checks (Phase 2) ---------- */
