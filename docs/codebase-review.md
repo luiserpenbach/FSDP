@@ -151,6 +151,15 @@ Explicit `null` on required fields returns a misleading 409; over-length strings
 ## 6. Prioritized plan
 
 **Phase A: make it trustworthy (about 1 week).** Nothing else matters if data is lost.
+
+> **Status (2026-10-04): Phase A delivered.** Fixed: C1–C6, H1–H5, H7–H10, the drafting shortcuts, invisible parts-catalog errors, and XLSX formula injection, each with regression tests.
+>
+> Known follow-ups:
+> - Edits made while a sheet save is in flight are marked as saved without being sent; this needs a versioned `markSaved`.
+> - Tag uniqueness covers the drawing's sheets, not yet the whole project.
+> - The server rejects symbol SVGs with editor metadata (Inkscape `sodipodi:`/`inkscape:`), so the client should strip it before upload.
+> - Compose now refuses to start without `FSDP_SECRET_KEY`, even for the database alone.
+
 1. Navigation guard for dirty editors (`createBrowserRouter` + `useBlocker`); fix save-to-wrong-sheet (C2); stop recreating the editor when the registry changes (C3).
 2. Sanitize symbol SVG on server (allowlist parser) and client (C5); refuse to boot with the default secret (C6).
 3. Stable trace-link targets `(sheet_id, item_id)` and cleanup on delete (C4).
