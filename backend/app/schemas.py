@@ -965,6 +965,25 @@ class SheetIndexRead(BaseModel):
     lines: list[SheetLineRead]
 
 
+class ProjectSheetItemRead(BaseModel):
+    """A tagged item of a project's drawings: a trace-link target ("sheet_item")."""
+
+    id: str
+    sheet_id: str
+    item_id: str
+    kind: str
+    category: str | None
+    tag: str
+    label: str | None
+    symbol_name: str | None
+    zone: str | None
+    part_id: str | None
+    drawing_id: str
+    drawing_number: str
+    drawing_title: str
+    sheet_no: int
+
+
 class StaleSheetRead(BaseModel):
     """A sheet whose stored index/DRC does not reflect its document or dependencies."""
 

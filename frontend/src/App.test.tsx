@@ -370,6 +370,58 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
   });
 
+  it("traces a requirement to a tagged drawing item and keeps legacy component links read-only", async () => {
+    const requirement = { id: "r1", project_id: "p1", key: "REQ-1", title: "Relief", text: "", requirement_type: "safety", verification_method: null, status: "draft", constraint: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" };
+    const sheetItem = { id: "row-1", sheet_id: "sh1", item_id: "pt", kind: "symbol", category: "instrument", tag: "PT-1", label: null, symbol_name: "Pressure transmitter", zone: "B-2", part_id: null, drawing_id: "dw1", drawing_number: "AMB2-9003", drawing_title: "HELIUM PANEL", sheet_no: 1 };
+    const legacyLink = { id: "link-legacy", source_type: "requirement", source_id: "r1", target_type: "component", target_id: "c-a", link_type: "satisfied_by", created_at: "2026-01-01T00:00:00Z" };
+    const itemLink = { id: "link-item", source_type: "requirement", source_id: "r1", target_type: "sheet_item", target_id: "row-1", link_type: "satisfied_by", created_at: "2026-01-01T00:00:00Z" };
+    let links: unknown[] = [legacyLink];
+    const base = mockWorkspaceFetch();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (path === "/projects/p1/requirements") return jsonResponse([requirement]);
+      if (path === "/objects/requirement/r1/trace") return jsonResponse(links);
+      if (path === "/projects/p1/drawings") return jsonResponse([DRAWING]);
+      if (path === "/projects/p1/verification-matrix") return jsonResponse({ project_id: "p1", rows: [] });
+      if (path === "/projects/p1/sheet-items") return jsonResponse([sheetItem]);
+      if (path === "/projects/p1/diagrams") return jsonResponse([{ id: "d1", system_id: "s1", name: "Diagram A", diagram_type: "pid", revision: 1 }]);
+      if (path === "/diagrams/d1/components") return jsonResponse([{ id: "c-a", diagram_id: "d1", tag: "V-A", quantity: 1 }]);
+      if (path === "/trace-links" && method === "POST") {
+        links = [legacyLink, itemLink];
+        return jsonResponse(itemLink, 201);
+      }
+      if (path === "/trace-links/link-legacy" && method === "DELETE") {
+        links = [itemLink];
+        return Promise.resolve({ ok: true, status: 204, json: () => Promise.resolve(null), text: () => Promise.resolve("") });
+      }
+      return base(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await waitForWorkspace();
+    fireEvent.click(screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/requirements"]')!);
+    expect(await screen.findByText("Legacy component V-A (Diagram A)")).toBeInTheDocument();
+    expect(screen.getByText("· read-only")).toBeInTheDocument();
+    // Legacy components are no longer edited here.
+    expect(screen.queryByRole("button", { name: "Update component" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete component" })).not.toBeInTheDocument();
+
+    const picker = screen.getByLabelText("Drawing item");
+    await waitFor(() => expect(within(picker).getByRole("option", { name: "PT-1 · sheet 1 @ B-2 (Pressure transmitter)" })).toBeInTheDocument());
+    fireEvent.change(picker, { target: { value: "row-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Link requirement to item" }));
+    expect(await screen.findByText("AMB2-9003 sheet 1 · PT-1 @ B-2")).toBeInTheDocument();
+    const post = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith("/trace-links") && init?.method === "POST");
+    expect(JSON.parse(String(post?.[1]?.body))).toMatchObject({ source_type: "requirement", source_id: "r1", target_type: "sheet_item", target_id: "row-1" });
+
+    // Legacy links can still be removed.
+    fireEvent.click(within(screen.getByText("Legacy component V-A (Diagram A)").closest("tr")!).getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(screen.queryByText("Legacy component V-A (Diagram A)")).not.toBeInTheDocument());
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/trace-links/link-legacy") && init?.method === "DELETE")).toBe(true);
+  });
+
   it("asks before a project switch discards an unsaved drafting sheet, but not before a system switch", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     const base = mockWorkspaceFetch({ projects: [PROJECT, PROJECT_B], systems: [SYSTEM, { ...SYSTEM, id: "s2", name: "Oxidizer" }] });

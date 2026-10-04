@@ -346,6 +346,25 @@ export type BomDiff = {
   }>;
 };
 
+/** A tagged item on a saved sheet of the project (GET /projects/{id}/sheet-items); trace target "sheet_item". */
+export type ProjectSheetItem = {
+  /** Index row id: the trace-link target id. */
+  id: string;
+  sheet_id: string;
+  item_id: string;
+  kind: string;
+  category: string | null;
+  tag: string;
+  label: string | null;
+  symbol_name: string | null;
+  zone: string | null;
+  part_id: string | null;
+  drawing_id: string;
+  drawing_number: string;
+  drawing_title: string;
+  sheet_no: number;
+};
+
 export type TraceLink = {
   id: string;
   source_type: string;

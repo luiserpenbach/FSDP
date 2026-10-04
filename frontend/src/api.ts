@@ -24,6 +24,7 @@ import type {
   PidSymbolDef,
   Project,
   ProjectBom,
+  ProjectSheetItem,
   Requirement,
   SchematicRead,
   TagSchemeRead,
@@ -168,6 +169,8 @@ export const api = {
   getVerificationMatrix: (projectId: string) => request<VerificationMatrix>(`/projects/${projectId}/verification-matrix`),
   getDrawingList: (drawingId: string, kind: string) => request<ListRead>(`/drawings/${drawingId}/lists/${kind}`),
   getProjectList: (projectId: string, kind: string) => request<ListRead>(`/projects/${projectId}/lists/${kind}`),
+  /** Tagged items on the project's saved sheets (trace-link targets). */
+  listProjectSheetItems: (projectId: string) => request<ProjectSheetItem[]>(`/projects/${projectId}/sheet-items`),
   downloadList: async (scope: "drawing" | "project", id: string, kind: string, format: "csv" | "xlsx") => {
     const base = scope === "drawing" ? `/drawings/${id}` : `/projects/${id}`;
     const response = await rawRequest(`${base}/lists/${kind}?format=${format}`);
@@ -260,15 +263,9 @@ export const api = {
   },
   deletePartDocument: (partId: string, documentId: string) =>
     requestNoContent(`/parts/${partId}/documents/${documentId}`, { method: "DELETE" }),
+  /** Legacy component instances (read-only; shown for old trace links). */
   listComponents: (diagramId: string) =>
     request<ComponentInstance[]>(`/diagrams/${diagramId}/components`),
-  updateComponent: (componentId: string, body: Partial<ComponentInstance>) =>
-    request<ComponentInstance>(`/components/${componentId}`, {
-      method: "PUT",
-      body: JSON.stringify(body)
-    }),
-  deleteComponent: (componentId: string) =>
-    requestNoContent(`/components/${componentId}`, { method: "DELETE" }),
   listRequirements: (projectId: string) => request<Requirement[]>(`/projects/${projectId}/requirements`),
   createRequirement: (body: Omit<Requirement, "id">) =>
     request<Requirement>("/requirements", { method: "POST", body: JSON.stringify(body) }),

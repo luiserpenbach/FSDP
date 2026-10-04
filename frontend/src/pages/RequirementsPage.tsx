@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../api";
 import { DataTable, FormError, Panel, Select, StatusPill, TextArea, TextInput } from "../components/ui";
-import type { ComponentInstance, Drawing, RequirementConstraintRead, TraceLink, VerificationMatrix } from "../types";
+import type { Drawing, ProjectSheetItem, RequirementConstraintRead, TraceLink, VerificationMatrix } from "../types";
 import { useWorkspace } from "../workspace/WorkspaceContext";
 import { PageLayout } from "./PageLayout";
 
@@ -18,10 +18,7 @@ export function RequirementsPage() {
     requirements,
     refreshRequirements,
     selectedRequirementId,
-    setSelectedRequirementId,
-    selectedDiagramId,
-    selectedComponentId,
-    setSelectedComponentId
+    setSelectedRequirementId
   } = useWorkspace();
   const [requirementForm, setRequirementForm] = useState({ key: "FSDP-REQ-1", title: "Maintain pressure boundary compatibility", text: "All pressurized components shall be compatible with maximum expected operating pressure.", requirement_type: "safety", verification_method: "analysis" });
   const [constraintForm, setConstraintForm] = useState<ConstraintForm>({ kind: "", values: "", services: "", categories: "" });
@@ -29,23 +26,26 @@ export function RequirementsPage() {
   const [selectedDrawingId, setSelectedDrawingId] = useState("");
   const [verificationMatrix, setVerificationMatrix] = useState<VerificationMatrix | null>(null);
   const [traceLinks, setTraceLinks] = useState<TraceLink[]>([]);
-  // Components of the diagram open on the legacy Diagrams page (trace-link targets).
-  const [components, setComponents] = useState<ComponentInstance[]>([]);
-  const [componentTag, setComponentTag] = useState("V-1");
+  // Tagged items on the project's saved sheets: trace-link targets.
+  const [sheetItems, setSheetItems] = useState<ProjectSheetItem[]>([]);
+  const [itemFilter, setItemFilter] = useState("");
+  const [selectedItemId, setSelectedItemId] = useState("");
+  // Tags of legacy components that old trace links still point to (read-only).
+  const [legacyComponents, setLegacyComponents] = useState<{ projectId: string; tags: Map<string, string> } | null>(null);
 
   // Current selections for async actions: a response for a previous selection
   // must not overwrite what is on screen now.
   const selectedProjectIdRef = useRef(selectedProjectId);
   const selectedRequirementIdRef = useRef(selectedRequirementId);
-  const selectedDiagramIdRef = useRef(selectedDiagramId);
   useEffect(() => {
     selectedProjectIdRef.current = selectedProjectId;
     selectedRequirementIdRef.current = selectedRequirementId;
-    selectedDiagramIdRef.current = selectedDiagramId;
-  }, [selectedProjectId, selectedRequirementId, selectedDiagramId]);
+  }, [selectedProjectId, selectedRequirementId]);
 
   const selectedRequirement = requirements.find((requirement) => requirement.id === selectedRequirementId) ?? null;
-  const selectedComponent = components.find((component) => component.id === selectedComponentId) ?? null;
+  const itemsById = useMemo(() => new Map(sheetItems.map((item) => [item.id, item])), [sheetItems]);
+  const selectedItem = itemsById.get(selectedItemId) ?? null;
+  const itemGroups = useMemo(() => groupItemsByDrawing(sheetItems, itemFilter), [sheetItems, itemFilter]);
 
   useEffect(() => {
     // Clear first: the previous requirement's links (and their Remove
@@ -66,22 +66,25 @@ export function RequirementsPage() {
     };
   }, [selectedRequirementId]);
 
+  // Old links to legacy components show the component's tag; load the tags once per project when needed.
+  const needsLegacyTags = traceLinks.some((link) => link.source_type === "component" || link.target_type === "component");
   useEffect(() => {
-    setComponents([]);
-    if (!selectedDiagramId) return;
+    if (!needsLegacyTags || !selectedProjectId || legacyComponents?.projectId === selectedProjectId) return;
     let cancelled = false;
+    const projectId = selectedProjectId;
     api
-      .listComponents(selectedDiagramId)
-      .then((next) => {
-        if (!cancelled) setComponents(next);
+      .listProjectDiagrams(projectId)
+      .then((diagrams) => Promise.all(diagrams.map((diagram) => api.listComponents(diagram.id).then((components) => components.map((component) => [component.id, `${component.tag} (${diagram.name})`] as const)))))
+      .then((entries) => {
+        if (!cancelled) setLegacyComponents({ projectId, tags: new Map(entries.flat()) });
       })
       .catch(() => {
-        if (!cancelled) setComponents([]);
+        if (!cancelled) setLegacyComponents({ projectId, tags: new Map() });
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedDiagramId]);
+  }, [needsLegacyTags, selectedProjectId, legacyComponents?.projectId]);
 
   // Drawings of the project (trace-link targets) and the verification matrix.
   const refreshVerification = useCallback(async (projectId: string) => {
@@ -94,6 +97,7 @@ export function RequirementsPage() {
     if (!selectedProjectId) {
       setDrawings([]);
       setVerificationMatrix(null);
+      setSheetItems([]);
       return;
     }
     let cancelled = false;
@@ -108,6 +112,14 @@ export function RequirementsPage() {
         if (cancelled) return;
         setDrawings([]);
         setVerificationMatrix(null);
+      });
+    api
+      .listProjectSheetItems(projectId)
+      .then((items) => {
+        if (!cancelled) setSheetItems(items);
+      })
+      .catch(() => {
+        if (!cancelled) setSheetItems([]);
       });
     return () => {
       cancelled = true;
@@ -132,12 +144,6 @@ export function RequirementsPage() {
       });
     }
   }, [selectedRequirement]);
-
-  useEffect(() => {
-    if (selectedComponent) {
-      setComponentTag(selectedComponent.tag);
-    }
-  }, [selectedComponent]);
 
   /** Requirement constraint from the form: kind plus comma-separated values and scope. */
   function constraintPayload(): RequirementConstraintRead | null {
@@ -178,41 +184,41 @@ export function RequirementsPage() {
     });
   }
 
-  function updateComponent() {
-    if (!selectedComponent) return;
-    void runAction("Updated component.", async () => {
-      const updated = await api.updateComponent(selectedComponent.id, { tag: componentTag });
-      setComponents((current) => current.map((component) => (component.id === updated.id ? updated : component)));
-    }, "component");
-  }
-
-  function deleteComponent() {
-    if (!selectedDiagramId || !selectedComponent || !window.confirm(`Delete component "${selectedComponent.tag}"?`)) return;
-    const diagramId = selectedDiagramId;
-    const componentId = selectedComponent.id;
-    void runAction("Deleted component.", async () => {
-      await api.deleteComponent(componentId);
-      if (selectedDiagramIdRef.current !== diagramId) return;
-      const next = await api.listComponents(diagramId);
-      if (selectedDiagramIdRef.current !== diagramId) return;
-      setComponents(next);
-      setSelectedComponentId(next[0]?.id || "");
-    });
-  }
-
   /** Reload a requirement's trace links unless the selection moved on meanwhile. */
   async function reloadTraceLinks(requirementId: string) {
     const links = await api.listTraceLinks("requirement", requirementId);
     if (selectedRequirementIdRef.current === requirementId) setTraceLinks(links);
   }
 
-  function linkRequirementToComponent() {
-    if (!selectedRequirement || !selectedComponent) return;
+  function linkRequirementToItem() {
+    if (!selectedRequirement || !selectedItem) return;
     const requirementId = selectedRequirement.id;
-    void runAction("Linked requirement.", async () => {
-      await api.createTraceLink({ source_type: "requirement", source_id: requirementId, target_type: "component", target_id: selectedComponent.id, link_type: "satisfied_by" });
+    const item = selectedItem;
+    void runAction(`Linked ${selectedRequirement.key} to ${item.tag}.`, async () => {
+      await api.createTraceLink({ source_type: "requirement", source_id: requirementId, target_type: "sheet_item", target_id: item.id, link_type: "satisfied_by" });
       await reloadTraceLinks(requirementId);
+      await refreshVerification(selectedRequirement.project_id);
     }, "traceLink");
+  }
+
+  /** The end of a trace link that is not the selected requirement, described for the table. */
+  function describeLinkTarget(link: TraceLink): { text: string; legacy: boolean } {
+    const ownEnd = link.source_type === "requirement" && link.source_id === selectedRequirementId;
+    const type = ownEnd ? link.target_type : link.source_type;
+    const id = ownEnd ? link.target_id : link.source_id;
+    if (type === "drawing") {
+      const drawing = drawings.find((entry) => entry.id === id);
+      return { text: drawing ? `Drawing ${drawing.number} · ${drawing.title.split("\n")[0]}` : "Drawing (deleted)", legacy: false };
+    }
+    if (type === "sheet_item") {
+      const item = itemsById.get(id);
+      return { text: item ? `${item.drawing_number} sheet ${item.sheet_no} · ${item.tag}${item.zone ? ` @ ${item.zone}` : ""}` : "Drawing item (untagged)", legacy: false };
+    }
+    if (type === "component") {
+      const tag = legacyComponents?.projectId === selectedProjectId ? legacyComponents.tags.get(id) : undefined;
+      return { text: `Legacy component ${tag ?? id.slice(0, 8)}`, legacy: true };
+    }
+    return { text: `${type.replace("_", " ")} ${id.slice(0, 8)}`, legacy: false };
   }
 
   function linkRequirementToDrawing() {
@@ -295,21 +301,71 @@ export function RequirementsPage() {
           )}
         </Panel>
         <Panel title="Trace Links">
+          <TextInput label="Find drawing item" value={itemFilter} onChange={setItemFilter} />
+          <label>
+            Drawing item
+            <select value={selectedItemId} onChange={(event) => setSelectedItemId(event.target.value)}>
+              <option value="">{sheetItems.length ? "Choose a tagged item…" : "No tagged items on saved sheets"}</option>
+              {itemGroups.map((group) => (
+                <optgroup key={group.drawingId} label={group.label}>
+                  {group.items.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.tag} · sheet {item.sheet_no}
+                      {item.zone ? ` @ ${item.zone}` : ""}
+                      {item.symbol_name ? ` (${item.symbol_name})` : ""}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <button className="primary" disabled={!selectedRequirement || !selectedItem} onClick={linkRequirementToItem}>Link requirement to item</button>
+          {!sheetItems.length && <p className="hint">Tag symbols on the Drafting page and save the sheet to link requirements to them.</p>}
           <Select label="Drawing" value={selectedDrawingId} options={drawings.map((drawing) => ({ value: drawing.id, label: `${drawing.number} · ${drawing.title.split("\n")[0]}` }))} onChange={setSelectedDrawingId} />
-          <button className="primary" disabled={!selectedRequirement || !selectedDrawingId} onClick={linkRequirementToDrawing}>Link requirement to drawing</button>
-          <Select label="Component" value={selectedComponentId} options={components.map((component) => ({ value: component.id, label: component.tag }))} onChange={setSelectedComponentId} />
-          <TextInput label="Component tag" value={componentTag} onChange={setComponentTag} />
-          <FormError message={formErrors.component} />
-          <div className="buttonRow"><button disabled={!selectedComponent} onClick={updateComponent}>Update component</button><button className="danger" disabled={!selectedComponent} onClick={deleteComponent}>Delete component</button></div>
-          <button className="primary" disabled={!selectedRequirement || !selectedComponent} onClick={linkRequirementToComponent}>Link requirement to component</button>
+          <button disabled={!selectedRequirement || !selectedDrawingId} onClick={linkRequirementToDrawing}>Link requirement to whole drawing</button>
           <FormError message={formErrors.traceLink} />
           {selectedRequirement && (
             traceLinks.length
-              ? <DataTable rows={traceLinks} getKey={(link) => link.id} columns={[{ header: "Link", render: (link) => <span className="mono">{link.link_type}</span> }, { header: "Target", render: (link) => <span className="mono">{link.target_type === "drawing" ? (drawings.find((drawing) => drawing.id === link.target_id)?.number ?? "drawing") : (components.find((component) => component.id === link.target_id)?.tag ?? `${link.target_type} ${link.target_id.slice(0, 8)}`)}</span> }, { header: "", render: (link) => <button className="danger" disabled={busy} onClick={() => removeTraceLink(link.id)}>Remove</button> }]} />
+              ? (
+                <DataTable
+                  rows={traceLinks}
+                  getKey={(link) => link.id}
+                  columns={[
+                    { header: "Link", render: (link) => <span className="mono">{link.link_type}</span> },
+                    {
+                      header: "Target",
+                      render: (link) => {
+                        const target = describeLinkTarget(link);
+                        return (
+                          <span className="mono" title={target.legacy ? "From the retired Diagrams editor; read-only" : undefined}>
+                            {target.text}
+                            {target.legacy && <span className="hint"> · read-only</span>}
+                          </span>
+                        );
+                      }
+                    },
+                    { header: "", render: (link) => <button className="danger" disabled={busy} onClick={() => removeTraceLink(link.id)}>Remove</button> }
+                  ]}
+                />
+              )
               : <p className="hint">No trace links for {selectedRequirement.key} yet.</p>
           )}
         </Panel>
       </section>
     </PageLayout>
   );
+}
+
+/** Sheet items grouped by drawing for the picker, filtered by tag, drawing number, title, or symbol name. */
+function groupItemsByDrawing(items: ProjectSheetItem[], filter: string): Array<{ drawingId: string; label: string; items: ProjectSheetItem[] }> {
+  const needle = filter.trim().toLowerCase();
+  const groups = new Map<string, { drawingId: string; label: string; items: ProjectSheetItem[] }>();
+  for (const item of items) {
+    const haystack = `${item.tag} ${item.drawing_number} ${item.drawing_title} ${item.symbol_name ?? ""} ${item.label ?? ""}`.toLowerCase();
+    if (needle && !haystack.includes(needle)) continue;
+    const group = groups.get(item.drawing_id) ?? { drawingId: item.drawing_id, label: `${item.drawing_number} · ${item.drawing_title}`, items: [] };
+    group.items.push(item);
+    groups.set(item.drawing_id, group);
+  }
+  return [...groups.values()];
 }
