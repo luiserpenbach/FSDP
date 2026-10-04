@@ -1,6 +1,7 @@
 import re
 from datetime import datetime
 from typing import Any
+from xml.parsers import expat
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -384,44 +385,118 @@ class PartUsageRead(BaseModel):
     drawing_items: list[PartUsageDrawingItemRead] = []
 
 
-# Symbols are rendered via dangerouslySetInnerHTML. Block active content and
-# nesting vectors that the earlier script/onload checks missed (data: URIs in
-# <use>/<image>, SMIL <set attributeName="onload">, <style> imports, etc.).
-_SVG_BLOCKLIST = (
-    "<script",
-    "<foreignobject",
-    "<iframe",
-    "<style",
-    "<use",
-    "<image",
-    "<set",
-    "<animate",  # animate, animateTransform, animateMotion
-    "<a ",
-    "<a>",
-    "<a/",
-    "javascript:",
-    "data:",
-    "vbscript:",
-)
-_SVG_EVENT_ATTR = re.compile(r"\son\w+\s*=")
-_SVG_SMIL_EVENT_ATTR = re.compile(r"""attributename\s*=\s*['"]?\s*on""", re.IGNORECASE)
-# Only fragment hrefs (#id) are allowed; anything else is an external/data load.
-_SVG_EXTERNAL_HREF = re.compile(r"""(?:xlink:)?href\s*=\s*['"]?\s*(?!#)""", re.IGNORECASE)
+# Symbols are rendered via dangerouslySetInnerHTML, so the markup is checked
+# against an allowlist of inert SVG drawing elements and attributes; anything
+# else (scripts, embeds, HTML, SMIL, event handlers, external references) is
+# rejected. Names are compared lowercased because the HTML parser that renders
+# the markup is case-insensitive.
+_SVG_ALLOWED_ELEMENTS = frozenset(
+    {
+        "g", "path", "line", "polyline", "polygon", "rect", "circle", "ellipse",
+        "text", "tspan", "defs", "use", "title", "desc", "marker", "clippath",
+        "lineargradient", "radialgradient", "stop", "symbol",
+    }
+)  # fmt: skip
+# Presentation properties, allowed both as attributes and inside style="".
+_SVG_PRESENTATION_PROPERTIES = frozenset(
+    {
+        "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity",
+        "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray",
+        "stroke-dashoffset", "opacity", "color", "display", "visibility", "vector-effect",
+        "clip-path", "clip-rule", "marker-start", "marker-mid", "marker-end", "stop-color",
+        "stop-opacity", "font-family", "font-size", "font-weight", "font-style",
+        "font-variant", "text-anchor", "dominant-baseline", "alignment-baseline",
+        "baseline-shift", "letter-spacing", "word-spacing", "text-decoration",
+        "paint-order", "shape-rendering", "text-rendering", "writing-mode",
+    }
+)  # fmt: skip
+_SVG_ALLOWED_ATTRIBUTES = _SVG_PRESENTATION_PROPERTIES | {
+    "id", "class", "style", "transform", "xml:space", "d", "x", "y", "x1", "y1", "x2",
+    "y2", "cx", "cy", "r", "rx", "ry", "fx", "fy", "fr", "width", "height", "points",
+    "pathlength", "dx", "dy", "rotate", "textlength", "lengthadjust", "viewbox",
+    "preserveaspectratio", "refx", "refy", "markerwidth", "markerheight", "markerunits",
+    "orient", "gradientunits", "gradienttransform", "spreadmethod", "offset",
+    "clippathunits", "href", "xlink:href",
+}  # fmt: skip
+_SVG_NAMESPACES = {
+    "xmlns": "http://www.w3.org/2000/svg",
+    "xmlns:xlink": "http://www.w3.org/1999/xlink",
+}
+_SVG_FRAGMENT_HREF = re.compile(r"#[\w.:-]+")
+_SVG_URL_REFERENCE = re.compile(r"url\(['\"]?([^)'\"]*)")
+_SVG_UNSAFE_VALUE = ("javascript:", "vbscript:", "data:", "expression(", "\\", "/*", "<", "@")
+
+
+def _check_svg_value(name: str, value: str) -> None:
+    compact = re.sub(r"\s+", "", value.lower())
+    if any(token in compact for token in _SVG_UNSAFE_VALUE):
+        raise ValueError(f"SVG attribute {name} has an unsafe value")
+    for target in _SVG_URL_REFERENCE.findall(compact):
+        if not _SVG_FRAGMENT_HREF.fullmatch(target):
+            raise ValueError(f"SVG attribute {name} may only reference #fragments")
+
+
+def _check_svg_attribute(element: str, raw_name: str, value: str) -> None:
+    name = raw_name.lower()
+    if name in _SVG_NAMESPACES:
+        if value.strip() != _SVG_NAMESPACES[name]:
+            raise ValueError(f"SVG namespace {raw_name} is not allowed")
+        return
+    if name not in _SVG_ALLOWED_ATTRIBUTES:
+        raise ValueError(f"SVG attribute {raw_name} on <{element}> is not allowed")
+    if name in ("href", "xlink:href"):
+        if not _SVG_FRAGMENT_HREF.fullmatch(value.strip()):
+            raise ValueError(f"SVG attribute {raw_name} may only reference a #fragment")
+        return
+    _check_svg_value(raw_name, value)
+    if name == "style":
+        for declaration in value.split(";"):
+            if not declaration.strip():
+                continue
+            prop, _, _ = declaration.partition(":")
+            if prop.strip().lower() not in _SVG_PRESENTATION_PROPERTIES:
+                raise ValueError(f"SVG style property {prop.strip()} is not allowed")
+
+
+def _reject_svg_construct(*_args: object) -> None:
+    raise ValueError("SVG markup must not contain comments, CDATA, or processing instructions")
 
 
 def clean_symbol_svg(value: str) -> str:
-    """Reject active content; the frontend sanitizes too, but the API is the trust boundary."""
+    """Accept only inert SVG drawing markup; the API is the trust boundary.
+
+    The value is an SVG fragment (the inner markup of a symbol). It must parse as
+    well-formed XML inside a wrapper root and use only allowlisted elements and
+    attributes. Comments, CDATA and processing instructions are rejected because
+    the HTML parser that renders the markup reads them differently than XML does.
+    """
     cleaned = value.strip()
     if not cleaned:
         raise ValueError("must not be blank")
-    lowered = cleaned.lower()
-    if (
-        any(token in lowered for token in _SVG_BLOCKLIST)
-        or _SVG_EVENT_ATTR.search(lowered)
-        or _SVG_SMIL_EVENT_ATTR.search(lowered)
-        or _SVG_EXTERNAL_HREF.search(lowered)
-    ):
-        raise ValueError("SVG markup must not contain scripts, embeds, or event handlers")
+    seen_wrapper = False
+
+    def start_element(name: str, attributes: dict[str, str]) -> None:
+        nonlocal seen_wrapper
+        if not seen_wrapper:
+            seen_wrapper = True  # the <svg> wrapper added below
+            return
+        element = name.lower()
+        if element not in _SVG_ALLOWED_ELEMENTS:
+            raise ValueError(f"SVG element <{name}> is not allowed")
+        for attribute, attribute_value in attributes.items():
+            _check_svg_attribute(name, attribute, attribute_value)
+
+    parser = expat.ParserCreate()
+    parser.StartElementHandler = start_element
+    parser.CommentHandler = _reject_svg_construct
+    parser.StartCdataSectionHandler = _reject_svg_construct
+    parser.ProcessingInstructionHandler = _reject_svg_construct
+    parser.StartDoctypeDeclHandler = _reject_svg_construct
+    try:
+        parser.Parse(f"<svg>{cleaned}</svg>", True)
+    except expat.ExpatError as error:
+        reason = expat.ErrorString(error.code)
+        raise ValueError(f"SVG markup is not well-formed: {reason}") from None
     return cleaned
 
 
