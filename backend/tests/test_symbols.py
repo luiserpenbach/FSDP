@@ -142,3 +142,34 @@ def test_symbol_accepts_browser_serialized_and_referencing_markup(client: TestCl
     )
     assert response.status_code == 201, response.text
     assert response.json()["svg"] == svg
+
+
+# The symbol editor's upload for an Inkscape-saved symbol: INKSCAPE_SYMBOL_CLEANED in
+# frontend/src/components/schematic/SymbolEditorModal.test.ts (keep the two in step).
+INKSCAPE_SYMBOL_CLEANED = (
+    '<g xmlns="http://www.w3.org/2000/svg" id="layer1" transform="translate(0,-2)">'
+    '<path style="fill:none;stroke:#000000;stroke-width:2.2;stroke-linecap:round" '
+    'd="M 2,20 H 62" id="path1"/>'
+    '<circle cx="32" cy="20" r="8" id="c1" href="#path1"/>'
+    '<text xml:space="preserve" x="28" y="24" style="font-size:6px;font-family:sans-serif" '
+    'id="t1"><tspan id="ts1" x="28" y="24">PT</tspan></text>'
+    "</g>"
+)
+
+
+def test_symbol_accepts_editor_output_for_inkscape_markup(client: TestClient) -> None:
+    """Editor metadata is rejected as uploaded, and accepted once the client stripped it."""
+    raw = (
+        '<g xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" '
+        'inkscape:label="Layer 1" id="layer1">'
+        '<path d="M 2,20 H 62" style="stroke:#000;-inkscape-stroke:none"/></g>'
+    )
+    rejected = client.post("/symbols", json={"name": "Raw", "svg": raw, "ports": []})
+    assert rejected.status_code == 422
+
+    response = client.post(
+        "/symbols",
+        json={"name": "Sensor", "view_box": "0 0 64 40", "svg": INKSCAPE_SYMBOL_CLEANED},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["svg"] == INKSCAPE_SYMBOL_CLEANED

@@ -67,6 +67,27 @@ describe("sanitizeSvgInner", () => {
     expect(sanitizeSvgInner("   ")).toBe("");
   });
 
+  it("follows the server allowlist: no foreign namespaces, unknown attributes, or non-presentation styles", () => {
+    const cleaned = sanitizeSvgInner(
+      [
+        '<g xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:x="http://www.w3.org/1999/xlink" xmlns:s="http://www.w3.org/2000/svg" inkscape:label="Layer" data-layer="1" id="g1">',
+        '<s:path d="M0 0 H10" style="stroke:#000;-inkscape-stroke:none;line-height:1.25" inkscape:connector-curvature="0"/>',
+        '<circle r="2" x:href="#g1" class="body" fill="url(#grad)" tabindex="0"/>',
+        '<mask id="m"><rect width="4" height="4"/></mask><pattern id="p"><rect width="1" height="1"/></pattern>',
+        '<svg viewBox="0 0 4 4"><path d="M1 1"/></svg>',
+        '<text xml:space="preserve" font-family="a@b">T</text>',
+        "</g>"
+      ].join("")
+    );
+    expect(cleaned).toBe(
+      '<g xmlns="http://www.w3.org/2000/svg" id="g1">' +
+        '<path d="M0 0 H10" style="stroke:#000"/>' +
+        '<circle r="2" class="body" fill="url(#grad)" href="#g1"/>' +
+        '<text xml:space="preserve">T</text>' +
+        "</g>"
+    );
+  });
+
   it("scrubs a root element's own event attributes", () => {
     const root = new DOMParser().parseFromString('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10" onload="alert(1)"><path d="M0 0"/></svg>', "image/svg+xml").documentElement;
     scrubSvgElement(root);
