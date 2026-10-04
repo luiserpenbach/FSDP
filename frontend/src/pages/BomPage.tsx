@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, bomCsvUrl, bomXlsxUrl, setBomStatusChecked, WorkflowConflictError } from "../api";
-import { StaleSheetsWarning } from "../components/schematic/DrawingWorkflow";
+import { StaleSheetsWarning } from "../components/StaleSheetsWarning";
 import { SortableTable, type SortableColumn } from "../components/SortableTable";
 import { Panel, StatusPill } from "../components/ui";
 import type { BomDiff, BomReadiness, BomReadinessIssue, BomSnapshot, Drawing, ProjectBom } from "../types";

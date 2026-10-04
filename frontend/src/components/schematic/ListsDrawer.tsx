@@ -11,7 +11,7 @@ import type { Editor } from "../../engine/editor";
 import { buildSheetIndex } from "../../engine/index";
 import { LIST_DEFINITIONS, listRows, type IndexedSheet, type ListKind } from "../../engine/lists";
 import type { BomReadiness, BomSnapshot, Drawing, ListRead, Part } from "../../types";
-import { StaleSheetsWarning } from "./DrawingWorkflow";
+import { StaleSheetsWarning } from "../StaleSheetsWarning";
 import { useEditorSnapshot } from "./SchematicCanvas";
 
 export type DrawerTab = ListKind | "bom";

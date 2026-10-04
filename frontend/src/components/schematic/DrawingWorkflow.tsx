@@ -11,7 +11,7 @@ import type { DrawingContext } from "../../engine/frames";
 import type { SymbolRegistry } from "../../engine/library";
 import { renderDocumentSvg } from "../../engine/render";
 import type { SchematicDocument } from "../../engine/types";
-import type { DrawingRevision, DrawingStatus, ReleaseBlocker, ReleaseSnapshotSheet, RevisionSnapshot, StaleSheet } from "../../types";
+import type { DrawingRevision, DrawingStatus, ReleaseBlocker, ReleaseSnapshotSheet, RevisionSnapshot } from "../../types";
 import { StatusPill } from "../ui";
 import type { ReindexStatus } from "./useStaleReindex";
 
@@ -182,23 +182,6 @@ export function IndexStatusNote({
           Re-index now
         </button>
       )}
-    </p>
-  );
-}
-
-/** Warning for list, BoM, and matrix responses built from out-of-date sheet indexes. */
-export function StaleSheetsWarning({
-  sheets,
-  children
-}: {
-  sheets: Array<Pick<StaleSheet, "sheet_no"> & Partial<Pick<StaleSheet, "drawing_number">>>;
-  children?: React.ReactNode;
-}) {
-  if (!sheets.length) return null;
-  const names = sheets.map((sheet) => (sheet.drawing_number ? `${sheet.drawing_number} sheet ${sheet.sheet_no}` : `sheet ${sheet.sheet_no}`));
-  return (
-    <p className="staleWarning" role="note">
-      <span className="pill pill-warn">stale index</span> {names.join(", ")}: index and design rule checks are out of date. {children}
     </p>
   );
 }
