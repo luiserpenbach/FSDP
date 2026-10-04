@@ -278,8 +278,9 @@ class DrawingRevision(TimestampMixin, Base):
 class SheetItem(TimestampMixin, Base):
     """Normalized index row for one symbol or equipment item on a sheet.
 
-    Rebuilt from the sheet document on every save (the document stays the
-    source of truth); lists, BoM roll-ups, and where-used queries read this.
+    Synced from the sheet document on every save (the document stays the
+    source of truth), matched by item_id so row ids stay stable for trace
+    links; lists, BoM roll-ups, and where-used queries read this.
     """
 
     __tablename__ = "sheet_items"

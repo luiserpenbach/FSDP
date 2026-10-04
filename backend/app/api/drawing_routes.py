@@ -67,6 +67,11 @@ from app.services.lists import (
     rows_to_xlsx,
 )
 from app.services.sheet_index import replace_sheet_index
+from app.services.traceability import (
+    delete_trace_links_for_many,
+    drawing_trace_endpoints,
+    sheet_trace_endpoints,
+)
 
 drawing_router = APIRouter()
 
@@ -252,6 +257,7 @@ def delete_drawing(
     user: User = Depends(require_writer),
 ) -> Response:
     drawing = _load_drawing(db, drawing_id)
+    delete_trace_links_for_many(db, drawing_trace_endpoints(db, [drawing.id]))
     record_change(
         db, "drawing", drawing.id, "deleted", f"Deleted drawing {drawing.number}", actor=user.email
     )
@@ -341,6 +347,7 @@ def delete_sheet(
     if len(drawing.sheets) <= 1:
         raise HTTPException(status_code=409, detail="A drawing must keep at least one sheet")
     removed_no = sheet.sheet_no
+    delete_trace_links_for_many(db, sheet_trace_endpoints(db, [sheet.id]))
     db.delete(sheet)
     db.flush()
     # Renumber so sheets stay contiguous ("2 OF 3"). Move one sheet at a time in

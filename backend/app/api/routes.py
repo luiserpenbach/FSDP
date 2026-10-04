@@ -91,6 +91,7 @@ from app.services.lists import spreadsheet_safe
 from app.services.traceability import (
     delete_trace_links_for,
     delete_trace_links_for_many,
+    drawing_trace_endpoints,
     get_trace_links,
 )
 
@@ -174,6 +175,8 @@ def _project_trace_endpoints(db: Session, project_id: str) -> list[tuple[str, st
         endpoints.extend(_system_trace_endpoints(db, system.id))
     for requirement in db.scalars(select(Requirement).where(Requirement.project_id == project_id)):
         endpoints.append(("requirement", requirement.id))
+    drawing_ids = db.scalars(select(Drawing.id).where(Drawing.project_id == project_id))
+    endpoints.extend(drawing_trace_endpoints(db, drawing_ids))
     return endpoints
 
 
@@ -1282,12 +1285,28 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
 }
 
 
+def _trace_object_project_id(obj: object) -> str | None:
+    """Project a trace endpoint belongs to; None for catalog parts, which are shared."""
+    if isinstance(obj, Project):
+        return obj.id
+    if isinstance(obj, FluidSystem | Drawing | Requirement):
+        return obj.project_id
+    if isinstance(obj, Diagram):
+        return obj.system.project_id
+    if isinstance(obj, ComponentInstance):
+        return obj.diagram.system.project_id
+    if isinstance(obj, SheetItem | SheetLine):
+        return obj.sheet.drawing.project_id
+    return None
+
+
 @router.post("/trace-links", response_model=TraceLinkRead, status_code=201)
 def create_trace_link(
     payload: TraceLinkCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> TraceLink:
+    project_ids: list[str | None] = []
     for kind, type_name, object_id in (
         ("source", payload.source_type, payload.source_id),
         ("target", payload.target_type, payload.target_id),
@@ -1301,7 +1320,11 @@ def create_trace_link(
                     + ", ".join(sorted(TRACE_OBJECT_MODELS))
                 ),
             )
-        require_model(db, model, object_id)
+        project_ids.append(_trace_object_project_id(require_model(db, model, object_id)))
+    if None not in project_ids and project_ids[0] != project_ids[1]:
+        raise HTTPException(
+            status_code=400, detail="Trace link endpoints belong to different projects"
+        )
 
     existing = db.scalar(
         select(TraceLink).where(
