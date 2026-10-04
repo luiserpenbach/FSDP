@@ -3377,6 +3377,57 @@ button.ribbonButton.active {
 }
 
 .bomFilter {
+
+/* ---------- Spreadsheet-grade tables: Parts catalog, Requirements, Import wizard ---------- */
+
+/* Grid filling the catalog library panel: the scroll area takes the remaining height. */
+.catalogLibrary .catalogGrid {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px 12px;
+}
+
+.catalogLibrary .catalogGrid .dgScroll {
+  flex: 1;
+  min-height: 160px;
+}
+
+.catalogPageHeader .catalogHint {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Part number / key cell that opens the row's details. */
+.dataGrid button.gridLink {
+  font-size: inherit;
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataGrid button.gridLink:hover {
+  text-decoration: underline;
+}
+
+/* The row open in the inspector / editor. */
+.dataGrid .dgRow.gridRowOpen,
+.dataGrid .dgRow.gridRowOpen .dgFrozen {
+  background: #f1f5fd;
+}
+
+.dataGrid .dgRow.gridRowOpen .dgCheckCell {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.dataGrid select.bulkSelect,
+.dataGrid input.bulkInput {
+  display: inline-block;
   font-size: 12.5px;
   margin: 0;
   padding: 4px 8px;
@@ -3390,4 +3441,231 @@ button.ribbonButton.active {
 
 .dataGrid .dgRow.dgRowCurrent .dgCell:first-child {
   box-shadow: inset 2px 0 0 var(--accent);
+
+.dataGrid input.bulkInput {
+  max-width: 160px;
+}
+
+.bulkNotice {
+  align-items: flex-start;
+  background: var(--accent-soft);
+  border: 1px solid #c9d7f4;
+  border-radius: var(--radius-sm);
+  color: var(--accent-strong);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 13px;
+  gap: 10px;
+  justify-content: space-between;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+}
+
+.bulkNotice ul {
+  color: var(--text);
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.bulkNotice .modalClose {
+  color: inherit;
+}
+
+.panelWide {
+  grid-column: 1 / -1;
+}
+
+.panelHead .panelActions {
+  display: flex;
+  gap: 6px;
+}
+
+.panelHead .panelActions button {
+  margin: 0;
+}
+
+/* ---------- Import wizard ---------- */
+
+.modal.importWizard {
+  width: min(1120px, 100%);
+}
+
+.importWizard:focus {
+  outline: none;
+}
+
+.importBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 18px;
+}
+
+.importStep {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.importStep h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.importStepHead {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.importStepHead button {
+  margin: 0;
+}
+
+.importTemplates {
+  align-items: center;
+  color: var(--text-3);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 8px;
+}
+
+.importChoice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+}
+
+.importChoice .checkboxLabel {
+  margin: 0;
+}
+
+textarea.importPaste {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  min-height: 110px;
+  white-space: pre;
+}
+
+.importSummary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.importAction {
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 9px;
+}
+
+.importAction-create {
+  background: var(--green-soft);
+  color: var(--green-deep);
+}
+
+.importAction-update {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.importAction-unchanged {
+  background: var(--paper);
+  color: var(--text-2);
+}
+
+.importAction-error {
+  background: var(--red-soft);
+  color: var(--red-deep);
+}
+
+.importMapping {
+  font-size: 12.5px;
+}
+
+.importMapping ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.importMapping li {
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+}
+
+.importMapping li.importIgnored {
+  background: var(--amber-soft);
+  border-color: #f0d79a;
+  color: var(--amber-deep);
+}
+
+.importWarnings {
+  color: var(--amber-deep);
+  font-size: 12.5px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.importChanges {
+  display: inline-flex;
+  gap: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.importChange .importField {
+  color: var(--text-3);
+}
+
+.importChange del {
+  color: var(--red-deep);
+}
+
+.importChange ins {
+  color: var(--green-deep);
+  text-decoration: none;
+}
+
+.importErrors {
+  color: var(--red-deep);
+}
+
+.dataGrid .dgRow.importRowError .dgCell[data-c="0"] {
+  box-shadow: inset 3px 0 0 var(--red);
+}
+
+.importDone {
+  background: var(--green-soft);
+  border-radius: var(--radius-sm);
+  color: var(--green-deep);
+  font-size: 13px;
+  margin: 0;
+  padding: 7px 10px;
+}
+
+.importActions {
+  align-items: center;
+  border-top: 1px solid var(--line-soft);
+  justify-content: flex-end;
+  margin: 0;
+  padding: 12px 18px;
+}
+
+.importActions .hint {
+  flex: 1;
+  font-size: 12px;
 }
