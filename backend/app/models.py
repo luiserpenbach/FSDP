@@ -128,9 +128,9 @@ class Diagram(TimestampMixin, Base):
     diagram_type: Mapped[str] = mapped_column(String(40), nullable=False, default="pid")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     graph: Mapped[dict] = mapped_column(JSON, default=dict)
-    # Schematic document (mm paper space) authored by the drafting editor.
-    # NULL until a diagram has been opened and saved there; the legacy React
-    # Flow `graph` stays the source for the classic editor until conversion.
+    # Schematic document (mm paper space) saved by early drafting builds; NULL for
+    # most diagrams. Legacy diagrams are read-only: Drafting converts the schematic,
+    # or else the React Flow `graph`, into a drawing.
     schematic: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     system: Mapped[FluidSystem] = relationship(back_populates="diagrams")

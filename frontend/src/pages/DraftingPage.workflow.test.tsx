@@ -10,7 +10,8 @@ const apiMock = vi.hoisted(() => ({
   getTagScheme: vi.fn(),
   listLineClasses: vi.fn(),
   getSheetDrc: vi.fn(),
-  updateDrawing: vi.fn()
+  updateDrawing: vi.fn(),
+  listProjectDiagrams: vi.fn()
 }));
 const workflowMock = vi.hoisted(() => ({
   submitDrawing: vi.fn(),
@@ -112,7 +113,7 @@ const sheets: Record<string, DrawingSheet> = { sh1: sheet("sh1", 1, [pt]), sh2: 
 function renderPage({ canWrite = true, notify = vi.fn() }: { canWrite?: boolean; notify?: (message: string, error?: boolean) => void } = {}) {
   return render(
     <MemoryRouter>
-      <DraftingPage projectId="p1" projectName="AMB2" systems={[]} diagrams={[]} selectedSystemId="" customSymbols={[]} parts={[]} user={engineer} canWrite={canWrite} notify={notify} />
+      <DraftingPage projectId="p1" projectName="AMB2" systems={[]} selectedSystemId="" customSymbols={[]} parts={[]} user={engineer} canWrite={canWrite} notify={notify} />
     </MemoryRouter>
   );
 }
@@ -134,6 +135,7 @@ describe("DraftingPage release workflow", () => {
     apiMock.getSheet.mockImplementation(async (id: string) => sheets[id]);
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.listLineClasses.mockResolvedValue([]);
+    apiMock.listProjectDiagrams.mockResolvedValue([]);
     apiMock.getSheetDrc.mockImplementation(async (id: string) => ({ sheet_id: id, sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] }));
     apiMock.updateSheet.mockImplementation(async (id: string, body: { document?: unknown }) => ({ ...sheets[id], document: body.document ?? sheets[id].document }));
   });

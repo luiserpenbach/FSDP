@@ -11,7 +11,6 @@ import { WorkspaceSwitcher } from "./workspace/WorkspaceSwitcher";
 
 // Route pages load on first visit; the dashboard (the landing page) ships in the main chunk.
 const SystemsPage = lazy(() => import("./pages/SystemsPage").then((module) => ({ default: module.SystemsPage })));
-const DiagramsPage = lazy(() => import("./pages/DiagramsPage").then((module) => ({ default: module.DiagramsPage })));
 const DraftingPage = lazy(() => import("./pages/DraftingPage").then((module) => ({ default: module.DraftingRoutePage })));
 const PartsPage = lazy(() => import("./pages/PartsCatalog").then((module) => ({ default: module.PartsPage })));
 const RequirementsPage = lazy(() => import("./pages/RequirementsPage").then((module) => ({ default: module.RequirementsPage })));
@@ -22,7 +21,6 @@ const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => 
 const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
   { path: "/systems", label: "Systems", description: "Projects and fluid systems" },
-  { path: "/diagrams", label: "Diagrams", description: "P&ID workspace" },
   { path: "/drafting", label: "Drafting", description: "Paper-space P&ID drawings" },
   { path: "/parts", label: "Parts Catalog", description: "Internal and vendor parts" },
   { path: "/requirements", label: "Requirements", description: "Traceable requirements" },
@@ -51,7 +49,7 @@ function AuthGate() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   // A 401 mid-session shows the login form over the still-mounted workspace,
-  // so signing in again keeps unsaved drafting and diagram edits.
+  // so signing in again keeps unsaved drafting edits.
   const [sessionExpired, setSessionExpired] = useState(false);
   const [unsaved] = useState(createUnsavedChangesRegistry);
 
@@ -145,7 +143,8 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/systems" element={<SystemsPage />} />
-          <Route path="/diagrams" element={<DiagramsPage />} />
+          {/* The legacy Diagrams editor is retired; its diagrams are converted from Drafting. */}
+          <Route path="/diagrams" element={<Navigate to="/drafting" replace />} />
           <Route path="/drafting" element={<DraftingPage />} />
           <Route path="/parts" element={<PartsPage />} />
           <Route path="/requirements" element={<RequirementsPage />} />

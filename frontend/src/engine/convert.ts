@@ -5,8 +5,6 @@
  * Item ids are preserved so component bindings keyed by node external id keep
  * lining up with the converted symbols.
  */
-import type { Edge, Node } from "reactflow";
-import { customSymbolId } from "../components/PidSymbols";
 import { normalizeRotation, orthogonalize, rectUnion, simplifyPolyline, snapPoint, snapValue } from "./geometry";
 import { BUILTIN_LIBRARY, CUSTOM_LIBRARY, type SymbolRegistry } from "./library";
 import { routeBetween } from "./routing";
@@ -49,22 +47,53 @@ const LEGACY_SYMBOL_KEYS: Record<string, string> = {
 
 const LEGACY_DEFAULT_SIZE = { width: 56, height: 50 };
 
-type LegacyGraph = { nodes?: Node[]; edges?: Edge[] };
+/** A node of a legacy diagram graph as the retired React Flow editor stored it. */
+export type LegacyNode = {
+  id: string;
+  type?: string;
+  position?: { x: number; y: number };
+  /** Section the node sits in; positions are relative to it. */
+  parentNode?: string;
+  width?: number | null;
+  height?: number | null;
+  style?: { width?: number | string; height?: number | string; [key: string]: unknown };
+  data?: Record<string, unknown>;
+};
+
+/** A legacy diagram edge between node handles (ports). */
+export type LegacyEdge = {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+  label?: unknown;
+  data?: Record<string, unknown>;
+};
+
+export type LegacyGraph = { nodes?: LegacyNode[]; edges?: LegacyEdge[] };
+
+/** Legacy custom symbols were referenced by node type "custom:<symbol id>". */
+const LEGACY_CUSTOM_PREFIX = "custom:";
+
+export function legacyCustomSymbolId(symbolType: string): string | null {
+  return symbolType.startsWith(LEGACY_CUSTOM_PREFIX) ? symbolType.slice(LEGACY_CUSTOM_PREFIX.length) : null;
+}
 
 function symbolRefFor(symbolType: string): SymbolRef {
-  const custom = customSymbolId(symbolType);
+  const custom = legacyCustomSymbolId(symbolType);
   if (custom) return { library: CUSTOM_LIBRARY, key: custom, version: 1 };
   return { library: BUILTIN_LIBRARY, key: LEGACY_SYMBOL_KEYS[symbolType] ?? "component", version: 1 };
 }
 
-function nodeSize(node: Node): { width: number; height: number } {
+function nodeSize(node: LegacyNode): { width: number; height: number } {
   const width = Number(node.width ?? node.style?.width ?? LEGACY_DEFAULT_SIZE.width);
   const height = Number(node.height ?? node.style?.height ?? LEGACY_DEFAULT_SIZE.height);
   return { width: Number.isFinite(width) ? width : LEGACY_DEFAULT_SIZE.width, height: Number.isFinite(height) ? height : LEGACY_DEFAULT_SIZE.height };
 }
 
 /** Absolute top-left in px, resolving section parents. */
-function absolutePosition(node: Node, byId: Map<string, Node>): Point {
+function absolutePosition(node: LegacyNode, byId: Map<string, LegacyNode>): Point {
   let x = node.position?.x ?? 0;
   let y = node.position?.y ?? 0;
   let parentId = node.parentNode;
@@ -80,7 +109,7 @@ function absolutePosition(node: Node, byId: Map<string, Node>): Point {
   return { x, y };
 }
 
-function legacyKind(node: Node): "symbol" | "section" | "text" | "comment" | "junction" {
+function legacyKind(node: LegacyNode): "symbol" | "section" | "text" | "comment" | "junction" {
   switch (node.type) {
     case "pidSection":
       return "section";
@@ -105,7 +134,7 @@ function pickSheet(content: Rect | null): SheetSizeId {
   return "A0";
 }
 
-function lineTypeFor(edge: Edge): LineType {
+function lineTypeFor(edge: LegacyEdge): LineType {
   const style = edge.data?.strokeStyle as string | undefined;
   if (style === "dashed") return "signal_electric";
   if (style === "dotted") return "signal_software";

@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import BomSnapshot, ComponentInstance, Diagram, Drawing, Part
+from app.models import BomSnapshot, Drawing, Part
 from app.services.sheet_index import drawing_index_rows, stale_sheets
 
 # Symbol categories that become BoM line items (connectors and actuators do not).
@@ -36,38 +36,13 @@ def _part_row(part: Part | None, description: str) -> dict:
     }
 
 
-def _next_revision(db: Session, *, diagram_id: str | None, drawing_id: str | None) -> int:
-    query = select(BomSnapshot).order_by(BomSnapshot.revision.desc())
-    if diagram_id:
-        query = query.where(BomSnapshot.diagram_id == diagram_id)
-    else:
-        query = query.where(BomSnapshot.drawing_id == drawing_id)
-    latest = db.scalars(query).first()
+def _next_revision(db: Session, drawing_id: str) -> int:
+    latest = db.scalars(
+        select(BomSnapshot)
+        .where(BomSnapshot.drawing_id == drawing_id)
+        .order_by(BomSnapshot.revision.desc())
+    ).first()
     return (latest.revision + 1) if latest else 1
-
-
-def generate_bom_snapshot(db: Session, diagram: Diagram) -> BomSnapshot:
-    components = db.scalars(
-        select(ComponentInstance).where(ComponentInstance.diagram_id == diagram.id)
-    ).all()
-
-    rows_by_part: dict[str, dict] = {}
-    for component in components:
-        part = db.get(Part, component.part_id) if component.part_id else None
-        row_key = component.part_id or component.tag
-        existing = rows_by_part.setdefault(row_key, _part_row(part, component.tag))
-        existing["quantity"] += component.quantity
-        existing["component_tags"].append(component.tag)
-
-    snapshot = BomSnapshot(
-        diagram_id=diagram.id,
-        revision=_next_revision(db, diagram_id=diagram.id, drawing_id=None),
-        status="draft",
-        rows=list(rows_by_part.values()),
-    )
-    db.add(snapshot)
-    db.flush()
-    return snapshot
 
 
 def drawing_bom_rows(db: Session, drawing: Drawing) -> list[dict]:
@@ -181,7 +156,7 @@ def generate_drawing_bom_snapshot(db: Session, drawing: Drawing) -> BomSnapshot:
     current = drawing.current_revision
     snapshot = BomSnapshot(
         drawing_id=drawing.id,
-        revision=_next_revision(db, diagram_id=None, drawing_id=drawing.id),
+        revision=_next_revision(db, drawing.id),
         status="draft",
         rows=drawing_bom_rows(db, drawing),
         drawing_revision=current.label if current else None,

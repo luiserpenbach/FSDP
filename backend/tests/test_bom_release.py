@@ -5,9 +5,11 @@ import io
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from sqlalchemy import event
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import get_db
 from app.main import app
+from tests.legacy import add_legacy_bom, add_legacy_diagram
 
 
 def _project(client: TestClient) -> str:
@@ -150,13 +152,14 @@ def test_bom_xlsx_export_has_header_block(client: TestClient) -> None:
     assert data[columns.index("Tags")] == "HV-1"
 
 
-def test_legacy_diagram_bom_xlsx(client: TestClient) -> None:
+def test_legacy_diagram_bom_xlsx(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
     project = client.post("/projects", json={"name": "Legacy"}).json()
     system = client.post(f"/projects/{project['id']}/systems", json={"name": "Feed"}).json()
-    diagram = client.post(f"/systems/{system['id']}/diagrams", json={"name": "P&ID"}).json()
-    client.post(f"/diagrams/{diagram['id']}/components", json={"tag": "V-1"})
-    snapshot = client.post(f"/diagrams/{diagram['id']}/bom").json()
-    sheet = load_workbook(io.BytesIO(client.get(f"/bom/{snapshot['id']}/xlsx").content)).active
+    diagram = add_legacy_diagram(session_factory, system["id"], "P&ID", components=[("V-1", None)])
+    snapshot_id = add_legacy_bom(session_factory, diagram.id)
+    sheet = load_workbook(io.BytesIO(client.get(f"/bom/{snapshot_id}/xlsx").content)).active
     header = {row[0]: row[1] for row in sheet.iter_rows(values_only=True) if row[0]}
     assert header["Project"] == "Legacy"
     assert header["Diagram"] == "P&ID"

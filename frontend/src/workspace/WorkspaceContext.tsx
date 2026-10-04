@@ -1,8 +1,8 @@
 /**
  * Workspace state shared by every page: the signed-in user, the project and
  * fluid system the user is working in (persisted per browser), the data most
- * pages read (projects, systems, requirements, catalog parts, custom symbols,
- * legacy diagrams), and the status line with its `runAction` helper.
+ * pages read (projects, systems, requirements, catalog parts, custom symbols),
+ * and the status line with its `runAction` helper.
  *
  * Pages own everything else. Selection changes go through `selectProject` /
  * `selectSystem`, which ask before discarding editor work registered in the
@@ -10,7 +10,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
-import type { Diagram, FluidSystem, Part, PidSymbolDef, Project, Requirement, User } from "../types";
+import type { FluidSystem, Part, PidSymbolDef, Project, Requirement, User } from "../types";
 import { unsavedPrompt, useUnsavedChangesRegistry, type UnsavedScope } from "../unsavedChanges";
 
 const PROJECT_KEY = "fsdp.selectedProject";
@@ -83,15 +83,6 @@ export type WorkspaceContextValue = {
 
   customSymbols: PidSymbolDef[];
   refreshSymbols: () => void;
-
-  /** Legacy diagrams of the selected system (Diagrams page, BoM, trace links, conversion). */
-  diagrams: Diagram[];
-  refreshDiagrams: (systemId: string) => Promise<Diagram[]>;
-  selectedDiagramId: string;
-  setSelectedDiagramId: (diagramId: string) => void;
-  /** Legacy component selected on the Diagrams or Requirements page (impact, trace links). */
-  selectedComponentId: string;
-  setSelectedComponentId: (componentId: string) => void;
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -115,14 +106,11 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [parts, setParts] = useState<Part[]>([]);
   const [customSymbols, setCustomSymbols] = useState<PidSymbolDef[]>([]);
-  const [diagrams, setDiagrams] = useState<Diagram[]>([]);
 
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedSystemId, setSelectedSystemId] = useState("");
   const [selectedRequirementId, setSelectedRequirementId] = useState("");
   const [selectedPartId, setSelectedPartId] = useState("");
-  const [selectedDiagramId, setSelectedDiagramId] = useState("");
-  const [selectedComponentId, setSelectedComponentId] = useState("");
 
   // Current selections for async work: a response for a previous selection
   // must not overwrite what is on screen now.
@@ -132,11 +120,9 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
     selectedProjectIdRef.current = selectedProjectId;
     selectedSystemIdRef.current = selectedSystemId;
   }, [selectedProjectId, selectedSystemId]);
-  // Invalidate in-flight project/system list responses when selection changes so a
-  // slower prior request cannot rewrite systems/diagrams (and selected ids) for the
-  // wrong parent — which would then wipe the open canvas via the diagram load effect.
+  // Invalidate in-flight project loads when the selection changes so a slower prior
+  // request cannot rewrite systems/requirements (and selected ids) for the wrong project.
   const projectLoadGeneration = useRef(0);
-  const systemLoadGeneration = useRef(0);
 
   const runAction = useCallback(async (successMessage: string, action: () => Promise<void>, formKey?: string) => {
     busyCountRef.current += 1;
@@ -189,12 +175,6 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
     return next;
   }, []);
 
-  const refreshDiagrams = useCallback(async (systemId: string) => {
-    const next = await api.listDiagrams(systemId);
-    if (selectedSystemIdRef.current === systemId) setDiagrams(next);
-    return next;
-  }, []);
-
   const refreshSymbols = useCallback(() => {
     api
       .listSymbols()
@@ -216,7 +196,6 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       if (!options?.confirmed && !confirmDiscard("project")) return false;
       setSelectedProjectId(projectId);
       setSelectedSystemId("");
-      setSelectedDiagramId("");
       return true;
     },
     [confirmDiscard]
@@ -227,7 +206,6 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       if (systemId === selectedSystemIdRef.current) return true;
       if (!options?.confirmed && !confirmDiscard("system")) return false;
       setSelectedSystemId(systemId);
-      setSelectedDiagramId("");
       return true;
     },
     [confirmDiscard]
@@ -276,27 +254,8 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
   }, [selectedProjectId, runAction]);
 
   useEffect(() => {
-    if (!selectedSystemId) {
-      systemLoadGeneration.current += 1;
-      setDiagrams([]);
-      setSelectedDiagramId("");
-      return;
-    }
-    writeStored(SYSTEM_KEY, selectedSystemId);
-    const systemId = selectedSystemId;
-    const generation = ++systemLoadGeneration.current;
-    void runAction("Loaded system diagrams.", async () => {
-      const next = await api.listDiagrams(systemId);
-      if (generation !== systemLoadGeneration.current) return;
-      setDiagrams(next);
-      setSelectedDiagramId((current) => (next.some((diagram) => diagram.id === current) ? current : next[0]?.id || ""));
-    });
-  }, [selectedSystemId, runAction]);
-
-  // A component selection belongs to the diagram it was picked on.
-  useEffect(() => {
-    setSelectedComponentId("");
-  }, [selectedDiagramId]);
+    if (selectedSystemId) writeStored(SYSTEM_KEY, selectedSystemId);
+  }, [selectedSystemId]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -333,13 +292,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       selectedPartId,
       setSelectedPartId,
       customSymbols,
-      refreshSymbols,
-      diagrams,
-      refreshDiagrams,
-      selectedDiagramId,
-      setSelectedDiagramId,
-      selectedComponentId,
-      setSelectedComponentId
+      refreshSymbols
     }),
     [
       user,
@@ -367,11 +320,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       parts,
       selectedPartId,
       customSymbols,
-      refreshSymbols,
-      diagrams,
-      refreshDiagrams,
-      selectedDiagramId,
-      selectedComponentId
+      refreshSymbols
     ]
   );
 

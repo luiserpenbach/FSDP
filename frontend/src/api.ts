@@ -7,6 +7,7 @@ import type {
   CatalogDocument,
   CatalogSettings,
   Diagram,
+  DiagramSummary,
   Drawing,
   DrawingRevision,
   DrawingSheet,
@@ -23,6 +24,7 @@ import type {
   PidSymbolDef,
   Project,
   ProjectBom,
+  ProjectSheetItem,
   Requirement,
   SchematicRead,
   TagSchemeRead,
@@ -114,22 +116,13 @@ export const api = {
   ) => request<FluidSystem>(`/systems/${systemId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteSystem: (systemId: string) =>
     requestNoContent(`/systems/${systemId}`, { method: "DELETE" }),
+  // Legacy diagrams are read-only: they are converted into drawings on the Drafting page.
   listDiagrams: (systemId: string) => request<Diagram[]>(`/systems/${systemId}/diagrams`),
-  createDiagram: (systemId: string, body: { name: string; diagram_type?: string }) =>
-    request<Diagram>(`/systems/${systemId}/diagrams`, { method: "POST", body: JSON.stringify(body) }),
+  listProjectDiagrams: (projectId: string) => request<DiagramSummary[]>(`/projects/${projectId}/diagrams`),
   getDiagram: (diagramId: string) => request<Diagram>(`/diagrams/${diagramId}`),
-  updateDiagram: (diagramId: string, body: { name?: string; diagram_type?: string }) =>
-    request<Diagram>(`/diagrams/${diagramId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteDiagram: (diagramId: string) =>
     requestNoContent(`/diagrams/${diagramId}`, { method: "DELETE" }),
-  updateDiagramGraph: (diagramId: string, body: unknown) =>
-    request<Diagram>(`/diagrams/${diagramId}/graph`, { method: "PUT", body: JSON.stringify(body) }),
   getSchematic: (diagramId: string) => request<SchematicRead>(`/diagrams/${diagramId}/schematic`),
-  saveSchematic: (diagramId: string, document: unknown) =>
-    request<SchematicRead>(`/diagrams/${diagramId}/schematic`, {
-      method: "PUT",
-      body: JSON.stringify({ document })
-    }),
   listDrawings: (projectId: string) => request<Drawing[]>(`/projects/${projectId}/drawings`),
   createDrawing: (
     projectId: string,
@@ -176,6 +169,8 @@ export const api = {
   getVerificationMatrix: (projectId: string) => request<VerificationMatrix>(`/projects/${projectId}/verification-matrix`),
   getDrawingList: (drawingId: string, kind: string) => request<ListRead>(`/drawings/${drawingId}/lists/${kind}`),
   getProjectList: (projectId: string, kind: string) => request<ListRead>(`/projects/${projectId}/lists/${kind}`),
+  /** Tagged items on the project's saved sheets (trace-link targets). */
+  listProjectSheetItems: (projectId: string) => request<ProjectSheetItem[]>(`/projects/${projectId}/sheet-items`),
   downloadList: async (scope: "drawing" | "project", id: string, kind: string, format: "csv" | "xlsx") => {
     const base = scope === "drawing" ? `/drawings/${id}` : `/projects/${id}`;
     const response = await rawRequest(`${base}/lists/${kind}?format=${format}`);
@@ -268,29 +263,9 @@ export const api = {
   },
   deletePartDocument: (partId: string, documentId: string) =>
     requestNoContent(`/parts/${partId}/documents/${documentId}`, { method: "DELETE" }),
+  /** Legacy component instances (read-only; shown for old trace links). */
   listComponents: (diagramId: string) =>
     request<ComponentInstance[]>(`/diagrams/${diagramId}/components`),
-  createComponent: (
-    diagramId: string,
-    body: {
-      tag: string;
-      part_id?: string;
-      node_id?: string;
-      quantity?: number;
-      properties?: Record<string, unknown>;
-    }
-  ) =>
-    request<ComponentInstance>(`/diagrams/${diagramId}/components`, {
-      method: "POST",
-      body: JSON.stringify(body)
-    }),
-  updateComponent: (componentId: string, body: Partial<ComponentInstance>) =>
-    request<ComponentInstance>(`/components/${componentId}`, {
-      method: "PUT",
-      body: JSON.stringify(body)
-    }),
-  deleteComponent: (componentId: string) =>
-    requestNoContent(`/components/${componentId}`, { method: "DELETE" }),
   listRequirements: (projectId: string) => request<Requirement[]>(`/projects/${projectId}/requirements`),
   createRequirement: (body: Omit<Requirement, "id">) =>
     request<Requirement>("/requirements", { method: "POST", body: JSON.stringify(body) }),
@@ -307,15 +282,9 @@ export const api = {
     requestNoContent(`/trace-links/${linkId}`, { method: "DELETE" }),
   listTraceLinks: (objectType: string, objectId: string) =>
     request<TraceLink[]>(`/objects/${objectType}/${objectId}/trace`),
-  generateBom: (diagramId: string) =>
-    request<BomSnapshot>(`/diagrams/${diagramId}/bom`, { method: "POST" }),
+  /** Legacy diagram BoM snapshots: read-only history. */
   listDiagramBoms: (diagramId: string) => request<BomSnapshot[]>(`/diagrams/${diagramId}/bom`),
   listProjectBoms: (projectId: string) => request<ProjectBom[]>(`/projects/${projectId}/bom`),
-  setBomStatus: (snapshotId: string, status: string) =>
-    request<BomSnapshot>(`/bom/${snapshotId}/status`, {
-      method: "PUT",
-      body: JSON.stringify({ status })
-    }),
   getBomReadiness: (snapshotId: string) => request<BomReadiness>(`/bom/${snapshotId}/readiness`),
   getBomDiff: (snapshotId: string, againstId: string) =>
     request<BomDiff>(`/bom/${snapshotId}/diff?against_id=${againstId}`),

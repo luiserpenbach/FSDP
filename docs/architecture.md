@@ -1,6 +1,6 @@
 # FSDP MVP Architecture
 
-The MVP is a split web application with a FastAPI backend, PostgreSQL database, and React frontend. It implements the first useful digital-thread workflow for fluid-system development: project, fluid system, P&ID graph, parts, component instances, requirements, trace links, BoM snapshots, and change impact.
+The MVP is a split web application with a FastAPI backend, PostgreSQL database, and React frontend. It implements the first useful digital-thread workflow for fluid-system development: project, fluid system, P&ID drawings, parts, requirements, trace links, BoM snapshots, and change impact.
 
 For implementation details, see [implementation.md](implementation.md). For product scope, see [requirements.md](requirements.md).
 
@@ -22,33 +22,38 @@ The first implementation connects these objects:
 ```mermaid
 flowchart LR
   Project --> FluidSystem
-  FluidSystem --> Diagram
-  Diagram --> DiagramNode
-  Diagram --> DiagramEdge
-  DiagramNode --> ComponentInstance
-  ComponentInstance --> Part
+  Project --> Drawing
+  Drawing --> DrawingSheet
+  DrawingSheet --> SheetItem
+  DrawingSheet --> SheetLine
+  SheetItem --> Part
   Requirement --> TraceLink
-  TraceLink --> ComponentInstance
-  Diagram --> BomSnapshot
-  ComponentInstance --> BomSnapshot
+  TraceLink --> SheetItem
+  TraceLink --> Drawing
+  Drawing --> BomSnapshot
+  SheetItem --> BomSnapshot
   Part --> ChangeImpact
-  ComponentInstance --> ChangeImpact
+  Requirement --> ChangeImpact
 ```
 
-The diagram editor stores its full graph payload for round-tripping through React Flow. The backend also persists normalized nodes, edges, and component instances so BoMs, requirements, and impact analysis can query engineering objects directly.
+Drafting is the only P&ID editor. A sheet stores its schematic document; on save the client also sends the sheet index (one row per tagged item and line) and the design rule check results, so lists, BoMs, trace links, and impact analysis query engineering objects directly.
+
+Diagrams from the retired React Flow editor (`Diagram`, its nodes, edges, and `ComponentInstance` rows, and diagram BoM snapshots) are import-only: the API lists and reads them so Drafting can convert a diagram into a drawing, and deletes them on request. No endpoint writes them any more.
 
 ## Data Ownership
 
-The backend is the source of truth for engineering objects. The frontend owns interactive editing state while the user is manipulating the canvas, but saved diagram data is persisted through the backend.
+The backend is the source of truth for engineering objects. The frontend owns interactive editing state while the user is manipulating the canvas, but saved sheets are persisted through the backend.
 
 ```mermaid
 flowchart LR
-  ReactFlowState[React Flow State] --> SaveGraph[Save Graph API]
-  SaveGraph --> DiagramGraph[Diagram Graph JSON]
-  SaveGraph --> NormalizedNodes[Diagram Nodes]
-  SaveGraph --> NormalizedEdges[Diagram Edges]
-  NormalizedNodes --> ComponentInstances[Component Instances]
-  ComponentInstances --> BomSnapshots[BoM Snapshots]
+  EditorState[Drafting editor state] --> SaveSheet[Save Sheet API]
+  SaveSheet --> SheetDocument[Sheet document JSON]
+  SaveSheet --> SheetIndex[Sheet items and lines]
+  SaveSheet --> DrcResults[DRC results]
+  SheetIndex --> Lists[Engineering lists]
+  SheetIndex --> BomSnapshots[BoM snapshots]
+  LegacyDiagram[Legacy diagram graph] --> Convert[Convert in Drafting]
+  Convert --> SheetDocument
 ```
 
 ## MVP Boundaries
@@ -58,13 +63,12 @@ The MVP intentionally avoids full PLM behavior, enterprise approval routing, and
 Implemented now:
 
 - Project and fluid-system management.
-- P&ID graph creation, saving, reopening, and deletion.
-- Component catalog management.
-- Component placement on persisted diagram nodes.
+- P&ID drawings with sheets and revisions in the Drafting editor; legacy diagrams convert into drawings.
+- Component catalog management and part assignment on drawings.
 - Requirements management.
-- Requirement-to-component trace links.
-- BoM generation and CSV export.
-- Basic change impact for selected parts and components.
+- Requirement trace links to drawing items and drawings.
+- Drawing BoM generation, release, and CSV/XLSX export.
+- Change impact of parts and requirements on drawings.
 
 Deferred:
 

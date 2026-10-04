@@ -2,12 +2,13 @@
  * Drafting: the paper-space P&ID editor built on the schematic engine.
  *
  * Works on controlled drawings (number, title, size, revisions) made of
- * sheets; each sheet holds a schematic document. Legacy diagrams can be
- * converted into a new drawing. Export renders the sheet with the shared
+ * sheets; each sheet holds a schematic document. Diagrams from the retired
+ * legacy editor are import-only: any of the project's can be converted into
+ * a new drawing. Export renders the sheet with the shared
  * renderer and lets the server turn the SVG into PDF or PNG.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, releaseDrawing, reviseDrawing, submitDrawing, withdrawDrawing, WorkflowConflictError } from "../api";
 import { AssignPartModal } from "../components/schematic/AssignPartModal";
 import { DrcPanel, useDrc, type DrcInputs } from "../components/schematic/DrcPanel";
@@ -16,6 +17,7 @@ import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
+import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
 import { useStaleReindex, type ReindexOutcome } from "../components/schematic/useStaleReindex";
 import { convertLegacyGraph } from "../engine/convert";
 import { deriveSheetData } from "../engine/derived";
@@ -27,7 +29,7 @@ import { renderFindingsSheet } from "../engine/drcSheet";
 import { lineLengthM } from "../engine/index";
 import type { ListKind } from "../engine/lists";
 import { partBadge, partWarnings } from "../engine/parts";
-import { SymbolRegistry } from "../engine/library";
+import { CUSTOM_LIBRARY, SymbolRegistry } from "../engine/library";
 import { LINE_TYPE_LABELS, renderDocumentSvg, type PartBadge } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
@@ -35,17 +37,17 @@ import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, tagsOf, validateTag, ty
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
-import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRead, DrawingRevision, DrawingSheet, FluidSystem, LineClass, Part, PidSymbolDef, ReleaseBlocker, ReleaseSnapshotSheet, Requirement, RevisionSnapshot, User } from "../types";
+import type { BomReadiness, BomSnapshot, DiagramSummary, Drawing, DrawingRead, DrawingRevision, DrawingSheet, FluidSystem, LineClass, Part, PidSymbolDef, ReleaseBlocker, ReleaseSnapshotSheet, Requirement, RevisionSnapshot, User } from "../types";
 import { useUnsavedChanges } from "../unsavedChanges";
 import { useWorkspace } from "../workspace/WorkspaceContext";
+import { parseDraftingTarget, type DraftingTarget } from "./draftingLinks";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
   projectId: string;
   projectName: string;
   systems: FluidSystem[];
-  /** Diagrams of the currently selected system (conversion sources). */
-  diagrams: Diagram[];
+  /** Default system of a new drawing. */
   selectedSystemId: string;
   customSymbols: PidSymbolDef[];
   /** Reload custom symbols after their library metadata changes. */
@@ -57,6 +59,8 @@ type Props = {
   user: User;
   canWrite: boolean;
   notify: (message: string, error?: boolean) => void;
+  /** Drawing, sheet, and item to open once the project's drawings load (a deep link). */
+  target?: DraftingTarget | null;
 };
 
 const TOOLS: Array<{ id: ToolId; label: string; key: string }> = [
@@ -81,6 +85,22 @@ function downloadBlob(filename: string, blob: Blob) {
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function readStoredFlag(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredFlag(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 function stringField(fields: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -255,7 +275,7 @@ function DrawingCanvas({
   return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} readOnly={readOnly} onCursor={onCursor} onViewport={onViewport} />;
 }
 
-export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify }: Props) {
+export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify, target = null }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
@@ -270,6 +290,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [showGrid, setShowGrid] = useState(true);
   const [showDrawingPanel, setShowDrawingPanel] = useState(false);
   const [creating, setCreating] = useState<null | { mode: "new" | "convert" }>(null);
+  // Legacy diagrams of the project (conversion sources) and whether their hint was dismissed.
+  const [legacyDiagrams, setLegacyDiagrams] = useState<DiagramSummary[]>([]);
+  const [legacyHintDismissed, setLegacyHintDismissed] = useState<Record<string, boolean>>({});
+  // Custom symbol open in the symbol editor (null symbol = a new one).
+  const [symbolEditor, setSymbolEditor] = useState<null | { symbol: PidSymbolDef | null }>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [tagScheme, setTagScheme] = useState<TagScheme>(DEFAULT_TAG_SCHEME);
@@ -313,6 +338,17 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const canEdit = canWrite && !locked;
   const staleSheets = useMemo(() => drawing?.sheets.filter((entry) => entry.index_stale) ?? [], [drawing]);
   const systemName = systems.find((system) => system.id === drawing?.system_id)?.name;
+  // Drawing number each legacy diagram was converted into (by source_diagram_id of a sheet).
+  const convertedInto = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of drawings) {
+      for (const sheet of entry.sheets) if (sheet.source_diagram_id && !map.has(sheet.source_diagram_id)) map.set(sheet.source_diagram_id, entry.number);
+    }
+    return map;
+  }, [drawings]);
+  const unconvertedDiagrams = legacyDiagrams.filter((diagram) => !convertedInto.has(diagram.id));
+  const legacyHintKey = `fsdp.drafting.legacyHint.${projectId}`;
+  const showLegacyHint = canWrite && unconvertedDiagrams.length > 0 && !legacyHintDismissed[projectId] && readStoredFlag(legacyHintKey) !== "dismissed";
 
   const projectIdRef = useRef(projectId);
   useEffect(() => {
@@ -386,6 +422,24 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  // Legacy diagrams of every system in the project; conversion turns them into drawings.
+  useEffect(() => {
+    let cancelled = false;
+    setLegacyDiagrams([]);
+    if (!projectId) return;
+    api
+      .listProjectDiagrams(projectId)
+      .then((list) => {
+        if (!cancelled) setLegacyDiagrams(list);
+      })
+      .catch(() => {
+        if (!cancelled) setLegacyDiagrams([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [projectId]);
 
   // Project tag scheme (defaults when none is stored).
@@ -883,6 +937,21 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     return () => window.clearTimeout(handle);
   }, [editor, sheetId, focusItem]);
 
+  // Deep link: once the project's drawings are listed (and the loader has picked one),
+  // open the target drawing and sheet, and centre the item when its editor is ready.
+  const deepLink = useRef(target);
+  useEffect(() => {
+    const link = deepLink.current;
+    if (!link || !drawingId) return;
+    const targetDrawing = drawings.find((entry) => entry.id === link.drawingId);
+    if (!targetDrawing) return;
+    deepLink.current = null;
+    const targetSheet = targetDrawing.sheets.find((entry) => entry.id === link.sheetId)?.id ?? targetDrawing.sheets[0]?.id ?? "";
+    if (link.itemId && targetSheet) pendingLocate.current = { drawingId: targetDrawing.id, sheetId: targetSheet, itemId: link.itemId };
+    setDrawingId(targetDrawing.id);
+    setSheetId(targetSheet);
+  }, [drawings, drawingId]);
+
   async function exportSheet(format: "pdf" | "png" | "svg") {
     if (!editor || !sheetId || !context) return;
     setExporting(true);
@@ -931,7 +1000,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       let title = form.title;
       let systemId: string | null = form.systemId || null;
       if (form.mode === "convert") {
-        const source = diagrams.find((entry) => entry.id === form.diagramId);
+        const source = legacyDiagrams.find((entry) => entry.id === form.diagramId);
         if (!source) throw new Error("Choose a diagram to convert.");
         const stored = await api.getSchematic(source.id);
         const converted = stored.document
@@ -1000,6 +1069,31 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     }
   }
 
+  /** The legacy-diagram hint shows once per project: until dismissed or the convert form is opened. */
+  function dismissLegacyHint() {
+    writeStoredFlag(legacyHintKey, "dismissed");
+    setLegacyHintDismissed((current) => ({ ...current, [projectId]: true }));
+  }
+
+  function openConvertForm() {
+    dismissLegacyHint();
+    setCreating({ mode: "convert" });
+  }
+
+  /** Legacy diagrams can be deleted once converted (or when no longer wanted). */
+  async function deleteLegacyDiagram(diagram: DiagramSummary) {
+    const converted = convertedInto.get(diagram.id);
+    const note = converted ? ` It was converted into ${converted}, which is kept.` : " It has not been converted into a drawing.";
+    if (!window.confirm(`Delete legacy diagram "${diagram.name}"?${note}`)) return;
+    try {
+      await api.deleteDiagram(diagram.id);
+      setLegacyDiagrams((current) => current.filter((entry) => entry.id !== diagram.id));
+      notify(`Deleted legacy diagram ${diagram.name}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not delete the legacy diagram.", true);
+    }
+  }
+
   async function updateCustomSymbol(symbolId: string, patch: { category?: string; legend?: string; tag_prefix?: string }) {
     try {
       await api.updateSymbol(symbolId, patch);
@@ -1007,6 +1101,28 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       notify("Saved symbol metadata.");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not update the symbol.", true);
+    }
+  }
+
+  /** A saved symbol reaches the open sheet through the rebuilt registry; the sheet is not reloaded. */
+  function symbolSaved(symbol: PidSymbolDef) {
+    setSymbolEditor(null);
+    refreshSymbols?.();
+    notify(`Saved symbol ${symbol.name}.`);
+  }
+
+  async function deleteCustomSymbol(symbolId: string) {
+    const symbol = customSymbols.find((entry) => entry.id === symbolId);
+    if (!symbol) return;
+    const used = editor?.store.doc.items.filter((item) => item.kind === "symbol" && item.symbol.library === CUSTOM_LIBRARY && item.symbol.key === symbolId).length ?? 0;
+    const usage = used ? ` ${used} item(s) on this sheet use it and will show as missing.` : " Sheets that use it will show it as missing.";
+    if (!window.confirm(`Delete symbol "${symbol.name}"?${usage}`)) return;
+    try {
+      await api.deleteSymbol(symbolId);
+      refreshSymbols?.();
+      notify(`Deleted symbol ${symbol.name}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not delete the symbol.", true);
     }
   }
 
@@ -1061,7 +1177,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           <button type="button" disabled={!canWrite || !projectId} onClick={() => setCreating({ mode: "new" })}>
             New drawing
           </button>
-          <button type="button" disabled={!canWrite || !diagrams.length} onClick={() => setCreating({ mode: "convert" })} title="Create a drawing from a diagram on the Diagrams page">
+          <button type="button" disabled={!canWrite || !legacyDiagrams.length} onClick={openConvertForm} title="Create a drawing from a diagram of the retired Diagrams editor">
             Convert diagram…
           </button>
           {editor && (
@@ -1087,16 +1203,36 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           )}
         </div>
       </header>
+      {showLegacyHint && !creating && (
+        <div className="draftingNotice" role="status" aria-label="Unconverted legacy diagrams">
+          <span>
+            {unconvertedDiagrams.length === 1 ? "1 legacy diagram" : `${unconvertedDiagrams.length} legacy diagrams`} in this project{" "}
+            {unconvertedDiagrams.length === 1 ? "has" : "have"} not been converted into drawings. The Diagrams editor is retired; convert them to keep
+            working on them here.
+          </span>
+          <button type="button" onClick={openConvertForm}>
+            Convert diagram…
+          </button>
+          <button type="button" onClick={dismissLegacyHint}>
+            Dismiss
+          </button>
+        </div>
+      )}
       {creating && (
         <NewDrawingForm
           mode={creating.mode}
           systems={systems}
-          diagrams={diagrams}
+          diagrams={legacyDiagrams}
+          convertedInto={convertedInto}
+          onDeleteDiagram={canWrite ? (diagram) => void deleteLegacyDiagram(diagram) : undefined}
           defaultSystemId={selectedSystemId}
           defaultCompany={stringField(drawing?.fields, "company") ?? ""}
           onSubmit={(form) => void createDrawing(form)}
           onCancel={() => setCreating(null)}
         />
+      )}
+      {symbolEditor && canWrite && (
+        <SymbolEditorModal symbol={symbolEditor.symbol} onClose={() => setSymbolEditor(null)} onSaved={symbolSaved} />
       )}
       <section className="draftingWorkspace">
         {editor && (
@@ -1118,7 +1254,15 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           {editor && showLibrary && (
             <>
               <aside className="draftingLibrary" style={{ width: libraryWidth }}>
-                <LibraryPanelHost editor={editor} registry={registry} canWrite={canWrite} onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)} />
+                <LibraryPanelHost
+                  editor={editor}
+                  registry={registry}
+                  canWrite={canWrite}
+                  onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)}
+                  onNewSymbol={() => setSymbolEditor({ symbol: null })}
+                  onEditSymbol={(id) => setSymbolEditor({ symbol: customSymbols.find((entry) => entry.id === id) ?? null })}
+                  onDeleteSymbol={(id) => void deleteCustomSymbol(id)}
+                />
               </aside>
               <PanelResizer width={libraryWidth} onResize={setLibraryWidth} direction={1} label="Resize symbol library" />
             </>
@@ -1168,7 +1312,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                       ? "Select a project with the project switcher in the sidebar."
                       : drawings.length
                         ? "Select a drawing."
-                        : "Create a new drawing, or convert a diagram from the Diagrams page."}
+                        : "Create a new drawing, or convert a legacy diagram."}
                 </p>
               </div>
             )}
@@ -1265,18 +1409,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
 
 function LibraryPanelHost({
   editor,
-  registry,
-  canWrite,
-  onUpdateCustom
-}: {
-  editor: Editor;
-  registry: SymbolRegistry;
-  canWrite: boolean;
-  onUpdateCustom: (symbolId: string, patch: { category?: string; legend?: string; tag_prefix?: string }) => void;
-}) {
+  ...panel
+}: { editor: Editor } & Omit<Parameters<typeof LibraryPanel>[0], "placing" | "onPlace">) {
   const { state } = useEditorSnapshot(editor);
   const placing = state.tool === "place" && state.place ? state.place.symbol : null;
-  return <LibraryPanel registry={registry} placing={placing} canWrite={canWrite} onPlace={(ref) => editor.startPlacing(ref)} onUpdateCustom={onUpdateCustom} />;
+  return <LibraryPanel {...panel} placing={placing} onPlace={(ref) => editor.startPlacing(ref)} />;
 }
 
 type NewDrawingForm = {
@@ -1290,10 +1427,21 @@ type NewDrawingForm = {
   company: string;
 };
 
+/** Legacy diagrams grouped by their system, in system order (unknown systems last). */
+function diagramsBySystem(diagrams: DiagramSummary[], systems: FluidSystem[]): Array<{ system: string; diagrams: DiagramSummary[] }> {
+  const names = new Map(systems.map((system) => [system.id, system.name]));
+  const groups = new Map<string, DiagramSummary[]>();
+  for (const diagram of diagrams) groups.set(diagram.system_id, [...(groups.get(diagram.system_id) ?? []), diagram]);
+  const order = [...systems.map((system) => system.id), ...[...groups.keys()].filter((id) => !names.has(id))];
+  return order.filter((id) => groups.has(id)).map((id) => ({ system: names.get(id) ?? "Other system", diagrams: groups.get(id)! }));
+}
+
 function NewDrawingForm({
   mode,
   systems,
   diagrams,
+  convertedInto,
+  onDeleteDiagram,
   defaultSystemId,
   defaultCompany,
   onSubmit,
@@ -1301,12 +1449,18 @@ function NewDrawingForm({
 }: {
   mode: "new" | "convert";
   systems: FluidSystem[];
-  diagrams: Diagram[];
+  /** The project's legacy diagrams (conversion sources). */
+  diagrams: DiagramSummary[];
+  /** Drawing number by legacy diagram id, for diagrams already converted. */
+  convertedInto: Map<string, string>;
+  onDeleteDiagram?: (diagram: DiagramSummary) => void;
   defaultSystemId: string;
   defaultCompany: string;
   onSubmit: (form: NewDrawingForm) => void;
   onCancel: () => void;
 }) {
+  const groups = diagramsBySystem(diagrams, systems);
+  const firstChoice = groups.flatMap((group) => group.diagrams).find((diagram) => !convertedInto.has(diagram.id)) ?? groups[0]?.diagrams[0];
   const [form, setForm] = useState<NewDrawingForm>({
     mode,
     title: "",
@@ -1314,11 +1468,13 @@ function NewDrawingForm({
     size: "A3",
     units: "mm",
     systemId: defaultSystemId,
-    diagramId: diagrams[0]?.id ?? "",
+    diagramId: firstChoice?.id ?? "",
     company: defaultCompany
   });
   const update = (patch: Partial<NewDrawingForm>) => setForm((current) => ({ ...current, ...patch }));
-  const canSubmit = mode === "convert" ? Boolean(form.diagramId) : Boolean(form.title.trim());
+  const selectedDiagram = diagrams.find((diagram) => diagram.id === form.diagramId) ?? null;
+  const convertedNumber = selectedDiagram ? convertedInto.get(selectedDiagram.id) : undefined;
+  const canSubmit = mode === "convert" ? Boolean(selectedDiagram) : Boolean(form.title.trim());
   return (
     <form
       className="draftingNewForm"
@@ -1332,13 +1488,33 @@ function NewDrawingForm({
         <label>
           Diagram
           <select value={form.diagramId} onChange={(event) => update({ diagramId: event.target.value })}>
-            {diagrams.map((diagram) => (
-              <option key={diagram.id} value={diagram.id}>
-                {diagram.name} rev {diagram.revision}
-              </option>
+            {groups.map((group) => (
+              <optgroup key={group.system} label={group.system}>
+                {group.diagrams.map((diagram) => (
+                  <option key={diagram.id} value={diagram.id}>
+                    {diagram.name} rev {diagram.revision}
+                    {convertedInto.has(diagram.id) ? ` (converted: ${convertedInto.get(diagram.id)})` : ""}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
+      )}
+      {mode === "convert" && selectedDiagram && (
+        <p className="hint draftingFormNote">
+          {convertedNumber
+            ? `Already converted into ${convertedNumber}; converting again creates another drawing.`
+            : "Legacy diagrams are read-only; the converted drawing is edited here."}
+          {onDeleteDiagram && (
+            <>
+              {" "}
+              <button type="button" className="linkButton" onClick={() => onDeleteDiagram(selectedDiagram)}>
+                Delete legacy diagram
+              </button>
+            </>
+          )}
+        </p>
       )}
       <label>
         Title{mode === "convert" ? " (defaults to the diagram name)" : ""}
@@ -2409,15 +2585,26 @@ function StatusBar({ editor, cursor, viewport, drcInputs }: { editor: Editor; cu
   );
 }
 
-/** The /drafting route: the editor bound to the workspace's project, system, and catalog. */
+/**
+ * The /drafting route: the editor bound to the workspace's project, system, and
+ * catalog. A deep link (?project=&drawing=&sheet=&item=) switches to the
+ * linked project and opens the drawing there.
+ */
 export function DraftingRoutePage() {
-  const { user, canWrite, notify, selectedProjectId, selectedProject, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  const { user, canWrite, notify, projects, selectedProjectId, selectProject, selectedProject, systems, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  const [searchParams] = useSearchParams();
+  const [target] = useState(() => parseDraftingTarget(searchParams));
+  useEffect(() => {
+    const projectId = target?.projectId;
+    if (projectId && projectId !== selectedProjectId && projects.some((project) => project.id === projectId)) selectProject(projectId);
+    // Only when the linked project becomes available; later switches are the user's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, projects]);
   return (
     <DraftingPage
       projectId={selectedProjectId}
       projectName={selectedProject?.name ?? ""}
       systems={systems}
-      diagrams={diagrams}
       selectedSystemId={selectedSystemId}
       customSymbols={customSymbols}
       refreshSymbols={refreshSymbols}
@@ -2426,6 +2613,7 @@ export function DraftingRoutePage() {
       user={user}
       canWrite={canWrite}
       notify={notify}
+      target={target}
     />
   );
 }

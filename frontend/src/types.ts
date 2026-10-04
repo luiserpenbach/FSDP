@@ -112,11 +112,12 @@ export type Diagram = {
   name: string;
   diagram_type: string;
   revision: number;
-  graph: {
-    nodes?: import("reactflow").Node[];
-    edges?: import("reactflow").Edge[];
-  };
+  /** React Flow graph saved by the retired Diagrams editor; read only to convert it into a drawing. */
+  graph: import("./engine/convert").LegacyGraph;
 };
+
+/** A legacy diagram as listed for conversion (without its graph). */
+export type DiagramSummary = Omit<Diagram, "graph">;
 
 export type DrawingRevision = {
   id: string;
@@ -343,6 +344,25 @@ export type BomDiff = {
     from_quantity: number;
     to_quantity: number;
   }>;
+};
+
+/** A tagged item on a saved sheet of the project (GET /projects/{id}/sheet-items); trace target "sheet_item". */
+export type ProjectSheetItem = {
+  /** Index row id: the trace-link target id. */
+  id: string;
+  sheet_id: string;
+  item_id: string;
+  kind: string;
+  category: string | null;
+  tag: string;
+  label: string | null;
+  symbol_name: string | null;
+  zone: string | null;
+  part_id: string | null;
+  drawing_id: string;
+  drawing_number: string;
+  drawing_title: string;
+  sheet_no: number;
 };
 
 export type TraceLink = {

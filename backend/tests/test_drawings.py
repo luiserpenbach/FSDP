@@ -4,6 +4,9 @@ import re
 import zlib
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
+
+from tests.legacy import add_legacy_diagram
 
 SVG = (
     '<?xml version="1.0" encoding="UTF-8"?>'
@@ -157,18 +160,20 @@ def test_drawing_update_sheets_and_revisions(client: TestClient) -> None:
     assert client.get(f"/drawings/{drawing_id}").status_code == 404
 
 
-def test_convert_diagram_into_first_sheet(client: TestClient) -> None:
+def test_convert_diagram_into_first_sheet(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
     project_id = _project(client)
     system = client.post(f"/projects/{project_id}/systems", json={"name": "GHe"}).json()
-    diagram = client.post(f"/systems/{system['id']}/diagrams", json={"name": "Legacy"}).json()
+    bare = add_legacy_diagram(session_factory, system["id"], "Bare")
+    diagram = {"id": add_legacy_diagram(session_factory, system["id"], schematic=_document()).id}
 
     missing = client.post(
         f"/projects/{project_id}/drawings",
-        json={"title": "From diagram", "first_sheet": {"source_diagram_id": diagram["id"]}},
+        json={"title": "From diagram", "first_sheet": {"source_diagram_id": bare.id}},
     )
     assert missing.status_code == 422
 
-    client.put(f"/diagrams/{diagram['id']}/schematic", json={"document": _document()})
     created = client.post(
         f"/projects/{project_id}/drawings",
         json={

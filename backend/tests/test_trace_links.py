@@ -150,3 +150,53 @@ def test_trace_link_endpoints_must_share_a_project(client: TestClient) -> None:
     assert (
         _link(client, ("requirement", requirement["id"]), ("part", part["id"])).status_code == 201
     )
+
+
+def test_project_sheet_items_list_tagged_trace_targets(client: TestClient) -> None:
+    project_id = _project(client)
+    drawing = client.post(
+        f"/projects/{project_id}/drawings", json={"title": "HELIUM\nPANEL", "number": "AMB2-0002"}
+    ).json()
+    second = client.post(f"/drawings/{drawing['id']}/sheets", json={}).json()
+    index = {
+        "items": [
+            {"item_id": "pt", "kind": "symbol", "category": "instrument", "tag": "PT-101"},
+            {"item_id": "hv", "kind": "symbol", "category": "valve", "tag": "HV-1", "zone": "B-2"},
+            {"item_id": "tee", "kind": "symbol", "category": "fitting"},
+        ],
+        "lines": [],
+    }
+    ids = _save(client, drawing["sheets"][0]["id"], index)
+    ids |= _save(client, second["id"], _index("V-9"))
+    other = _drawing(client, _project(client, "Other"))
+    _save(client, other["sheets"][0]["id"], _index("XV-1"))
+
+    rows = client.get(f"/projects/{project_id}/sheet-items").json()
+
+    # Untagged items and other projects' drawings are left out; ordered by sheet, then tag.
+    assert [(row["sheet_no"], row["tag"]) for row in rows] == [
+        (1, "HV-1"),
+        (1, "PT-101"),
+        (2, "V-9"),
+    ]
+    assert rows[0] == {
+        "id": ids["hv"],
+        "sheet_id": drawing["sheets"][0]["id"],
+        "item_id": "hv",
+        "kind": "symbol",
+        "category": "valve",
+        "tag": "HV-1",
+        "label": None,
+        "symbol_name": None,
+        "zone": "B-2",
+        "part_id": None,
+        "drawing_id": drawing["id"],
+        "drawing_number": "AMB2-0002",
+        "drawing_title": "HELIUM PANEL",
+        "sheet_no": 1,
+    }
+    # The row id is the trace-link target id.
+    requirement = _requirement(client, project_id)
+    linked = _link(client, ("requirement", requirement["id"]), ("sheet_item", rows[1]["id"]))
+    assert linked.status_code == 201
+    assert client.get("/projects/missing/sheet-items").status_code == 404

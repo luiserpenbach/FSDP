@@ -136,7 +136,7 @@ Includes:
 - Diagram export.
 - Operating modes such as fill, drain, purge, chilldown, pressurization, flight, and safe mode.
 
-A proposed plan to bring P&ID authoring and export to professional drafting level (sheets, title blocks, ISA symbol library, line numbers and specs, tag schemes, vector/DXF export, generated instrument index and line list, design rule checks, revision control) is in [pid-professional-upgrade-plan.md](pid-professional-upgrade-plan.md). It is not implemented.
+A proposed plan to bring P&ID authoring and export to professional drafting level (sheets, title blocks, ISA symbol library, line numbers and specs, tag schemes, vector/DXF export, generated instrument index and line list, design rule checks, revision control) is in [pid-professional-upgrade-plan.md](pid-professional-upgrade-plan.md). Its first phases are delivered in the Drafting editor.
 
 ### Epic 2: Engineering Data Model
 
@@ -292,15 +292,13 @@ Implemented as of the current MVP:
 - User accounts with sign-in, roles (admin/engineer/viewer), and an actor-stamped change history.
 - Project creation, selection, update, and delete.
 - Fluid system creation, selection, update, and delete.
-- P&ID diagram creation, listing, reopening, renaming, deletion, and saved graph restoration.
-- React Flow graph editing with saved nodes and edges.
-- Component catalog creation, selection, update, and delete.
-- Component placement on persisted diagram nodes.
+- P&ID drafting on the Drafting page, the single P&ID editor: controlled drawings with sheets and revisions, a symbol library with user-drawn custom symbols, tag schemes, lines with classes, design rule checks, generated lists, and PDF/PNG/SVG export.
+- Diagrams from the retired React Flow "Diagrams" editor are import-only: they are listed per project, converted into drawings in Drafting, and can be deleted afterwards. Their components, trace links, and BoM snapshots stay readable as history.
+- Component catalog creation, selection, update, and delete, and part assignment to drawing items.
 - Requirement creation, selection, update, and delete.
-- Requirement-to-component trace links.
-- BoM snapshot generation and CSV export.
-- Diagram-level and project-level BoM history endpoints.
-- Basic change impact for parts and components.
+- Requirement trace links to tagged drawing items and whole drawings.
+- Drawing BoM snapshot generation, release, diff, and CSV/XLSX export; project-level BoM history.
+- Change impact of parts and requirements on drawings, tags, requirements, parts, and BoMs.
 
 Not yet implemented:
 

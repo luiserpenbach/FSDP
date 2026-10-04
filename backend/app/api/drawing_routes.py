@@ -49,6 +49,7 @@ from app.schemas import (
     LineClassRead,
     LineClassUpdate,
     ListRead,
+    ProjectSheetItemRead,
     RevisionSnapshotRead,
     SheetDrcRead,
     SheetExportIn,
@@ -778,6 +779,38 @@ def get_sheet_index(sheet_id: str, db: Session = Depends(get_db)) -> dict:
     items = list(db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id)))
     lines = list(db.scalars(select(SheetLine).where(SheetLine.sheet_id == sheet.id)))
     return {"sheet_id": sheet.id, "items": items, "lines": lines}
+
+
+@drawing_router.get("/projects/{project_id}/sheet-items", response_model=list[ProjectSheetItemRead])
+def list_project_sheet_items(project_id: str, db: Session = Depends(get_db)) -> list[dict]:
+    """Tagged items on every saved sheet of the project (trace-link targets), by drawing."""
+    require_model(db, Project, project_id)
+    rows = db.execute(
+        select(SheetItem, DrawingSheet, Drawing)
+        .join(DrawingSheet, SheetItem.sheet_id == DrawingSheet.id)
+        .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+        .where(Drawing.project_id == project_id, SheetItem.tag.is_not(None), SheetItem.tag != "")
+        .order_by(Drawing.number, DrawingSheet.sheet_no, SheetItem.tag)
+    ).all()
+    return [
+        {
+            "id": item.id,
+            "sheet_id": sheet.id,
+            "item_id": item.item_id,
+            "kind": item.kind,
+            "category": item.category,
+            "tag": item.tag,
+            "label": item.label,
+            "symbol_name": item.symbol_name,
+            "zone": item.zone,
+            "part_id": item.part_id,
+            "drawing_id": drawing.id,
+            "drawing_number": drawing.number,
+            "drawing_title": drawing.title.replace("\n", " "),
+            "sheet_no": sheet.sheet_no,
+        }
+        for item, sheet, drawing in rows
+    ]
 
 
 LIST_MEDIA_TYPES = {

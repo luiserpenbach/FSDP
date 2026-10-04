@@ -4,9 +4,11 @@ import csv
 import io
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.main import app
 from app.services.release import next_revision_label
+from tests.legacy import add_legacy_diagram
 
 CONSTRAINT = {"kind": "material_in", "values": ["316L"]}
 
@@ -359,11 +361,13 @@ def test_index_stale_follows_saves(client: TestClient) -> None:
     assert client.get(f"/drawings/{drawing_id}/drc").json()["sheets"][0]["index_stale"] is True
 
 
-def test_converted_sheets_start_stale(client: TestClient) -> None:
+def test_converted_sheets_start_stale(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
     project_id = _project(client)
     system = client.post(f"/projects/{project_id}/systems", json={"name": "Fill"}).json()
-    diagram = client.post(f"/systems/{system['id']}/diagrams", json={"name": "Legacy"}).json()
-    client.put(f"/diagrams/{diagram['id']}/schematic", json={"document": _document("hv")})
+    legacy = add_legacy_diagram(session_factory, system["id"], schematic=_document("hv"))
+    diagram = {"id": legacy.id}
     drawing = client.post(
         f"/projects/{project_id}/drawings",
         json={"title": "Converted", "first_sheet": {"source_diagram_id": diagram["id"]}},
