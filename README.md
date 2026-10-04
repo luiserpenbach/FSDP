@@ -1,6 +1,6 @@
 # Fluid Systems Development Platform
 
-FSDP is a greenfield web platform for connected fluid-system design data. The MVP implements a thin digital thread: projects, fluid systems, a simple P&ID graph, component catalog selection, requirements traceability, BoM snapshots, and basic change impact.
+FSDP is a greenfield web platform for connected fluid-system design data. The MVP implements a thin digital thread: projects, fluid systems, controlled P&ID drawings (the Drafting editor), component catalog selection, requirements traceability, BoM snapshots, and change impact.
 
 ## Documentation
 
@@ -10,12 +10,12 @@ FSDP is a greenfield web platform for connected fluid-system design data. The MV
 - [Gap analysis](docs/gap-analysis.md): verified bugs, P&ID/BoM usability gaps, authentication and deployment readiness (Vercel demo, internal server + Tailscale), and prioritized roadmap.
 - [Codebase review (2026-10)](docs/codebase-review.md): verified bugs, simplification plan, canonical workflow and feature scope, and the "better than Excel" bar with a phased plan.
 - [Part catalog concept](docs/part-catalog-concept.md): proposed fully featured Parts Catalog (object model, P&ID/BoM thread, UX, phases). Not yet implemented.
-- [P&ID professional upgrade plan](docs/pid-professional-upgrade-plan.md): plan to grow the Diagrams editor into an AutoCAD/KiCad-grade P&ID tool (schematic engine, sheets and title blocks, ISA symbol library, first-class lines, tag schemes, vector/DXF export, generated lists, DRC, revision control). Phases 0–3 (engine, drawings and sheets, title blocks, PDF/PNG export, symbol library, tag schemes, first-class lines and connectors) are delivered; later phases are not.
+- [P&ID professional upgrade plan](docs/pid-professional-upgrade-plan.md): plan to grow the original Diagrams editor (since retired in favour of Drafting) into an AutoCAD/KiCad-grade P&ID tool (schematic engine, sheets and title blocks, ISA symbol library, first-class lines, tag schemes, vector/DXF export, generated lists, DRC, revision control). Phases 0–3 (engine, drawings and sheets, title blocks, PDF/PNG export, symbol library, tag schemes, first-class lines and connectors) are delivered; later phases are not.
 
 ## Stack
 
 - Backend: FastAPI, SQLAlchemy, Alembic, PostgreSQL
-- Frontend: React, TypeScript, Vite, React Flow
+- Frontend: React, TypeScript, Vite; the Drafting editor runs on an in-house SVG schematic engine (`frontend/src/engine`)
 - Local infrastructure: Docker Compose PostgreSQL
 
 ## Authentication
@@ -39,9 +39,7 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
 - Sign in/out with per-user accounts (admin/engineer/viewer; viewers are read-only) and
   an actor-stamped change history; admins manage accounts from the Settings page.
 - Create, select, update, and delete projects and fluid systems.
-- Author P&ID diagrams with an ISA-style symbol library, snap-to-grid, minimap,
-  undo/redo, node renaming, and PNG export.
-- Draft P&IDs in paper space on the Drafting page: controlled drawings with numbers,
+- Draft P&IDs in paper space on the Drafting page, the single P&ID editor: controlled drawings with numbers,
   titles, sheets, and revisions; frames with zones, a bound title block, revision
   table, general notes, proprietary notice, and generated symbol and instrument
   letter legends; a 104-symbol ISA/ISO library with composable actuators and
@@ -51,17 +49,21 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
   connectors that resolve to sheet and zone; align, distribute, copy/paste,
   find, and measure; wires that connect by geometry with derived junctions;
   undo/redo; connectivity and tag checks; and PDF, PNG, and SVG export at paper
-  size. Legacy diagrams convert into new drawings.
-- Edit line engineering data (fluid, pressure, temperature, diameter, material) per
-  edge, persisted to normalized diagram edges.
+  size. Writers draw or import (SVG, including Inkscape files) custom symbols with
+  connection ports from the library panel.
+- Diagrams from the retired Diagrams editor are import-only: Drafting lists every
+  legacy diagram of the project, grouped by system, and converts them into drawings
+  (a hint shows while some are unconverted); converted diagrams can be deleted.
 - Create, select, update, and delete catalog parts with qualification/certification
-  status tracking.
-- Place parts onto diagram nodes with auto-suggested tags; placed nodes are badged.
-- Create, select, update, and delete requirements; link them to components and manage
-  trace links.
-- Generate BoM snapshots with history, draft/released workflow, revision diffs,
-  procurement-readiness checks, project-wide roll-up, and CSV export.
-- Inspect basic change impact for selected parts and components.
+  status tracking, and assign them to symbols and equipment on drawings.
+- Create, select, update, and delete requirements; trace them to tagged drawing items
+  or whole drawings. Links made to legacy components show read-only.
+- Generate drawing BoM snapshots with history, release workflow, revision diffs,
+  procurement-readiness checks, project-wide roll-up, and CSV/XLSX export. Legacy
+  diagram BoMs remain as read-only history.
+- Inspect the change impact of a part or requirement on drawings, tags, requirements,
+  parts, and BoMs on the Reviews page, with links that open the drawing, sheet, and
+  tag in Drafting.
 
 ## Running the Full Stack (Docker)
 
