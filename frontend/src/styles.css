@@ -1304,6 +1304,106 @@ button.catalogToolButton:hover:not(:disabled) {
   text-decoration: underline;
 }
 
+/* ---------- Sortable tables ---------- */
+
+th .sortButton {
+  align-items: center;
+  background: none;
+  border: none;
+  color: inherit;
+  display: inline-flex;
+  font: inherit;
+  gap: 4px;
+  letter-spacing: inherit;
+  margin: 0;
+  padding: 0;
+  text-transform: inherit;
+}
+
+th .sortButton:hover:not(:disabled) {
+  background: none;
+  color: var(--text);
+}
+
+th .sortButton.active {
+  color: var(--accent-strong);
+}
+
+.sortIndicator {
+  font-size: 9px;
+  opacity: 0.7;
+}
+
+/* ---------- Drawing BoM page ---------- */
+
+.bomToolbar {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin-bottom: 12px;
+}
+
+.bomToolbar label {
+  margin: 0;
+  min-width: 280px;
+}
+
+.bomToolbar .snapshotMeta {
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.bomGrid {
+  margin-bottom: 16px;
+}
+
+.bomDetail,
+.bomCompare {
+  margin-bottom: 16px;
+}
+
+.bomActions {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.bomActions .downloadLink {
+  margin: 0;
+}
+
+.bomCompareControls {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bomCompareControls label {
+  margin: 0;
+  min-width: 240px;
+}
+
+.bomDiffHeading {
+  font-size: 13px;
+  margin: 12px 0 0;
+}
+
+.legacyBoms {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  padding: 10px 14px;
+}
+
+.legacyBoms summary {
+  color: var(--text-2);
+  cursor: pointer;
+  font-weight: 600;
+}
+
 .impact {
   background: var(--surface-2);
   border: 1px solid var(--line-soft);
