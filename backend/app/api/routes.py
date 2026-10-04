@@ -1484,8 +1484,15 @@ def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 def _bom_row_key(row: dict) -> str:
+    """Identity of a BoM row across snapshots, mirroring how services/bom.py rolls rows up."""
     if row.get("part_id"):
         return f"part:{row['part_id']}"
+    if row.get("kind") == "bulk":
+        # Tube rows roll up per (class or spec, size), fittings and tees per size; the
+        # description and unit name all of that. Line refs are shared across these rows.
+        return f"bulk:{row.get('unit')}|{row.get('description')}"
+    if row.get("symbol_key"):
+        return f"symbol:{row['symbol_key']}"
     tags = row.get("component_tags") or []
     return f"tag:{tags[0] if tags else row.get('description', '?')}"
 
@@ -1494,9 +1501,11 @@ def _bom_row_key(row: dict) -> str:
 def bom_diff(snapshot_id: str, against_id: str, db: Session = Depends(get_db)) -> dict:
     current = require_model(db, BomSnapshot, snapshot_id)
     baseline = require_model(db, BomSnapshot, against_id)
-    if current.diagram_id != baseline.diagram_id:
+    # Drawing snapshots have no diagram_id, so both sources must match.
+    if (current.diagram_id, current.drawing_id) != (baseline.diagram_id, baseline.drawing_id):
         raise HTTPException(
-            status_code=400, detail="BoM snapshots must belong to the same diagram to compare"
+            status_code=400,
+            detail="BoM snapshots must belong to the same diagram or drawing to compare",
         )
 
     current_rows = {_bom_row_key(row): row for row in current.rows}
