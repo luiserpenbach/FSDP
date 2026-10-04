@@ -3330,3 +3330,114 @@ button.ribbonButton.active {
   gap: 6px 10px;
   margin: 0;
 }
+
+/* ---------- Lists drawer: editable DataGrid and bulk edits ---------- */
+
+.draftingCenter .listsDrawer {
+  flex-basis: 340px;
+}
+
+.listGridScroll {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+
+.listGridScroll .listNotice,
+.listGridScroll .listReadOnly {
+  font-size: 12px;
+  margin: 0;
+}
+
+.listGrid .dgToolbar,
+.listGrid .dgBulk {
+  font-size: 12px;
+}
+
+.listIdCell {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.listIdCell > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.listLocate {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  margin: 0;
+  padding: 1px 3px;
+}
+
+.listLocate:hover,
+.listLocate:focus-visible {
+  border-color: var(--line);
+  color: var(--accent-strong, var(--text));
+}
+
+.listPart {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.listPartWarn {
+  color: var(--warn, #b45309);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.listPartWarn.bad {
+  color: var(--bad, #b91c1c);
+}
+
+.bulkEditActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bulkEditActions button,
+.bulkEditActions select,
+.bulkEditActions input {
+  font-size: 12px;
+  margin: 0;
+  padding: 3px 8px;
+  width: auto;
+}
+
+.bulkValueForm {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+  margin: 0;
+}
+
+.bulkValueForm input {
+  width: 140px;
+}
+
+.selectionBulkEdit {
+  border-top: 1px solid var(--line-soft);
+  margin-top: 8px;
+  padding-top: 6px;
+}
+
+.selectionBulkEdit .hint {
+  margin: 0 0 6px;
+}
+
+.assignPartMulti {
+  margin: 0 0 8px;
+}

@@ -410,6 +410,36 @@ describe("DraftingPage", () => {
     expect(screen.getByText(/paired connector/)).toBeInTheDocument();
   });
 
+  it("writes a list edit on another sheet back to that sheet with its derived index and DRC", async () => {
+    const sheet2Doc = {
+      ...sheet.document,
+      items: [{ id: "hv9", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 60 }, rotation: 0, tag: "HV-9", fields: {} }]
+    };
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? { ...sheet, id: "sh2", sheet_no: 2, document: sheet2Doc } : sheet));
+    const notify = vi.fn();
+    renderPage(notify);
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Lists" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
+    const drawer = screen.getByRole("region", { name: "Engineering lists" });
+    await waitFor(() => expect(drawer.textContent).toContain("HV-9"));
+    fireEvent.click(within(drawer).getByLabelText("Select row 1"));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Assign part…" }));
+    const dialog = screen.getByRole("dialog", { name: "Assign part" });
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-001/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign part" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+    const [savedId, body] = apiMock.updateSheet.mock.calls[0] as [string, { document: { items: Array<{ id: string; partId?: string }> }; index: { items: Array<{ item_id: string; part_id: string | null }> }; drc: { findings: unknown[] } }];
+    expect(savedId).toBe("sh2");
+    expect(body.document.items.find((entry) => entry.id === "hv9")?.partId).toBe("part-1");
+    expect(body.index.items.find((entry) => entry.item_id === "hv9")?.part_id).toBe("part-1");
+    expect(Array.isArray(body.drc.findings)).toBe(true);
+    // The drawer reads the stored sheet's new document; the open sheet stays clean.
+    await waitFor(() => expect(drawer.textContent).toContain("AMB2-001"));
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+  });
+
   it("shows live engineering lists in the drawer and locates rows on the sheet", async () => {
     const richSheet: DrawingSheet = {
       ...sheet,
@@ -450,9 +480,9 @@ describe("DraftingPage", () => {
     expect(drawer.textContent).toContain("3101");
     expect(drawer.textContent).toContain("PT-3222 (process)");
 
-    // Click-to-locate selects the row's item.
+    // The locate button on the tag cell selects the row's item on the sheet.
     fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
-    fireEvent.click(within(drawer).getAllByText("HV-3201")[0]);
+    fireEvent.click(within(drawer).getAllByRole("button", { name: "Locate HV-3201" })[0]);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Symbol" })).toBeInTheDocument());
     expect((screen.getByLabelText("Tag") as HTMLInputElement).value).toBe("HV-3201");
 
