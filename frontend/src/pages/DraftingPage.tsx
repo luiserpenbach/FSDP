@@ -8,7 +8,7 @@
  * renderer and lets the server turn the SVG into PDF or PNG.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { AssignPartModal } from "../components/schematic/AssignPartModal";
 import { DrcPanel, useDrc, type DrcInputs } from "../components/schematic/DrcPanel";
@@ -37,6 +37,7 @@ import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, P
 import type { BomReadiness, BomSnapshot, DiagramSummary, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, Requirement, User } from "../types";
 import { useUnsavedChanges } from "../unsavedChanges";
 import { useWorkspace } from "../workspace/WorkspaceContext";
+import { parseDraftingTarget, type DraftingTarget } from "./draftingLinks";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
@@ -55,6 +56,8 @@ type Props = {
   user: User;
   canWrite: boolean;
   notify: (message: string, error?: boolean) => void;
+  /** Drawing, sheet, and item to open once the project's drawings load (a deep link). */
+  target?: DraftingTarget | null;
 };
 
 const TOOLS: Array<{ id: ToolId; label: string; key: string }> = [
@@ -267,7 +270,7 @@ function DrawingCanvas({
   return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} onCursor={onCursor} onViewport={onViewport} />;
 }
 
-export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify }: Props) {
+export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify, target = null }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
@@ -702,6 +705,21 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     const handle = window.setTimeout(() => focusItem(pending.itemId), 50);
     return () => window.clearTimeout(handle);
   }, [editor, sheetId, focusItem]);
+
+  // Deep link: once the project's drawings are listed (and the loader has picked one),
+  // open the target drawing and sheet, and centre the item when its editor is ready.
+  const deepLink = useRef(target);
+  useEffect(() => {
+    const link = deepLink.current;
+    if (!link || !drawingId) return;
+    const targetDrawing = drawings.find((entry) => entry.id === link.drawingId);
+    if (!targetDrawing) return;
+    deepLink.current = null;
+    const targetSheet = targetDrawing.sheets.find((entry) => entry.id === link.sheetId)?.id ?? targetDrawing.sheets[0]?.id ?? "";
+    if (link.itemId && targetSheet) pendingLocate.current = { drawingId: targetDrawing.id, sheetId: targetSheet, itemId: link.itemId };
+    setDrawingId(targetDrawing.id);
+    setSheetId(targetSheet);
+  }, [drawings, drawingId]);
 
   async function exportSheet(format: "pdf" | "png" | "svg") {
     if (!editor || !sheetId || !context) return;
@@ -2388,9 +2406,21 @@ function StatusBar({ editor, cursor, viewport, drcInputs }: { editor: Editor; cu
   );
 }
 
-/** The /drafting route: the editor bound to the workspace's project, system, and catalog. */
+/**
+ * The /drafting route: the editor bound to the workspace's project, system, and
+ * catalog. A deep link (?project=&drawing=&sheet=&item=) switches to the
+ * linked project and opens the drawing there.
+ */
 export function DraftingRoutePage() {
-  const { user, canWrite, notify, selectedProjectId, selectedProject, systems, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  const { user, canWrite, notify, projects, selectedProjectId, selectProject, selectedProject, systems, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  const [searchParams] = useSearchParams();
+  const [target] = useState(() => parseDraftingTarget(searchParams));
+  useEffect(() => {
+    const projectId = target?.projectId;
+    if (projectId && projectId !== selectedProjectId && projects.some((project) => project.id === projectId)) selectProject(projectId);
+    // Only when the linked project becomes available; later switches are the user's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, projects]);
   return (
     <DraftingPage
       projectId={selectedProjectId}
@@ -2404,6 +2434,7 @@ export function DraftingRoutePage() {
       user={user}
       canWrite={canWrite}
       notify={notify}
+      target={target}
     />
   );
 }

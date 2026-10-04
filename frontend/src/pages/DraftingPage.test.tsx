@@ -266,6 +266,22 @@ describe("DraftingPage", () => {
     confirm.mockRestore();
   });
 
+  it("opens a deep-linked sheet and selects the linked item", async () => {
+    const valve = { id: "hv", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 120, y: 80 }, rotation: 0, tag: "HV-7", fields: {} };
+    const sheet2: DrawingSheet = { ...sheet, id: "sh2", sheet_no: 2, document: { ...sheet.document, items: [valve] } };
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? sheet2 : sheet));
+    render(
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} parts={parts} user={user} canWrite notify={vi.fn()} target={{ projectId: "p1", drawingId: "dw1", sheetId: "sh2", itemId: "hv" }} />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "2" })).toHaveAttribute("aria-selected", "true"));
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="hv"]')).not.toBeNull());
+    expect(await screen.findByLabelText("Tag")).toHaveValue("HV-7");
+  });
+
   it("shows the legacy diagram hint once per project", async () => {
     apiMock.listProjectDiagrams.mockResolvedValue([summaryOf(legacyDiagram)]);
     const first = renderPage();

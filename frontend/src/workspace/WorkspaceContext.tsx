@@ -2,7 +2,8 @@
  * Workspace state shared by every page: the signed-in user, the project and
  * fluid system the user is working in (persisted per browser), the data most
  * pages read (projects, systems, requirements, catalog parts, custom symbols,
- * legacy diagrams), and the status line with its `runAction` helper.
+ * the selected system's legacy diagrams for the BoM history), and the status
+ * line with its `runAction` helper.
  *
  * Pages own everything else. Selection changes go through `selectProject` /
  * `selectSystem`, which ask before discarding editor work registered in the
@@ -88,9 +89,6 @@ export type WorkspaceContextValue = {
   diagrams: Diagram[];
   /** First legacy diagram of the selected system (the BoM page's legacy history). */
   selectedDiagramId: string;
-  /** Legacy component selected on the Diagrams or Requirements page (impact, trace links). */
-  selectedComponentId: string;
-  setSelectedComponentId: (componentId: string) => void;
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -121,7 +119,6 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
   const [selectedRequirementId, setSelectedRequirementId] = useState("");
   const [selectedPartId, setSelectedPartId] = useState("");
   const [selectedDiagramId, setSelectedDiagramId] = useState("");
-  const [selectedComponentId, setSelectedComponentId] = useState("");
 
   // Current selections for async work: a response for a previous selection
   // must not overwrite what is on screen now.
@@ -286,11 +283,6 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
     });
   }, [selectedSystemId, runAction]);
 
-  // A component selection belongs to the diagram it was picked on.
-  useEffect(() => {
-    setSelectedComponentId("");
-  }, [selectedDiagramId]);
-
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
 
@@ -328,9 +320,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       customSymbols,
       refreshSymbols,
       diagrams,
-      selectedDiagramId,
-      selectedComponentId,
-      setSelectedComponentId
+      selectedDiagramId
     }),
     [
       user,
@@ -360,8 +350,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       customSymbols,
       refreshSymbols,
       diagrams,
-      selectedDiagramId,
-      selectedComponentId
+      selectedDiagramId
     ]
   );
 

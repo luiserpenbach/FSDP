@@ -1316,6 +1316,32 @@ button.catalogToolButton:hover:not(:disabled) {
   font-size: 13px;
 }
 
+.impact h3 {
+  color: var(--text-2);
+  font-size: 12px;
+  margin: 12px 0 4px;
+}
+
+.impact section {
+  margin-bottom: 10px;
+}
+
+.impactPanel {
+  grid-column: 1 / -1;
+}
+
+.impactForm {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.impactForm label {
+  margin: 0;
+  min-width: 200px;
+}
+
 .workspace.placeholder {
   background: var(--surface);
   border: 1px dashed var(--line);

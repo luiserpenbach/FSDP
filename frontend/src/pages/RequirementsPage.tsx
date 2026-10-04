@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import { DataTable, FormError, Panel, Select, StatusPill, TextArea, TextInput } from "../components/ui";
 import type { Drawing, ProjectSheetItem, RequirementConstraintRead, TraceLink, VerificationMatrix } from "../types";
 import { useWorkspace } from "../workspace/WorkspaceContext";
+import { draftingHref } from "./draftingLinks";
 import { PageLayout } from "./PageLayout";
 
 type ConstraintForm = { kind: "" | RequirementConstraintRead["kind"]; values: string; services: string; categories: string };
@@ -202,17 +204,23 @@ export function RequirementsPage() {
   }
 
   /** The end of a trace link that is not the selected requirement, described for the table. */
-  function describeLinkTarget(link: TraceLink): { text: string; legacy: boolean } {
+  function describeLinkTarget(link: TraceLink): { text: string; legacy: boolean; href?: string } {
     const ownEnd = link.source_type === "requirement" && link.source_id === selectedRequirementId;
     const type = ownEnd ? link.target_type : link.source_type;
     const id = ownEnd ? link.target_id : link.source_id;
     if (type === "drawing") {
       const drawing = drawings.find((entry) => entry.id === id);
-      return { text: drawing ? `Drawing ${drawing.number} · ${drawing.title.split("\n")[0]}` : "Drawing (deleted)", legacy: false };
+      if (!drawing) return { text: "Drawing (deleted)", legacy: false };
+      return { text: `Drawing ${drawing.number} · ${drawing.title.split("\n")[0]}`, legacy: false, href: draftingHref({ projectId: drawing.project_id, drawingId: drawing.id }) };
     }
     if (type === "sheet_item") {
       const item = itemsById.get(id);
-      return { text: item ? `${item.drawing_number} sheet ${item.sheet_no} · ${item.tag}${item.zone ? ` @ ${item.zone}` : ""}` : "Drawing item (untagged)", legacy: false };
+      if (!item) return { text: "Drawing item (untagged)", legacy: false };
+      return {
+        text: `${item.drawing_number} sheet ${item.sheet_no} · ${item.tag}${item.zone ? ` @ ${item.zone}` : ""}`,
+        legacy: false,
+        href: draftingHref({ projectId: selectedProjectId, drawingId: item.drawing_id, sheetId: item.sheet_id, itemId: item.item_id })
+      };
     }
     if (type === "component") {
       const tag = legacyComponents?.projectId === selectedProjectId ? legacyComponents.tags.get(id) : undefined;
@@ -336,6 +344,13 @@ export function RequirementsPage() {
                       header: "Target",
                       render: (link) => {
                         const target = describeLinkTarget(link);
+                        if (target.href) {
+                          return (
+                            <Link className="mono" to={target.href} title="Open in Drafting">
+                              {target.text}
+                            </Link>
+                          );
+                        }
                         return (
                           <span className="mono" title={target.legacy ? "From the retired Diagrams editor; read-only" : undefined}>
                             {target.text}

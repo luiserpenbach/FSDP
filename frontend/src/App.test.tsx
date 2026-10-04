@@ -422,6 +422,53 @@ describe("App", () => {
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).endsWith("/trace-links/link-legacy") && init?.method === "DELETE")).toBe(true);
   });
 
+  it("shows a part's impact on drawings and opens a tag in Drafting from it", async () => {
+    const part = { id: "part-1", part_number: "AMB2-001", description: "Pressure transmitter", part_type: "sensor", source_type: "internal", qualification_status: "qualified", certification_status: "certified", lifecycle_status: "active", preferred: true };
+    const impact = {
+      object_type: "part",
+      object_id: "part-1",
+      direct_links: [],
+      affected_components: [{ id: "c-a", diagram_id: "d1", tag: "V-A", quantity: 1 }],
+      affected_bom_snapshots: [{ id: "bom-1", diagram_id: null, drawing_id: "dw1", revision: 2, status: "released", rows: [] }],
+      affected_drawings: [{ id: "dw1", project_id: "p1", number: "AMB2-9003", title: "HELIUM PANEL", status: "released", revision: "A", sheets: [1] }],
+      affected_sheet_items: [{ id: "row-1", sheet_id: "sh1", item_id: "pt", tag: "PT-1", zone: "B-2", part_id: "part-1", drawing_id: "dw1", drawing_number: "AMB2-9003", sheet_no: 1 }],
+      affected_requirements: [{ id: "r1", project_id: "p1", key: "REQ-1", title: "Relief", status: "approved" }],
+      affected_parts: []
+    };
+    const base = mockDraftingFetch();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname === "/parts") return jsonResponse([part]);
+      if (url.pathname === "/changes/impact") return jsonResponse(impact);
+      return base(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await waitForWorkspace();
+    fireEvent.click(screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/reviews"]')!);
+    expect(await screen.findByRole("heading", { level: 1, name: "Reviews" })).toBeInTheDocument();
+    await waitFor(() => expect(within(screen.getByLabelText("Part")).getByRole("option", { name: "AMB2-001 · Pressure transmitter" })).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("Part"), { target: { value: "part-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Inspect impact" }));
+
+    expect(await screen.findByText(/1 drawing\(s\), 1 tag\(s\), 1 requirement\(s\), 0 part\(s\), and 1 BoM snapshot\(s\) affected/)).toBeInTheDocument();
+    const impactCall = fetchMock.mock.calls.map(([input]) => new URL(String(input), "http://localhost")).find((url) => url.pathname === "/changes/impact")!;
+    expect(impactCall.searchParams.get("object_type")).toBe("part");
+    expect(impactCall.searchParams.get("object_id")).toBe("part-1");
+    expect(screen.getByRole("link", { name: "AMB2-9003" })).toHaveAttribute("href", "/drafting?project=p1&drawing=dw1");
+    expect(screen.getByText("REQ-1")).toBeInTheDocument();
+    expect(screen.getByText(/1 component\(s\) on legacy diagrams/)).toBeInTheDocument();
+
+    // The tag link opens its drawing and sheet in Drafting and selects the item.
+    const tagLink = screen.getByRole("link", { name: "PT-1" });
+    expect(tagLink).toHaveAttribute("href", "/drafting?project=p1&drawing=dw1&sheet=sh1&item=pt");
+    fireEvent.click(tagLink);
+    expect(await screen.findByRole("heading", { level: 1, name: "Drafting" })).toBeInTheDocument();
+    const tagInput = (await screen.findByLabelText("Tag")) as HTMLInputElement;
+    expect(tagInput.value).toBe("PT-1");
+  });
+
   it("asks before a project switch discards an unsaved drafting sheet, but not before a system switch", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     const base = mockWorkspaceFetch({ projects: [PROJECT, PROJECT_B], systems: [SYSTEM, { ...SYSTEM, id: "s2", name: "Oxidizer" }] });
