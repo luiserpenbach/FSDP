@@ -16,6 +16,7 @@ import { IndexStatusNote, RevisionSnapshotModal, RevisionTable, WorkflowPanel, d
 import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
+import { SelectionBulkEdit } from "../components/schematic/SelectionBulkEdit";
 import { commitSheetEdits, type SheetEditResult, type SheetFieldEdit } from "../components/schematic/sheetEdits";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
 import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
@@ -2080,6 +2081,7 @@ function Inspector({
               </button>
             </div>
             <p className="hint">Rotate (R), mirror (X), duplicate (Ctrl+D), or delete the selection.</p>
+            <SelectionBulkEdit key={state.selection.join(",")} editor={editor} items={items} registry={registry} parts={parts} lineClasses={lineClasses} canWrite={canWrite} />
           </>
         )}
         {item?.kind === "symbol" && (
