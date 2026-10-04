@@ -16,6 +16,8 @@ import { IndexStatusNote, RevisionSnapshotModal, RevisionTable, WorkflowPanel, d
 import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
+import { SelectionBulkEdit } from "../components/schematic/SelectionBulkEdit";
+import { commitSheetEdits, type SheetEditResult, type SheetFieldEdit } from "../components/schematic/sheetEdits";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
 import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
 import { useStaleReindex, type ReindexOutcome } from "../components/schematic/useStaleReindex";
@@ -700,6 +702,55 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     reindex: reindexSheet
   });
 
+  /**
+   * Field edits from the lists drawer (inline, paste, bulk): the open sheet
+   * through the editor (one undo step), the drawing's other sheets re-derived
+   * and stored. Refused on a released drawing or for a viewer. Commits run one
+   * after another, each against the documents the previous one stored.
+   */
+  const otherSheetsRef = useRef(otherSheets);
+  useEffect(() => {
+    otherSheetsRef.current = otherSheets;
+  }, [otherSheets]);
+  const listEditQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const commitListEdits = useCallback(
+    (edits: SheetFieldEdit[]): Promise<SheetEditResult> => {
+      const latestDrawing = drawing;
+      const run = () =>
+        commitSheetEdits(
+          {
+            drawing: latestDrawing,
+            locked,
+            canWrite,
+            editor,
+            openSheetId: sheetId,
+            otherSheets: otherSheetsRef.current,
+            registry,
+            tagScheme,
+            lineClasses,
+            parts: partMap,
+            requirements: requirementRefs,
+            loadSheet: (id) => api.getSheet(id),
+            loadWaivers: async (id) => (await api.getSheetDrc(id)).waivers.map((waiver) => ({ key: waiver.key, reason: waiver.reason, by: waiver.waived_by, at: waiver.created_at })),
+            saveSheet: (id, body) => api.updateSheet(id, body),
+            prepareDocument: (doc) => withFrameTemplate(doc, latestDrawing?.frame_template ?? "basic"),
+            onBeforeSave: touchSheet,
+            onSheetSaved: (id, savedSheetNo, doc, drcErrors) => {
+              const replace = (current: SheetDoc[]) => current.map((entry) => (entry.sheetId === id ? { sheetNo: savedSheetNo, sheetId: id, doc } : entry));
+              otherSheetsRef.current = replace(otherSheetsRef.current);
+              setOtherSheets(replace);
+              if (latestDrawing) markSheetIndexed(latestDrawing.id, id, drcErrors);
+            }
+          },
+          edits
+        );
+      const next = listEditQueue.current.then(run, run);
+      listEditQueue.current = next.catch(() => undefined);
+      return next;
+    },
+    [drawing, locked, canWrite, editor, sheetId, registry, tagScheme, lineClasses, partMap, requirementRefs, touchSheet, markSheetIndexed]
+  );
+
   /** "Re-index now": the open sheet with unsaved edits is saved; the others re-index in the background. */
   function requestReindex(sheetIds?: string[]) {
     const ids = sheetIds ?? staleSheets.map((entry) => entry.id);
@@ -1326,6 +1377,11 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                 projectId={projectId}
                 drawing={drawing}
                 canWrite={canWrite}
+                editable={canEdit && Boolean(drawing)}
+                readOnlyReason={locked ? `${drawing?.number ?? "This drawing"} is released: its lists are read-only. Start a new revision to edit.` : !canWrite ? "View only: your role cannot edit these lists." : null}
+                tagScheme={tagScheme}
+                lineClasses={lineClasses}
+                onCommitEdits={commitListEdits}
                 staleSheetNos={staleSheets.map((entry) => entry.sheet_no)}
                 tab={listTab}
                 onTab={setListTab}
@@ -2025,6 +2081,7 @@ function Inspector({
               </button>
             </div>
             <p className="hint">Rotate (R), mirror (X), duplicate (Ctrl+D), or delete the selection.</p>
+            <SelectionBulkEdit key={state.selection.join(",")} editor={editor} items={items} registry={registry} parts={parts} lineClasses={lineClasses} canWrite={canWrite} />
           </>
         )}
         {item?.kind === "symbol" && (

@@ -410,6 +410,79 @@ describe("DraftingPage", () => {
     expect(screen.getByText(/paired connector/)).toBeInTheDocument();
   });
 
+  it("sets the line class and assigns a part across a canvas multi-selection as one undo step each", async () => {
+    apiMock.listLineClasses.mockResolvedValue([
+      { id: "lc1", project_id: "p1", name: "A1A", material: "316L SS", rating: "3000 psig", wall: '.035"', sizes: ['1/4"'], insulation: "foam", description: null, notes: null, created_at: "", updated_at: "" }
+    ]);
+    const multiDoc = {
+      ...sheet.document,
+      items: [
+        { id: "hv1", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 60 }, rotation: 0, tag: "HV-1", fields: {} },
+        { id: "hv2", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 120, y: 60 }, rotation: 0, tag: "HV-2", fields: {} },
+        { id: "la", kind: "line", layer: "process", lineType: "process", lineNumber: "3101", points: [{ x: 50, y: 150 }, { x: 150, y: 150 }], fields: {} },
+        { id: "lb", kind: "line", layer: "process", lineType: "process", lineNumber: "3102", points: [{ x: 50, y: 200 }, { x: 150, y: 200 }], fields: {} }
+      ]
+    };
+    apiMock.getSheet.mockResolvedValue({ ...sheet, document: multiDoc });
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="la"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    await screen.findByRole("heading", { name: "4 items" });
+    expect(screen.getByText("2 symbol(s) or equipment and 2 line(s) selected.")).toBeInTheDocument();
+    const undo = screen.getByRole("button", { name: "Undo" });
+    expect(undo).toBeDisabled();
+
+    fireEvent.change(await screen.findByRole("combobox", { name: "Set line class" }), { target: { value: "A1A" } });
+    await waitFor(() => expect(canvas.textContent).toContain('316L SS x .035" WALL'));
+    expect(screen.getByText("Set line class A1A on 2 item(s).")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Assign part…" }));
+    const dialog = screen.getByRole("dialog", { name: "Assign part" });
+    expect(dialog).toHaveTextContent("One part for 2 items");
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-001/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign to 2" }));
+    await waitFor(() => expect(canvas.querySelectorAll(".part-badge")).toHaveLength(2));
+
+    // Two undo steps: the part assignment, then the line class of both lines.
+    fireEvent.click(undo);
+    await waitFor(() => expect(canvas.querySelectorAll(".part-badge")).toHaveLength(0));
+    expect(canvas.textContent).toContain('316L SS x .035" WALL');
+    fireEvent.click(undo);
+    await waitFor(() => expect(canvas.textContent).not.toContain('316L SS x .035" WALL'));
+    expect(undo).toBeDisabled();
+  });
+
+  it("writes a list edit on another sheet back to that sheet with its derived index and DRC", async () => {
+    const sheet2Doc = {
+      ...sheet.document,
+      items: [{ id: "hv9", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 60 }, rotation: 0, tag: "HV-9", fields: {} }]
+    };
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? { ...sheet, id: "sh2", sheet_no: 2, document: sheet2Doc } : sheet));
+    const notify = vi.fn();
+    renderPage(notify);
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Lists" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
+    const drawer = screen.getByRole("region", { name: "Engineering lists" });
+    await waitFor(() => expect(drawer.textContent).toContain("HV-9"));
+    fireEvent.click(within(drawer).getByLabelText("Select row 1"));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Assign part…" }));
+    const dialog = screen.getByRole("dialog", { name: "Assign part" });
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-001/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign part" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+    const [savedId, body] = apiMock.updateSheet.mock.calls[0] as [string, { document: { items: Array<{ id: string; partId?: string }> }; index: { items: Array<{ item_id: string; part_id: string | null }> }; drc: { findings: unknown[] } }];
+    expect(savedId).toBe("sh2");
+    expect(body.document.items.find((entry) => entry.id === "hv9")?.partId).toBe("part-1");
+    expect(body.index.items.find((entry) => entry.item_id === "hv9")?.part_id).toBe("part-1");
+    expect(Array.isArray(body.drc.findings)).toBe(true);
+    // The drawer reads the stored sheet's new document; the open sheet stays clean.
+    await waitFor(() => expect(drawer.textContent).toContain("AMB2-001"));
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+  });
+
   it("shows live engineering lists in the drawer and locates rows on the sheet", async () => {
     const richSheet: DrawingSheet = {
       ...sheet,
@@ -450,9 +523,9 @@ describe("DraftingPage", () => {
     expect(drawer.textContent).toContain("3101");
     expect(drawer.textContent).toContain("PT-3222 (process)");
 
-    // Click-to-locate selects the row's item.
+    // The locate button on the tag cell selects the row's item on the sheet.
     fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
-    fireEvent.click(within(drawer).getAllByText("HV-3201")[0]);
+    fireEvent.click(within(drawer).getAllByRole("button", { name: "Locate HV-3201" })[0]);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Symbol" })).toBeInTheDocument());
     expect((screen.getByLabelText("Tag") as HTMLInputElement).value).toBe("HV-3201");
 

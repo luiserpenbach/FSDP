@@ -291,6 +291,30 @@ describe("DraftingPage release workflow", () => {
     expect(notify).toHaveBeenCalledWith("Started revision B of AMB2-9003; the drawing is editable again.");
   });
 
+  it("keeps the lists of a released drawing read-only: no cell edits, no bulk actions, no writes", async () => {
+    apiMock.listDrawings.mockResolvedValue([releasedDrawing()]);
+    renderPage();
+    const canvas = await openCanvas();
+    await waitFor(() => expect(canvas).toHaveAttribute("data-readonly", "true"));
+    fireEvent.click(screen.getByRole("button", { name: "Lists" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
+    const drawer = screen.getByRole("region", { name: "Engineering lists" });
+    await waitFor(() => expect(drawer.textContent).toContain("HV-3201"));
+    expect(drawer.textContent).toContain("AMB2-9003 is released: its lists are read-only.");
+    const grid = within(drawer).getByRole("grid");
+    const tagCell = grid.querySelector<HTMLElement>(".dgBody [data-r='0'][data-c='0']")!;
+    fireEvent.mouseDown(tagCell, { button: 0 });
+    fireEvent.mouseUp(tagCell);
+    fireEvent.keyDown(grid, { key: "H" });
+    expect(within(drawer).queryByRole("textbox", { name: "Edit Tag" })).toBeNull();
+    fireEvent.paste(grid, { clipboardData: { getData: () => "HV-1\n" } });
+    fireEvent.click(within(drawer).getByLabelText("Select row 1"));
+    expect(within(drawer).queryByRole("button", { name: "Assign part…" })).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(apiMock.updateSheet).not.toHaveBeenCalled();
+    expect(drawer.textContent).toContain("HV-3201");
+  });
+
   it("starts a revision with a label and description from the workflow panel", async () => {
     apiMock.listDrawings.mockResolvedValue([releasedDrawing()]);
     workflowMock.reviseDrawing.mockResolvedValue(makeDrawing());
