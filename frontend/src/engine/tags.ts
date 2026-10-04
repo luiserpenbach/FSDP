@@ -10,7 +10,7 @@
  * feed the instrument letter legend block.
  */
 import type { Command } from "./commands";
-import type { SchematicDocument, SymbolItem } from "./types";
+import type { EquipmentItem, SchematicDocument, SymbolItem } from "./types";
 
 export type FunctionLetter = { letters: string; description: string };
 export type DigitMeaning = { digit: string; name: string };
@@ -218,40 +218,87 @@ export function formatTag(scheme: TagScheme, letters: string, sequence: number, 
   return `${letters}${scheme.separator}${String(sequence).padStart(scheme.sequenceLength, "0")}`;
 }
 
-function taggedItems(doc: SchematicDocument): Array<{ id: string; tag: string; item: SymbolItem }> {
-  return doc.items
-    .filter((item): item is SymbolItem => item.kind === "symbol" && Boolean(item.tag))
+type TaggedItem = SymbolItem | EquipmentItem;
+
+/** Comparison key: separators and case do not make two tags distinct. */
+export function tagKey(tag: string): string {
+  return tag.replace(/[-\s]/g, "").toUpperCase();
+}
+
+function taggedItems(doc: SchematicDocument): Array<{ id: string; tag: string; item: TaggedItem }> {
+  return (doc.items ?? [])
+    .filter((item): item is TaggedItem => (item.kind === "symbol" || item.kind === "equipment") && Boolean(item.tag))
     .map((item) => ({ id: item.id, tag: item.tag as string, item }));
 }
 
-/** Next free sequence for the letters (and system/class when structured). */
-export function nextTag(doc: SchematicDocument, scheme: TagScheme, letters: string, context: TagContext = {}): string {
+/** Symbol and equipment tags used on the given documents (e.g. the drawing's other sheets). */
+export function tagsOf(docs: SchematicDocument[]): string[] {
+  return docs.flatMap((doc) => (doc ? taggedItems(doc).map(({ tag }) => tag) : []));
+}
+
+/** Highest sequence a scheme can write (structured sequences have a fixed width). */
+function sequenceLimit(scheme: TagScheme): number {
+  return scheme.kind === "structured" ? 10 ** scheme.sequenceLength - 1 : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Next free tag for the letters (and system/class when structured): one past
+ * the highest sequence in use on the sheet or in `reserved` (tags used on
+ * other sheets). When a structured sequence is exhausted the lowest free gap
+ * is used, and null is returned when there is none, so the result is never a
+ * tag that is already in use.
+ */
+export function nextTag(
+  doc: SchematicDocument,
+  scheme: TagScheme,
+  letters: string,
+  context: TagContext = {},
+  reserved: Iterable<string> = []
+): string | null {
   const upper = letters.toUpperCase();
   const system = context.system ?? scheme.systems[0]?.digit ?? "0";
   const cls = context.cls ?? scheme.classes[0]?.digit ?? "1";
-  let highest = 0;
-  for (const { tag } of taggedItems(doc)) {
+  const used = new Set<string>();
+  const taken = new Set<number>();
+  const consider = (tag: string) => {
+    used.add(tagKey(tag));
     const parsed = parseTag(tag, scheme);
-    if (!parsed || parsed.letters !== upper) continue;
-    if (scheme.kind === "structured" && (parsed.system !== system || parsed.cls !== cls)) continue;
-    highest = Math.max(highest, parsed.sequence);
-  }
-  return formatTag(scheme, upper, highest + 1, { system, cls });
+    if (!parsed || parsed.letters !== upper) return;
+    if (scheme.kind === "structured" && (parsed.system !== system || parsed.cls !== cls)) return;
+    taken.add(parsed.sequence);
+  };
+  for (const { tag } of taggedItems(doc)) consider(tag);
+  for (const tag of reserved) consider(tag);
+  const format = (sequence: number) => formatTag(scheme, upper, sequence, { system, cls });
+  const free = (sequence: number) => !taken.has(sequence) && !used.has(tagKey(format(sequence)));
+  const limit = sequenceLimit(scheme);
+  let highest = 0;
+  for (const sequence of taken) highest = Math.max(highest, sequence);
+  if (highest < limit && free(highest + 1)) return format(highest + 1);
+  for (let sequence = 1; sequence <= limit; sequence += 1) if (free(sequence)) return format(sequence);
+  return null;
 }
 
 export type TagIssue = { itemId: string; tag: string; issue: "invalid" | "duplicate"; message: string };
 
-/** Tags that do not parse under the scheme, and duplicates on the sheet. */
-export function tagIssues(doc: SchematicDocument, scheme: TagScheme): TagIssue[] {
+/**
+ * Tags that do not parse under the scheme, duplicates on the sheet, and
+ * duplicates of `reserved` tags (those used on other sheets of the drawing).
+ */
+export function tagIssues(doc: SchematicDocument, scheme: TagScheme, reserved: Iterable<string> = []): TagIssue[] {
   const issues: TagIssue[] = [];
   const seen = new Map<string, string>();
+  const elsewhere = new Map<string, string>();
+  for (const tag of reserved) if (!elsewhere.has(tagKey(tag))) elsewhere.set(tagKey(tag), tag);
   for (const { id, tag } of taggedItems(doc)) {
     const verdict = validateTag(tag, scheme);
     if (!verdict.ok) issues.push({ itemId: id, tag, issue: "invalid", message: verdict.reason ?? "Invalid tag" });
-    const key = tag.replace(/[-\s]/g, "").toUpperCase();
+    const key = tagKey(tag);
     const previous = seen.get(key);
+    const other = elsewhere.get(key);
     if (previous) issues.push({ itemId: id, tag, issue: "duplicate", message: `Duplicate of ${previous}` });
-    else seen.set(key, tag);
+    else if (other) issues.push({ itemId: id, tag, issue: "duplicate", message: `Duplicate of ${other} on another sheet` });
+    if (!previous) seen.set(key, tag);
   }
   return issues;
 }
@@ -259,25 +306,29 @@ export function tagIssues(doc: SchematicDocument, scheme: TagScheme): TagIssue[]
 /**
  * Re-sequence the selected symbols per letter group in reading order (top to
  * bottom, then left to right), starting at `startAt`. Unselected tags keep
- * their numbers; new numbers skip any that remain in use elsewhere.
+ * their numbers; new numbers skip any that remain in use elsewhere, including
+ * `reservedTags` from other sheets. A structured group whose sequences would
+ * overflow the fixed width keeps its current tags.
  */
 export function renumberCommand(
   doc: SchematicDocument,
   scheme: TagScheme,
   ids: string[],
   context: TagContext = {},
-  startAt = 1
+  startAt = 1,
+  reservedTags: Iterable<string> = []
 ): Command {
   const selected = new Set(ids);
-  const groups = new Map<string, Array<{ item: SymbolItem; parsed: ParsedTag }>>();
+  const groups = new Map<string, Array<{ item: TaggedItem; parsed: ParsedTag }>>();
   const reserved = new Map<string, Set<number>>();
-  for (const { item, tag } of taggedItems(doc)) {
+  const external = [...reservedTags].map((tag) => ({ item: null, tag }));
+  for (const { item, tag } of [...taggedItems(doc), ...external]) {
     const parsed = parseTag(tag, scheme);
     if (!parsed) continue;
     const system = scheme.kind === "structured" ? (parsed.system ?? "") : "";
     const cls = scheme.kind === "structured" ? (parsed.cls ?? "") : "";
     const groupKey = `${parsed.letters}|${system}${cls}`;
-    if (selected.has(item.id)) {
+    if (item && selected.has(item.id)) {
       const bucket = groups.get(groupKey) ?? [];
       bucket.push({ item, parsed });
       groups.set(groupKey, bucket);
@@ -291,6 +342,7 @@ export function renumberCommand(
   for (const [groupKey, entries] of groups) {
     entries.sort((a, b) => a.item.position.y - b.item.position.y || a.item.position.x - b.item.position.x);
     const taken = reserved.get(groupKey) ?? new Set<number>();
+    const updates: Command[] = [];
     let sequence = startAt;
     for (const entry of entries) {
       while (taken.has(sequence)) sequence += 1;
@@ -298,9 +350,11 @@ export function renumberCommand(
         system: entry.parsed.system ?? context.system,
         cls: entry.parsed.cls ?? context.cls
       });
-      if (tag !== entry.item.tag) commands.push({ type: "update", id: entry.item.id, patch: { tag } });
+      if (tag !== entry.item.tag) updates.push({ type: "update", id: entry.item.id, patch: { tag } });
       sequence += 1;
     }
+    // A group that does not fit the fixed sequence width keeps its tags.
+    if (sequence - 1 <= sequenceLimit(scheme)) commands.push(...updates);
   }
   return { type: "batch", commands, label: "Renumber" };
 }

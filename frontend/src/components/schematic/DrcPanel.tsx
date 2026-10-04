@@ -21,9 +21,10 @@ export type DrcInputs = {
 /** Live DRC over the editor's document; recomputed when the document or inputs change. */
 export function useDrc(editor: Editor, inputs: DrcInputs): DrcResult {
   const { doc, connectivity } = useEditorSnapshot(editor);
+  const reservedTags = editor.reservedTags;
   return useMemo(
-    () => runDrc({ doc, registry: inputs.registry, connectivity, tagScheme: inputs.tagScheme, parts: inputs.parts, requirements: inputs.requirements, waivers: inputs.waivers }),
-    [doc, connectivity, inputs.registry, inputs.tagScheme, inputs.parts, inputs.requirements, inputs.waivers]
+    () => runDrc({ doc, registry: inputs.registry, connectivity, tagScheme: inputs.tagScheme, parts: inputs.parts, requirements: inputs.requirements, waivers: inputs.waivers, reservedTags }),
+    [doc, connectivity, inputs.registry, inputs.tagScheme, inputs.parts, inputs.requirements, inputs.waivers, reservedTags]
   );
 }
 

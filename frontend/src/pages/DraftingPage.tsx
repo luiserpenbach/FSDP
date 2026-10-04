@@ -28,7 +28,7 @@ import { SymbolRegistry } from "../engine/library";
 import { LINE_TYPE_LABELS, renderDocumentSvg, type PartBadge } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
-import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, validateTag, type TagScheme } from "../engine/tags";
+import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, tagsOf, validateTag, type TagScheme } from "../engine/tags";
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
@@ -354,6 +354,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     editor?.setTagScheme(tagScheme);
   }, [editor, tagScheme]);
 
+  // Tags on the drawing's other sheets: suggestions skip them and the DRC flags duplicates.
+  useEffect(() => {
+    editor?.setReservedTags(tagsOf(otherSheets.filter((sheet) => sheet.sheetId !== sheetId).map((sheet) => sheet.doc)));
+  }, [editor, otherSheets, sheetId]);
+
   // Project line classes for the line inspector.
   useEffect(() => {
     let cancelled = false;
@@ -485,7 +490,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       // The index rows travel with the document so lists, BoM, and where-used read the saved state.
       const index = buildSheetIndex(editor.store.doc, registry, { connectivity: editor.connectivity, connectorTargets });
       // The DRC runs on save: open and waived findings plus requirement checks are stored with the sheet.
-      const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
+      const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers, reservedTags: editor.reservedTags });
       await api.updateSheet(sheetId, {
         document: editor.store.doc,
         index,
@@ -627,7 +632,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       });
       const pages: string[] = [];
       if (format === "pdf" && exportFindings) {
-        const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
+        const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers, reservedTags: editor.reservedTags });
         pages.push(renderFindingsSheet(editor.store.doc, registry, fullContext, drc.findings, drc.waived));
       }
       const { blob, filename } = await api.exportSheet(sheetId, { svg, format, dpi: 300, pages });
@@ -2140,7 +2145,7 @@ function PartSection({ item, editor, registry, parts, canWrite }: { item: Symbol
 
 function TagChecks({ editor }: { editor: Editor }) {
   const { doc } = useEditorSnapshot(editor);
-  const issues = useMemo(() => tagIssues(doc, editor.tagScheme), [doc, editor.tagScheme]);
+  const issues = useMemo(() => tagIssues(doc, editor.tagScheme, editor.reservedTags), [doc, editor.tagScheme, editor.reservedTags]);
   if (!issues.length) {
     return (
       <p>

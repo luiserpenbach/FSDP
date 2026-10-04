@@ -76,6 +76,8 @@ export type DrcInput = {
   parts?: Map<string, PartLike>;
   requirements?: RequirementRef[];
   waivers?: DrcWaiver[];
+  /** Tags used on the drawing's other sheets; a tag repeated here is a duplicate. */
+  reservedTags?: Iterable<string>;
 };
 
 export type DrcResult = {
@@ -90,7 +92,7 @@ export type DrcResult = {
 export const DRC_RULES: Record<string, { title: string; description: string }> = {
   dangling_line: { title: "Dangling line", description: "A line end touches neither a port nor another line." },
   open_port: { title: "Open process port", description: "A process port or nozzle has no line attached." },
-  duplicate_tag: { title: "Duplicate tag", description: "Two items on the sheet carry the same tag." },
+  duplicate_tag: { title: "Duplicate tag", description: "Two items on the sheet, or on two sheets of the drawing, carry the same tag." },
   invalid_tag: { title: "Tag scheme", description: "A tag does not follow the project tag scheme." },
   missing_tag: { title: "Untagged item", description: "A valve, regulator, or instrument has no tag." },
   line_unnumbered: { title: "Unnumbered line", description: "A process line carries no line number." },
@@ -287,7 +289,7 @@ export function runDrc(input: DrcInput): DrcResult {
   }
 
   // ---- tags ----
-  for (const issue of tagIssues(doc, tagScheme)) {
+  for (const issue of tagIssues(doc, tagScheme, input.reservedTags)) {
     const item = byId.get(issue.itemId);
     if (issue.issue === "duplicate") add("duplicate_tag", "error", item, `${issue.tag}: ${issue.message}`);
     else add("invalid_tag", "warning", item, `${issue.tag}: ${issue.message}`);

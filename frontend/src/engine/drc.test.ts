@@ -99,6 +99,17 @@ describe("design rule checks", () => {
     expect(result.findings.find((finding) => finding.rule === "duplicate_tag")!.message).toBe("HV-3201: Duplicate of HV-3201");
   });
 
+  it("flags tags that duplicate another sheet's tags or equipment tags", () => {
+    const doc = cleanDocument();
+    const result = runDrc({ doc, registry, tagScheme: DEFAULT_TAG_SCHEME, parts, reservedTags: ["HV-3201", "XV-9"] });
+    const duplicates = result.findings.filter((finding) => finding.rule === "duplicate_tag");
+    expect(duplicates.map((finding) => [finding.itemId, finding.message])).toEqual([["hv", "HV-3201: Duplicate of HV-3201 on another sheet"]]);
+    expect(duplicates[0].severity).toBe("error");
+    item<SymbolItem>(doc, "pcv").tag = "VC-1"; // the vacuum chamber equipment's tag
+    const equipment = runDrc({ doc, registry, tagScheme: DEFAULT_TAG_SCHEME, parts });
+    expect(equipment.findings.filter((finding) => finding.rule === "duplicate_tag").map((finding) => finding.message)).toEqual(["VC-1: Duplicate of VC-1"]);
+  });
+
   it("flags relief coverage, size changes, spec breaks, and part status", () => {
     const doc = cleanDocument();
     doc.items = doc.items.filter((entry) => entry.id !== "psv2" && entry.id !== "l2r");
