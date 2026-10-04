@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Editor } from "../engine/editor";
 import { CUSTOM_LIBRARY } from "../engine/library";
-import type { Diagram, Drawing, DrawingSheet, FluidSystem, Part, PidSymbolDef, User } from "../types";
+import type { Diagram, DiagramSummary, Drawing, DrawingSheet, FluidSystem, Part, PidSymbolDef, User } from "../types";
 
 const apiMock = vi.hoisted(() => ({
   listDrawings: vi.fn(),
@@ -19,6 +19,8 @@ const apiMock = vi.hoisted(() => ({
   exportSheet: vi.fn(),
   getSchematic: vi.fn(),
   getDiagram: vi.fn(),
+  listProjectDiagrams: vi.fn(),
+  deleteDiagram: vi.fn(),
   getTagScheme: vi.fn(),
   updateTagScheme: vi.fn(),
   createSymbol: vi.fn(),
@@ -57,6 +59,11 @@ const legacyDiagram: Diagram = {
     edges: [{ id: "e1", source: "v1", sourceHandle: "out", target: "s1", targetHandle: "process", data: { fluid: "GHe" } }]
   }
 };
+
+function summaryOf(diagram: Diagram): DiagramSummary {
+  const { id, system_id, name, diagram_type, revision } = diagram;
+  return { id, system_id, name, diagram_type, revision };
+}
 
 const drawing: Drawing = {
   id: "dw1",
@@ -137,7 +144,6 @@ function renderPage(notify = vi.fn()) {
         projectId="p1"
         projectName="AMB2"
         systems={systems}
-        diagrams={[legacyDiagram]}
         selectedSystemId="s1"
         customSymbols={[]}
         parts={parts}
@@ -159,6 +165,7 @@ describe("DraftingPage", () => {
     apiMock.getSheet.mockResolvedValue(sheet);
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.listLineClasses.mockResolvedValue([]);
+    apiMock.listProjectDiagrams.mockResolvedValue([]);
     apiMock.getSheetDrc.mockResolvedValue({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
     apiMock.updateSheet.mockImplementation(async (_id: string, body: { document: unknown }) => ({ ...sheet, document: body.document }));
   });
@@ -202,14 +209,36 @@ describe("DraftingPage", () => {
     expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1 (1 items, 0 lines indexed; DRC: 0 error(s), 1 warning(s)).");
   });
 
-  it("converts a legacy diagram into a new drawing", async () => {
+  it("converts any legacy diagram of the project, grouped by system, and marks converted ones", async () => {
+    const oxidizer = { id: "s2", project_id: "p1", name: "Oxidizer", fluid: "LOX", description: "" } as FluidSystem;
+    const loxFeed: DiagramSummary = { id: "d2", system_id: "s2", name: "LOX feed", diagram_type: "pid", revision: 1 };
+    const converted: Drawing = { ...drawing, id: "dw2", number: "AMB2-0002", title: "Helium panel", sheets: [{ id: "sh5", sheet_no: 1, title: null, source_diagram_id: "d1" }] };
+    apiMock.listProjectDiagrams.mockResolvedValue([summaryOf(legacyDiagram), loxFeed]);
     apiMock.getSchematic.mockResolvedValue({ diagram_id: "d1", revision: 3, document: null });
     apiMock.getDiagram.mockResolvedValue(legacyDiagram);
-    apiMock.createDrawing.mockResolvedValue({ ...drawing, id: "dw2", number: "AMB2-0002", title: "Helium panel" });
-    renderPage();
+    apiMock.createDrawing.mockResolvedValue(converted);
+    apiMock.listDrawings.mockResolvedValueOnce([drawing]).mockResolvedValue([drawing, converted]);
+    apiMock.deleteDiagram.mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const notify = vi.fn();
+    render(
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={[...systems, oxidizer]} selectedSystemId="s2" customSymbols={[]} parts={parts} user={user} canWrite notify={notify} />
+      </MemoryRouter>
+    );
     await screen.findByTestId("schematic-canvas");
 
-    fireEvent.click(screen.getByRole("button", { name: "Convert diagram…" }));
+    // A one-time hint names the unconverted diagrams; opening the convert form retires it.
+    const hint = await screen.findByRole("status");
+    expect(hint).toHaveTextContent("2 legacy diagrams in this project have not been converted into drawings.");
+    fireEvent.click(within(hint).getByRole("button", { name: "Convert diagram…" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(localStorage.getItem("fsdp.drafting.legacyHint.p1")).toBe("dismissed");
+
+    // Every system's diagrams are offered, not just the selected system's.
+    const picker = screen.getByLabelText("Diagram") as HTMLSelectElement;
+    expect([...picker.querySelectorAll("optgroup")].map((group) => group.label)).toEqual(["Helium fill", "Oxidizer"]);
+    expect(picker.value).toBe("d1");
     fireEvent.click(screen.getByRole("button", { name: "Convert" }));
     await waitFor(() => expect(apiMock.createDrawing).toHaveBeenCalledTimes(1));
     const [projectId, body] = apiMock.createDrawing.mock.calls[0] as [
@@ -222,6 +251,35 @@ describe("DraftingPage", () => {
     expect(body.first_sheet.source_diagram_id).toBe("d1");
     expect(body.first_sheet.document.items.map((item) => item.id).sort()).toEqual(["e1", "s1", "v1"]);
     await waitFor(() => expect(apiMock.listDrawings).toHaveBeenCalledTimes(2));
+
+    // Converted diagrams are marked, and can be deleted to clean up.
+    fireEvent.click(screen.getByRole("button", { name: "Convert diagram…" }));
+    expect(screen.getByRole("option", { name: "Helium panel rev 3 (converted: AMB2-0002)" })).toBeInTheDocument();
+    expect((screen.getByLabelText("Diagram") as HTMLSelectElement).value).toBe("d2");
+    fireEvent.change(screen.getByLabelText("Diagram"), { target: { value: "d1" } });
+    expect(screen.getByText(/Already converted into AMB2-0002/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete legacy diagram" }));
+    expect(confirm).toHaveBeenCalledWith('Delete legacy diagram "Helium panel"? It was converted into AMB2-0002, which is kept.');
+    await waitFor(() => expect(apiMock.deleteDiagram).toHaveBeenCalledWith("d1"));
+    await waitFor(() => expect(within(screen.getByLabelText("Diagram")).queryByRole("option", { name: /Helium panel/ })).not.toBeInTheDocument());
+    expect(notify).toHaveBeenCalledWith("Deleted legacy diagram Helium panel.");
+    confirm.mockRestore();
+  });
+
+  it("shows the legacy diagram hint once per project", async () => {
+    apiMock.listProjectDiagrams.mockResolvedValue([summaryOf(legacyDiagram)]);
+    const first = renderPage();
+    const hint = await screen.findByRole("status");
+    expect(hint).toHaveTextContent("1 legacy diagram in this project has not been converted into drawings.");
+    fireEvent.click(within(hint).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    first.unmount();
+
+    renderPage();
+    await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(apiMock.listProjectDiagrams).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Convert diagram…" })).toBeEnabled();
   });
 
   it("exports the sheet through the server with the rendered SVG", async () => {
@@ -461,7 +519,7 @@ describe("DraftingPage", () => {
     ];
     render(
       <MemoryRouter>
-        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[]} parts={parts} requirements={requirements} user={user} canWrite notify={vi.fn()} />
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} parts={parts} requirements={requirements} user={user} canWrite notify={vi.fn()} />
       </MemoryRouter>
     );
     const canvas = await screen.findByTestId("schematic-canvas");
@@ -546,7 +604,7 @@ describe("DraftingPage", () => {
     const widget: PidSymbolDef = { id: "cs1", name: "Widget", view_box: "0 0 20 20", svg: "<rect width='20' height='20'/>", ports: [], category: "custom", legend: "WIDGET", tag_prefix: "W" };
     const page = (customSymbols: PidSymbolDef[]) => (
       <MemoryRouter>
-        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={customSymbols} parts={parts} user={user} canWrite notify={vi.fn()} />
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={customSymbols} parts={parts} user={user} canWrite notify={vi.fn()} />
       </MemoryRouter>
     );
     const { rerender } = render(page([widget]));
@@ -575,7 +633,7 @@ describe("DraftingPage", () => {
     const notify = vi.fn();
     render(
       <MemoryRouter>
-        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[]} refreshSymbols={refreshSymbols} parts={parts} user={user} canWrite notify={notify} />
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} refreshSymbols={refreshSymbols} parts={parts} user={user} canWrite notify={notify} />
       </MemoryRouter>
     );
     const canvas = await screen.findByTestId("schematic-canvas");
@@ -616,7 +674,7 @@ describe("DraftingPage", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const page = (canWrite: boolean) => (
       <MemoryRouter>
-        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[widget]} refreshSymbols={refreshSymbols} parts={parts} user={user} canWrite={canWrite} notify={vi.fn()} />
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[widget]} refreshSymbols={refreshSymbols} parts={parts} user={user} canWrite={canWrite} notify={vi.fn()} />
       </MemoryRouter>
     );
     const { rerender } = render(page(true));
@@ -651,7 +709,7 @@ describe("DraftingPage", () => {
     );
     const page = (projectId: string) => (
       <MemoryRouter>
-        <DraftingPage projectId={projectId} projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[]} parts={parts} user={user} canWrite notify={vi.fn()} />
+        <DraftingPage projectId={projectId} projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} parts={parts} user={user} canWrite notify={vi.fn()} />
       </MemoryRouter>
     );
     const { rerender } = render(page("p1"));

@@ -9,7 +9,8 @@ const apiMock = vi.hoisted(() => ({
   updateSheet: vi.fn(),
   getTagScheme: vi.fn(),
   listLineClasses: vi.fn(),
-  getSheetDrc: vi.fn()
+  getSheetDrc: vi.fn(),
+  listProjectDiagrams: vi.fn()
 }));
 
 vi.mock("../api", () => ({ api: apiMock }));
@@ -62,7 +63,7 @@ function sheetWith(id: string, sheetNo: number, tag: string): DrawingSheet {
 function renderPage() {
   return render(
     <MemoryRouter>
-      <DraftingPage projectId="p1" projectName="AMB2" systems={[]} diagrams={[]} selectedSystemId="" customSymbols={[]} user={user} canWrite notify={vi.fn()} />
+      <DraftingPage projectId="p1" projectName="AMB2" systems={[]} selectedSystemId="" customSymbols={[]} user={user} canWrite notify={vi.fn()} />
     </MemoryRouter>
   );
 }
@@ -77,6 +78,7 @@ describe("DraftingPage shortcuts and cross-sheet tags", () => {
     apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? sheetWith("sh2", 2, "HV-1") : sheetWith("sh1", 1, "HV-1")));
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.listLineClasses.mockResolvedValue([]);
+    apiMock.listProjectDiagrams.mockResolvedValue([]);
     apiMock.getSheetDrc.mockResolvedValue({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
     apiMock.updateSheet.mockImplementation(async (_id: string, body: { document: unknown }) => ({ ...sheetWith("sh1", 1, "HV-1"), document: body.document }));
   });

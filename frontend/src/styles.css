@@ -2983,6 +2983,30 @@ button.ribbonButton.active {
   margin-bottom: 12px;
 }
 
+.draftingPage .draftingNotice {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-bottom: 12px;
+}
+
+.draftingNotice span {
+  flex: 1 1 320px;
+}
+
+.draftingNotice button,
+.draftingFormNote .linkButton {
+  margin: 0;
+}
+
+.draftingFormNote {
+  flex-basis: 100%;
+  margin: 0;
+}
+
 @media (max-width: 1280px) {
   .draftingDrawingSelect {
     flex-basis: 320px;

@@ -1287,15 +1287,20 @@ class SheetExportIn(BaseModel):
         return value
 
 
-class DiagramRead(OrmModel):
+class DiagramSummaryRead(OrmModel):
+    """A legacy diagram without its graph, for listings."""
+
     id: str
     system_id: str
     name: str
     diagram_type: str
     revision: int
-    graph: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+
+
+class DiagramRead(DiagramSummaryRead):
+    graph: dict[str, Any]
 
 
 class ComponentInstanceCreate(BaseModel):

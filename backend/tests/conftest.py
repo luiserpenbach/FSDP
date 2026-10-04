@@ -23,8 +23,8 @@ _TEST_PASSWORD_HASH = hash_password(TEST_USER_PASSWORD)
 
 
 @pytest.fixture
-def client() -> Generator[TestClient, None, None]:
-    """Authenticated (admin) API client backed by an in-memory database."""
+def session_factory() -> Generator[sessionmaker[Session], None, None]:
+    """Session factory of the in-memory test database (for rows the API no longer writes)."""
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -40,9 +40,16 @@ def client() -> Generator[TestClient, None, None]:
         cursor.close()
 
     Base.metadata.create_all(engine)
-    session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    try:
+        yield sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    finally:
+        Base.metadata.drop_all(engine)
 
-    with session_local() as db:
+
+@pytest.fixture
+def client(session_factory: sessionmaker[Session]) -> Generator[TestClient, None, None]:
+    """Authenticated (admin) API client backed by an in-memory database."""
+    with session_factory() as db:
         db.add(
             User(
                 email=TEST_USER_EMAIL,
@@ -54,7 +61,7 @@ def client() -> Generator[TestClient, None, None]:
         db.commit()
 
     def override_get_db() -> Generator[Session, None, None]:
-        db = session_local()
+        db = session_factory()
         try:
             yield db
         finally:
@@ -70,4 +77,3 @@ def client() -> Generator[TestClient, None, None]:
         yield test_client
     finally:
         app.dependency_overrides.clear()
-        Base.metadata.drop_all(engine)

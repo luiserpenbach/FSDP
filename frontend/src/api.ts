@@ -7,6 +7,7 @@ import type {
   CatalogDocument,
   CatalogSettings,
   Diagram,
+  DiagramSummary,
   Drawing,
   DrawingRevision,
   DrawingSheet,
@@ -116,6 +117,7 @@ export const api = {
     requestNoContent(`/systems/${systemId}`, { method: "DELETE" }),
   // Legacy diagrams are read-only: they are converted into drawings on the Drafting page.
   listDiagrams: (systemId: string) => request<Diagram[]>(`/systems/${systemId}/diagrams`),
+  listProjectDiagrams: (projectId: string) => request<DiagramSummary[]>(`/projects/${projectId}/diagrams`),
   getDiagram: (diagramId: string) => request<Diagram>(`/diagrams/${diagramId}`),
   deleteDiagram: (diagramId: string) =>
     requestNoContent(`/diagrams/${diagramId}`, { method: "DELETE" }),

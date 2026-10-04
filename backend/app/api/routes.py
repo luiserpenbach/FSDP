@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from app.core.security import require_admin, require_writer
 from app.db import get_db
@@ -46,6 +46,7 @@ from app.schemas import (
     DiagramCreate,
     DiagramGraphUpdate,
     DiagramRead,
+    DiagramSummaryRead,
     DiagramUpdate,
     FluidSystemCreate,
     FluidSystemRead,
@@ -393,6 +394,21 @@ def create_diagram(
 def list_diagrams(system_id: str, db: Session = Depends(get_db)) -> list[Diagram]:
     require_model(db, FluidSystem, system_id)
     return list(db.scalars(select(Diagram).where(Diagram.system_id == system_id)))
+
+
+@router.get("/projects/{project_id}/diagrams", response_model=list[DiagramSummaryRead])
+def list_project_diagrams(project_id: str, db: Session = Depends(get_db)) -> list[Diagram]:
+    """Legacy diagrams of every system in the project (conversion sources), by system."""
+    require_model(db, Project, project_id)
+    return list(
+        db.scalars(
+            select(Diagram)
+            .join(FluidSystem, Diagram.system_id == FluidSystem.id)
+            .where(FluidSystem.project_id == project_id)
+            .options(defer(Diagram.graph), defer(Diagram.schematic))
+            .order_by(func.lower(FluidSystem.name), func.lower(Diagram.name))
+        )
+    )
 
 
 @router.get("/diagrams/{diagram_id}", response_model=DiagramRead)

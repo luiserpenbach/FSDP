@@ -116,6 +116,9 @@ export type Diagram = {
   graph: import("./engine/convert").LegacyGraph;
 };
 
+/** A legacy diagram as listed for conversion (without its graph). */
+export type DiagramSummary = Omit<Diagram, "graph">;
+
 export type DrawingRevision = {
   id: string;
   drawing_id: string;

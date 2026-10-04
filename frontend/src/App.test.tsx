@@ -160,7 +160,7 @@ function mockDraftingFetch(overrides?: Parameters<typeof mockWorkspaceFetch>[0])
     if (path === "/sheets/sh1" && method === "GET") return jsonResponse(DRAWING_SHEET);
     if (path === "/sheets/sh1/drc") return jsonResponse({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
     if (path === "/projects/p1/tag-scheme") return jsonResponse({ project_id: "p1", scheme: null });
-    if (path === "/projects/p1/line-classes" || path === "/symbols") return jsonResponse([]);
+    if (path === "/projects/p1/line-classes" || path === "/projects/p1/diagrams" || path === "/symbols") return jsonResponse([]);
     return base(input, init);
   });
 }
