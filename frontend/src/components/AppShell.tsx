@@ -12,7 +12,7 @@ export type NavItem = {
 const NAV_GROUPS: Array<{ title: string; paths: string[] }> = [
   { title: "Workspace", paths: ["/dashboard", "/systems", "/diagrams", "/drafting"] },
   { title: "Data", paths: ["/parts", "/requirements", "/bom"] },
-  { title: "Assurance", paths: ["/safety", "/reviews", "/certification"] }
+  { title: "Assurance", paths: ["/reviews"] }
 ];
 
 const ICON_PROPS = { viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
@@ -71,22 +71,10 @@ const NAV_ICONS: Record<string, ReactNode> = {
       <path d="M8 10 H12" />
     </svg>
   ),
-  "/safety": (
-    <svg {...ICON_PROPS}>
-      <path d="M10 2.5 L16 5 V10 C16 13.5 13.5 16 10 17.5 C6.5 16 4 13.5 4 10 V5 Z" />
-      <path d="M7.5 10 L9.3 11.8 L12.8 8.3" />
-    </svg>
-  ),
   "/reviews": (
     <svg {...ICON_PROPS}>
       <path d="M3.5 5 A1.5 1.5 0 0 1 5 3.5 H15 A1.5 1.5 0 0 1 16.5 5 V12 A1.5 1.5 0 0 1 15 13.5 H9 L5.5 16.5 V13.5 H5 A1.5 1.5 0 0 1 3.5 12 Z" />
       <path d="M7.5 8.5 H12.5" />
-    </svg>
-  ),
-  "/certification": (
-    <svg {...ICON_PROPS}>
-      <circle cx="10" cy="8" r="4.5" />
-      <path d="M7.5 11.8 L6.5 17.5 L10 15.5 L13.5 17.5 L12.5 11.8" />
     </svg>
   ),
   "/settings": (
@@ -164,7 +152,8 @@ export function AppShell({
   message,
   error,
   user,
-  onSignOut
+  onSignOut,
+  switcher
 }: {
   children: ReactNode;
   navItems: NavItem[];
@@ -173,6 +162,8 @@ export function AppShell({
   error: string;
   user: { name: string; email: string; role: string };
   onSignOut: () => void;
+  /** Project/system switcher under the brand; `expand` opens a collapsed sidebar. */
+  switcher?: (collapsed: boolean, expand: () => void) => ReactNode;
 }) {
   const [sidebarWidth, setSidebarWidth] = useStoredWidth("fsdp.sidebarWidth", 236, 200, 360);
   const [collapsed, setCollapsed] = useState(readCollapsed);
@@ -212,6 +203,7 @@ export function AppShell({
             </svg>
           </button>
         </div>
+        {switcher?.(collapsed, () => setCollapsed(false))}
         <nav className="sideNav" aria-label="Primary navigation">
           {grouped.map((group) => (
             <div className="navGroup" key={group.title}>
