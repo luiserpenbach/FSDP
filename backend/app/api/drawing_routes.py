@@ -343,10 +343,14 @@ def delete_sheet(
     removed_no = sheet.sheet_no
     db.delete(sheet)
     db.flush()
-    # Renumber so sheets stay contiguous ("2 OF 3").
+    # Renumber so sheets stay contiguous ("2 OF 3"). Move one sheet at a time in
+    # ascending order into the slot just freed: a single flush would issue the
+    # UPDATEs in arbitrary order and could collide on uq_drawing_sheet_no.
     remaining = sorted((s for s in drawing.sheets if s.id != sheet_id), key=lambda s: s.sheet_no)
     for index, entry in enumerate(remaining, start=1):
-        entry.sheet_no = index
+        if entry.sheet_no != index:
+            entry.sheet_no = index
+            db.flush()
     record_change(
         db,
         "drawing",
