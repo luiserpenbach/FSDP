@@ -8,6 +8,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -265,6 +266,9 @@ function SchematicCanvasInner(
   const paper = sheetSize(doc.sheet);
   const frame = frameRect(doc.sheet);
   const registry = editor.registry;
+  // Pans, zooms and hover re-render the canvas without changing these.
+  const frameSvg = useMemo(() => renderFrame(doc, context), [doc, context]);
+  const junctionSvg = useMemo(() => renderJunctions(connectivity), [connectivity]);
   const selected = new Set(state.selection);
   const ghost = editor.ghostSymbol();
   const wirePreview = editor.wirePreview();
@@ -313,7 +317,7 @@ function SchematicCanvasInner(
           {showGrid && (
             <rect x={frame.x} y={frame.y} width={frame.width} height={frame.height} fill="url(#schematicGrid)" pointerEvents="none" />
           )}
-          <g dangerouslySetInnerHTML={{ __html: renderFrame(doc, context) }} />
+          <g dangerouslySetInnerHTML={{ __html: frameSvg }} />
           <g className="items">
             {doc.items.map((item) =>
               hidden.has(item.layer) ? null : (
@@ -329,7 +333,7 @@ function SchematicCanvasInner(
               )
             )}
           </g>
-          <g dangerouslySetInnerHTML={{ __html: renderJunctions(connectivity) }} />
+          <g dangerouslySetInnerHTML={{ __html: junctionSvg }} />
 
           {/* ---- overlays ---- */}
           <g className="overlays" pointerEvents="none">

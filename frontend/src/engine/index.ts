@@ -198,10 +198,18 @@ export function buildSheetIndex(doc: SchematicDocument, registry: SymbolRegistry
     }
   }
 
+  // Group line ends by line once (document order preserved within each line).
+  const endsByLine = new Map<string, LineEnd[]>();
+  for (const end of connectivity.lineEnds) {
+    const bucket = endsByLine.get(end.lineId);
+    if (bucket) bucket.push(end);
+    else endsByLine.set(end.lineId, [end]);
+  }
+
   const lines: SheetIndexLine[] = [];
   for (const item of doc.items) {
     if (item.kind !== "line") continue;
-    const ends = connectivity.lineEnds.filter((end) => end.lineId === item.id);
+    const ends = endsByLine.get(item.id) ?? [];
     const from = describeEnd(doc, byId, ends.find((end) => end.end === 0));
     const to = describeEnd(doc, byId, ends.find((end) => end.end === 1));
     const connectionCount = ends.filter((end) => end.attachments.some((attachment) => attachment.kind === "port")).length;

@@ -8,10 +8,12 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 import { resolveConnectorTargets, type SheetDoc } from "../../engine/connectors";
 import type { Editor } from "../../engine/editor";
-import { buildSheetIndex } from "../../engine/index";
+import { buildSheetIndex, type SheetIndex } from "../../engine/index";
+import type { SymbolRegistry } from "../../engine/library";
+import type { SchematicDocument } from "../../engine/types";
 import { LIST_DEFINITIONS, listRows, type IndexedSheet, type ListKind } from "../../engine/lists";
 import type { BomReadiness, BomSnapshot, Drawing, ListRead, Part } from "../../types";
-import { useEditorSnapshot } from "./SchematicCanvas";
+import { useSettledSnapshot } from "./useSettledSnapshot";
 
 export type DrawerTab = ListKind | "bom";
 export type ListScope = "drawing" | "project";
@@ -26,6 +28,40 @@ const TAB_LABELS: Record<DrawerTab, string> = {
   tie_in: "Tie-ins",
   bom: "BoM"
 };
+
+type CachedIndex = { doc: SchematicDocument; registry: SymbolRegistry; targets: Record<string, string>; index: SheetIndex };
+
+function sameTargets(a: Record<string, string>, b: Record<string, string>): boolean {
+  const keys = Object.keys(a);
+  return keys.length === Object.keys(b).length && keys.every((key) => a[key] === b[key]);
+}
+
+function sheetKey(sheet: SheetDoc): string {
+  return sheet.sheetId ?? `sheet-no-${sheet.sheetNo}`;
+}
+
+/**
+ * Index rows for the other (not open) sheets, rebuilt only when that sheet's
+ * document, the registry, or its resolved off-page targets change, so editing
+ * the open sheet leaves them untouched.
+ */
+class OtherSheetIndexCache {
+  private entries = new Map<string, CachedIndex>();
+
+  get(sheet: SheetDoc, registry: SymbolRegistry, targets: Record<string, string>): SheetIndex {
+    const cached = this.entries.get(sheetKey(sheet));
+    if (cached && cached.doc === sheet.doc && cached.registry === registry && sameTargets(cached.targets, targets)) return cached.index;
+    const index = buildSheetIndex(sheet.doc, registry, { connectorTargets: targets });
+    this.entries.set(sheetKey(sheet), { doc: sheet.doc, registry, targets, index });
+    return index;
+  }
+
+  /** Drop sheets that are no longer listed. */
+  retain(sheets: SheetDoc[]): void {
+    const keep = new Set(sheets.map(sheetKey));
+    for (const key of [...this.entries.keys()]) if (!keep.has(key)) this.entries.delete(key);
+  }
+}
 
 function cell(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -70,23 +106,32 @@ export function ListsDrawer({
   busy: boolean;
   onClose: () => void;
 }) {
-  const { doc } = useEditorSnapshot(editor);
+  // Throttled while editing: at most every ~250 ms, and at once when a drag ends.
+  const { doc, connectivity } = useSettledSnapshot(editor);
   const [scope, setScope] = useState<ListScope>("drawing");
   const [projectList, setProjectList] = useState<ListRead | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const partNumbers = useMemo(() => new Map(parts.map((part) => [part.id, part.part_number])), [parts]);
 
-  // Live rows: the open sheet from the editor, other sheets from their stored documents.
+  // Live rows: the open sheet from the editor (reusing its connectivity), other
+  // sheets from their stored documents through a per-sheet cache.
+  const [otherIndexes] = useState(() => new OtherSheetIndexCache());
   const liveSheets = useMemo<IndexedSheet[]>(() => {
+    const registry = editor.registry;
     const current: SheetDoc = { sheetNo, doc, sheetId };
     const sheets = [current, ...otherSheets];
+    otherIndexes.retain(otherSheets);
     return sheets.map((sheet) => {
       const others = sheets.filter((entry) => entry !== sheet);
       const targets = resolveConnectorTargets(sheet, others).targets;
-      return { sheetNo: sheet.sheetNo, sheetId: sheet.sheetId, index: buildSheetIndex(sheet.doc, editor.registry, { connectorTargets: targets }) };
+      const index =
+        sheet === current
+          ? buildSheetIndex(doc, registry, { connectivity, connectorTargets: targets })
+          : otherIndexes.get(sheet, registry, targets);
+      return { sheetNo: sheet.sheetNo, sheetId: sheet.sheetId, index };
     });
-  }, [doc, sheetId, sheetNo, otherSheets, editor.registry]);
+  }, [doc, connectivity, sheetId, sheetNo, otherSheets, editor.registry, otherIndexes]);
 
   const listKind: ListKind | null = tab === "bom" ? null : tab;
   const liveRows = useMemo(() => (listKind ? listRows(listKind, liveSheets, (id) => partNumbers.get(id)) : []), [listKind, liveSheets, partNumbers]);
