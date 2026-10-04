@@ -1,21 +1,23 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import { Navigate, Route, RouterProvider, Routes, createBrowserRouter, useBlocker } from "react-router-dom";
 import { api, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
-import { BomPage } from "./pages/BomPage";
 import { DashboardPage } from "./pages/DashboardPage";
-import { DiagramsPage } from "./pages/DiagramsPage";
-import { DraftingRoutePage as DraftingPage } from "./pages/DraftingPage";
 import { LoginPage } from "./pages/LoginPage";
-import { PartsPage } from "./pages/PartsCatalog";
-import { RequirementsPage } from "./pages/RequirementsPage";
-import { ReviewsPage } from "./pages/ReviewsPage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { SystemsPage } from "./pages/SystemsPage";
 import type { User } from "./types";
 import { UnsavedChangesContext, createUnsavedChangesRegistry, unsavedPrompt, useUnsavedChangesRegistry } from "./unsavedChanges";
 import { WorkspaceProvider, useWorkspace } from "./workspace/WorkspaceContext";
 import { WorkspaceSwitcher } from "./workspace/WorkspaceSwitcher";
+
+// Route pages load on first visit; the dashboard (the landing page) ships in the main chunk.
+const SystemsPage = lazy(() => import("./pages/SystemsPage").then((module) => ({ default: module.SystemsPage })));
+const DiagramsPage = lazy(() => import("./pages/DiagramsPage").then((module) => ({ default: module.DiagramsPage })));
+const DraftingPage = lazy(() => import("./pages/DraftingPage").then((module) => ({ default: module.DraftingRoutePage })));
+const PartsPage = lazy(() => import("./pages/PartsCatalog").then((module) => ({ default: module.PartsPage })));
+const RequirementsPage = lazy(() => import("./pages/RequirementsPage").then((module) => ({ default: module.RequirementsPage })));
+const BomPage = lazy(() => import("./pages/BomPage").then((module) => ({ default: module.BomPage })));
+const ReviewsPage = lazy(() => import("./pages/ReviewsPage").then((module) => ({ default: module.ReviewsPage })));
+const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 
 const navItems: NavItem[] = [
   { path: "/dashboard", label: "Dashboard", description: "Project overview" },
@@ -138,19 +140,21 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
       switcher={(collapsed, expand) => <WorkspaceSwitcher collapsed={collapsed} onExpand={expand} />}
     >
       <UnsavedNavigationGuard />
-      <Routes>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/systems" element={<SystemsPage />} />
-        <Route path="/diagrams" element={<DiagramsPage />} />
-        <Route path="/drafting" element={<DraftingPage />} />
-        <Route path="/parts" element={<PartsPage />} />
-        <Route path="/requirements" element={<RequirementsPage />} />
-        <Route path="/bom" element={<BomPage />} />
-        <Route path="/reviews" element={<ReviewsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
-      </Routes>
+      <Suspense fallback={<main className="page"><p className="hint">Loading…</p></main>}>
+        <Routes>
+          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/dashboard" element={<DashboardPage />} />
+          <Route path="/systems" element={<SystemsPage />} />
+          <Route path="/diagrams" element={<DiagramsPage />} />
+          <Route path="/drafting" element={<DraftingPage />} />
+          <Route path="/parts" element={<PartsPage />} />
+          <Route path="/requirements" element={<RequirementsPage />} />
+          <Route path="/bom" element={<BomPage />} />
+          <Route path="/reviews" element={<ReviewsPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        </Routes>
+      </Suspense>
     </AppShell>
   );
 }
