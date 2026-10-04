@@ -1,6 +1,6 @@
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from xml.parsers import expat
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -777,6 +777,20 @@ def _clean_frame_template(value: str | None) -> str | None:
     return value
 
 
+# Fields stamped by the release workflow from the authenticated user; clients
+# cannot write them (a non-null value is rejected rather than silently dropped).
+_STAMPED_REVISION_FIELDS = ("checked_by", "checked_date", "approved_by", "approved_date")
+
+
+def _reject_stamped(value: str | None) -> None:
+    if value is not None and str(value).strip():
+        raise ValueError(
+            "is stamped by the release workflow (POST /drawings/{id}/submit and /release) "
+            "and cannot be set directly"
+        )
+    return None
+
+
 class DrawingRevisionCreate(BaseModel):
     label: str = "-"
     description: str = "Initial issue"
@@ -792,6 +806,11 @@ class DrawingRevisionCreate(BaseModel):
     def _label(cls, value: str) -> str:
         return clean_required_text(value)
 
+    @field_validator(*_STAMPED_REVISION_FIELDS)
+    @classmethod
+    def _stamped(cls, value: str | None) -> None:
+        return _reject_stamped(value)
+
 
 class DrawingRevisionUpdate(BaseModel):
     label: str | None = None
@@ -803,6 +822,15 @@ class DrawingRevisionUpdate(BaseModel):
     approved_by: str | None = None
     approved_date: str | None = None
 
+    @field_validator(*_STAMPED_REVISION_FIELDS)
+    @classmethod
+    def _stamped(cls, value: str | None) -> None:
+        return _reject_stamped(value)
+
+
+DrawingStatus = Literal["draft", "in_review", "released"]
+DRAWING_STATUSES: tuple[str, ...] = ("draft", "in_review", "released")
+
 
 class DrawingRevisionRead(OrmModel):
     id: str
@@ -810,14 +838,40 @@ class DrawingRevisionRead(OrmModel):
     sequence: int
     label: str
     description: str
-    status: str
+    status: DrawingStatus
     drawn_by: str | None
     drawn_date: str | None
     checked_by: str | None
     checked_date: str | None
+    submitted_by: str | None = None
+    submitted_at: datetime | None = None
     approved_by: str | None
     approved_date: str | None
+    approved_at: datetime | None = None
     created_at: datetime
+
+
+class DrawingReviseIn(BaseModel):
+    """Optional label and description for the revision opened by POST /drawings/{id}/revise."""
+
+    label: str | None = None
+    description: str | None = None
+
+    @field_validator("label", "description")
+    @classmethod
+    def _text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+
+class RevisionSnapshotRead(BaseModel):
+    revision_id: str
+    drawing_id: str
+    label: str
+    sequence: int
+    status: DrawingStatus
+    approved_by: str | None
+    approved_at: datetime | None
+    snapshot: dict[str, Any]
 
 
 class DrawingSheetCreate(BaseModel):
@@ -911,6 +965,15 @@ class SheetIndexRead(BaseModel):
     lines: list[SheetLineRead]
 
 
+class StaleSheetRead(BaseModel):
+    """A sheet whose stored index/DRC does not reflect its document or dependencies."""
+
+    sheet_id: str
+    sheet_no: int
+    drawing_id: str
+    drawing_number: str
+
+
 class ListColumnRead(BaseModel):
     key: str
     label: str
@@ -925,6 +988,8 @@ class ListRead(BaseModel):
     header: dict[str, Any]
     columns: list[ListColumnRead]
     rows: list[dict[str, Any]]
+    # Sheets whose index rows may not match their documents (re-save to refresh).
+    stale_sheets: list[StaleSheetRead] = []
 
 
 DRC_SEVERITIES = {"error", "warning", "info"}
@@ -1019,6 +1084,7 @@ class DrcRequirementCheckRead(OrmModel):
 class SheetDrcRead(BaseModel):
     sheet_id: str
     sheet_no: int
+    index_stale: bool = False
     counts: dict[str, int]
     findings: list[DrcResultRead]
     waivers: list[DrcWaiverRead]
@@ -1050,6 +1116,8 @@ class VerificationRowRead(BaseModel):
 class VerificationMatrixRead(BaseModel):
     project_id: str
     rows: list[VerificationRowRead]
+    # Sheets whose checks are out of date: re-save them before trusting the verdicts.
+    stale_sheets: list[StaleSheetRead] = []
 
 
 class DrawingSheetUpdate(BaseModel):
@@ -1075,6 +1143,8 @@ class DrawingSheetRead(OrmModel):
     title: str | None
     source_diagram_id: str | None
     document: dict[str, Any]
+    index_stale: bool
+    indexed_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -1084,6 +1154,8 @@ class DrawingSheetSummary(OrmModel):
     sheet_no: int
     title: str | None
     source_diagram_id: str | None
+    index_stale: bool
+    indexed_at: datetime | None
 
 
 class DrawingCreate(BaseModel):
@@ -1127,7 +1199,9 @@ class DrawingUpdate(BaseModel):
     size: str | None = None
     units: str | None = None
     discipline: str | None = None
-    status: str | None = None
+    # Accepted only when equal to the current status; transitions go through the
+    # submit / release / withdraw / revise actions.
+    status: DrawingStatus | None = None
     frame_template: str | None = None
     fields: dict[str, Any] | None = None
     notes: list[str] | None = None
@@ -1157,12 +1231,13 @@ class DrawingRead(OrmModel):
     size: str
     units: str
     discipline: str
-    status: str
+    status: DrawingStatus
     frame_template: str
     fields: dict[str, Any]
     notes: list[str]
     sheets: list[DrawingSheetSummary]
     revisions: list[DrawingRevisionRead]
+    current_revision: DrawingRevisionRead | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1360,8 +1435,17 @@ class BomSnapshotRead(OrmModel):
     revision: int
     status: str
     rows: list[dict[str, Any]]
+    drawing_revision: str | None = None
+    stale_sheets: list[dict[str, Any]] = []
+    released_by: str | None = None
+    released_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("stale_sheets", mode="before")
+    @classmethod
+    def _stale(cls, value: list | None) -> list:
+        return value or []
 
 
 class ProjectBomRead(BomSnapshotRead):
@@ -1416,9 +1500,51 @@ class BomDiffRead(BaseModel):
     changed: list[BomQuantityChange]
 
 
+class ImpactSheetItemRead(BaseModel):
+    """A tagged item on a drawing sheet touched by the change."""
+
+    id: str
+    sheet_id: str
+    item_id: str
+    tag: str | None
+    zone: str | None
+    part_id: str | None
+    drawing_id: str
+    drawing_number: str
+    sheet_no: int
+
+
+class ImpactDrawingRead(BaseModel):
+    id: str
+    project_id: str
+    number: str
+    title: str
+    status: str
+    revision: str | None
+    sheets: list[int]
+
+
+class ImpactRequirementRead(BaseModel):
+    id: str
+    project_id: str
+    key: str
+    title: str
+    status: str | None
+
+
+class ImpactPartRead(BaseModel):
+    id: str
+    part_number: str
+    description: str
+
+
 class ImpactRead(BaseModel):
     object_type: str
     object_id: str
     direct_links: list[TraceLinkRead]
     affected_bom_snapshots: list[BomSnapshotRead]
     affected_components: list[ComponentInstanceRead]
+    affected_drawings: list[ImpactDrawingRead] = []
+    affected_sheet_items: list[ImpactSheetItemRead] = []
+    affected_requirements: list[ImpactRequirementRead] = []
+    affected_parts: list[ImpactPartRead] = []

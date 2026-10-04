@@ -7,7 +7,9 @@ serves the joined rows that lists, BoM roll-ups, and where-used read.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from collections.abc import Iterable
+
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models import Drawing, DrawingSheet, Part, SheetItem, SheetLine
@@ -99,3 +101,58 @@ def drawing_index_rows(db: Session, drawings: list[Drawing]) -> tuple[list[ItemR
         .order_by(Drawing.number, DrawingSheet.sheet_no)
     ).all()
     return [tuple(row) for row in items], [tuple(row) for row in lines]
+
+
+def document_needs_index(document: dict | None) -> bool:
+    """Whether a document has content the engine must index (an empty sheet has none)."""
+    return bool((document or {}).get("items"))
+
+
+def mark_sheets_stale_for_part(db: Session, part_id: str) -> None:
+    """Flag every sheet whose index assigns the part: its DRC used the old part data."""
+    sheet_ids = select(SheetItem.sheet_id).where(SheetItem.part_id == part_id)
+    db.execute(
+        update(DrawingSheet)
+        .where(DrawingSheet.id.in_(sheet_ids))
+        .values(index_stale=True)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def mark_project_sheets_stale(db: Session, project_id: str) -> None:
+    """Flag every sheet of a project, e.g. after a requirement constraint changed."""
+    drawing_ids = select(Drawing.id).where(Drawing.project_id == project_id)
+    db.execute(
+        update(DrawingSheet)
+        .where(DrawingSheet.drawing_id.in_(drawing_ids))
+        .values(index_stale=True)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def stale_sheets(db: Session, drawing_ids: Iterable[str]) -> list[dict]:
+    """Sheets of the given drawings whose stored index/DRC is out of date."""
+    ids = list(drawing_ids)
+    if not ids:
+        return []
+    rows = db.execute(
+        select(DrawingSheet.id, DrawingSheet.sheet_no, Drawing.id, Drawing.number)
+        .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+        .where(Drawing.id.in_(ids), DrawingSheet.index_stale.is_(True))
+        .order_by(Drawing.number, DrawingSheet.sheet_no)
+    ).all()
+    return [
+        {
+            "sheet_id": sheet_id,
+            "sheet_no": sheet_no,
+            "drawing_id": drawing_id,
+            "drawing_number": number,
+        }
+        for sheet_id, sheet_no, drawing_id, number in rows
+    ]
+
+
+def stale_sheets_note(stale: list[dict]) -> str:
+    """One-line warning for list/BoM export headers naming the stale sheets."""
+    names = ", ".join(f"{entry['drawing_number']} sheet {entry['sheet_no']}" for entry in stale)
+    return f"Index out of date for {names}; open and save these sheets to refresh."

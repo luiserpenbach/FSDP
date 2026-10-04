@@ -87,7 +87,12 @@ from app.services.catalog import (
     sanitize_upload_filename,
 )
 from app.services.change_impact import get_change_impact
-from app.services.lists import spreadsheet_safe
+from app.services.lists import rows_to_xlsx, spreadsheet_safe
+from app.services.sheet_index import (
+    mark_project_sheets_stale,
+    mark_sheets_stale_for_part,
+    stale_sheets_note,
+)
 from app.services.traceability import (
     delete_trace_links_for,
     delete_trace_links_for_many,
@@ -710,9 +715,13 @@ def update_part(
         if existing:
             raise HTTPException(status_code=409, detail="Part name already exists")
 
+    before = PartRead.model_validate(part).model_dump(exclude={"updated_at"})
     apply_updates(part, payload)
     if payload.part_type:
         remember_part_type(db, payload.part_type)
+    if PartRead.model_validate(part).model_dump(exclude={"updated_at"}) != before:
+        # Ratings, material, and lifecycle feed the drawing DRC computed in the browser.
+        mark_sheets_stale_for_part(db, part.id)
     record_change(
         db, "part", part.id, "updated", f"Updated part {part.part_number}", actor=user.email
     )
@@ -837,6 +846,7 @@ def obsolete_part(
     part = require_model(db, Part, part_id)
     part.lifecycle_status = "obsolete"
     part.preferred = False
+    mark_sheets_stale_for_part(db, part.id)
     record_change(
         db, "part", part.id, "updated", f"Marked part {part.part_number} obsolete", actor=user.email
     )
@@ -1199,6 +1209,9 @@ def create_requirement(
     requirement = Requirement(**payload.model_dump())
     db.add(requirement)
     db.flush()
+    if requirement.constraint is not None:
+        # Requirement checks run inside the drawing DRC in the browser.
+        mark_project_sheets_stale(db, requirement.project_id)
     record_change(
         db,
         "requirement",
@@ -1237,7 +1250,10 @@ def update_requirement(
         if existing:
             raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
+    had_constraint = requirement.constraint is not None
     apply_updates(requirement, payload)
+    if had_constraint or requirement.constraint is not None:
+        mark_project_sheets_stale(db, requirement.project_id)
     record_change(
         db,
         "requirement",
@@ -1259,6 +1275,8 @@ def delete_requirement(
 ) -> Response:
     requirement = require_model(db, Requirement, requirement_id)
     delete_trace_links_for(db, "requirement", requirement.id)
+    if requirement.constraint is not None:
+        mark_project_sheets_stale(db, requirement.project_id)
     record_change(
         db,
         "requirement",
@@ -1435,32 +1453,24 @@ def list_project_bom_snapshots(project_id: str, db: Session = Depends(get_db)) -
     )
 
 
-@router.put("/bom/{snapshot_id}/status", response_model=BomSnapshotRead)
-def update_bom_status(
-    snapshot_id: str,
-    payload: BomStatusUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> BomSnapshot:
-    snapshot = require_model(db, BomSnapshot, snapshot_id)
-    snapshot.status = payload.status
-    record_change(
-        db,
-        "bom_snapshot",
-        snapshot.id,
-        "updated",
-        f"BoM revision {snapshot.revision} status set to {payload.status}",
-        actor=user.email,
+def _bom_readiness(db: Session, snapshot: BomSnapshot) -> dict:
+    part_ids = {row["part_id"] for row in snapshot.rows if row.get("part_id")}
+    parts = (
+        {part.id: part for part in db.scalars(select(Part).where(Part.id.in_(part_ids)))}
+        if part_ids
+        else {}
     )
-    db.commit()
-    db.refresh(snapshot)
-    return snapshot
-
-
-@router.get("/bom/{snapshot_id}/readiness", response_model=BomReadinessRead)
-def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
-    snapshot = require_model(db, BomSnapshot, snapshot_id)
     issues = []
+    if snapshot.stale_sheets:
+        issues.append(
+            {
+                "part_number": None,
+                "component_tags": [],
+                "warnings": [stale_sheets_note(snapshot.stale_sheets)],
+                "code": "stale_index",
+                "severity": "blocking",
+            }
+        )
     for row in snapshot.rows:
         warnings: list[str] = []
         code = "part_incomplete"
@@ -1474,7 +1484,7 @@ def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
                 warnings.append("Line has no line class or spec.")
                 code = "line_no_class"
         else:
-            part = db.get(Part, row.get("part_id")) if row.get("part_id") else None
+            part = parts.get(row.get("part_id")) if row.get("part_id") else None
             if part is None:
                 warnings.append("No catalog part is linked to this BoM row.")
                 code = "no_part"
@@ -1504,6 +1514,64 @@ def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
         "ready": not issues,
         "issues": issues,
     }
+
+
+@router.put("/bom/{snapshot_id}/status", response_model=BomSnapshotRead)
+def update_bom_status(
+    snapshot_id: str,
+    payload: BomStatusUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> BomSnapshot:
+    """Release a BoM snapshot. Released snapshots are immutable baselines.
+
+    Release is refused (409) while readiness has blocking issues; `detail.issues`
+    lists them. A released snapshot cannot return to draft: generate a new one.
+    """
+    snapshot = require_model(db, BomSnapshot, snapshot_id)
+    if payload.status == snapshot.status:
+        return snapshot
+    if snapshot.status == "released":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"BoM revision {snapshot.revision} is released and immutable; "
+                "generate a new BoM revision instead."
+            ),
+        )
+    if payload.status == "released":
+        readiness = _bom_readiness(db, snapshot)
+        blocking = [issue for issue in readiness["issues"] if issue["severity"] == "blocking"]
+        if blocking:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        f"BoM revision {snapshot.revision} has {len(blocking)} blocking "
+                        "issue(s) and cannot be released."
+                    ),
+                    "issues": blocking,
+                },
+            )
+        snapshot.released_by = user.email
+        snapshot.released_at = datetime.now(UTC)
+    snapshot.status = payload.status
+    record_change(
+        db,
+        "bom_snapshot",
+        snapshot.id,
+        "updated",
+        f"BoM revision {snapshot.revision} status set to {payload.status}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(snapshot)
+    return snapshot
+
+
+@router.get("/bom/{snapshot_id}/readiness", response_model=BomReadinessRead)
+def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
+    return _bom_readiness(db, require_model(db, BomSnapshot, snapshot_id))
 
 
 def _bom_row_key(row: dict) -> str:
@@ -1575,24 +1643,104 @@ BOM_CSV_FIELDS = [
 ]
 
 
+BOM_COLUMN_LABELS = {
+    "part_number": "Part number",
+    "revision": "Part rev",
+    "description": "Description",
+    "manufacturer": "Manufacturer",
+    "material": "Material",
+    "pressure_rating_bar": "Pressure rating (bar)",
+    "mass_kg": "Mass (kg)",
+    "cv": "Cv",
+    "quantity": "Quantity",
+    "qualification_status": "Qualification",
+    "certification_status": "Certification",
+    "component_tags": "Tags",
+    "kind": "Kind",
+    "unit": "Unit",
+    "spare_quantity": "Spares",
+    "dnp_tags": "DNP tags",
+    "sheets": "Sheets",
+}
+
+
+def _bom_export_rows(snapshot: BomSnapshot) -> list[dict]:
+    rows = []
+    for row in snapshot.rows:
+        record = {key: row.get(key) for key in BOM_CSV_FIELDS}
+        for key in ("component_tags", "dnp_tags", "sheets"):
+            if isinstance(record.get(key), list):
+                record[key] = "; ".join(str(entry) for entry in record[key])
+        rows.append(record)
+    return rows
+
+
+def _bom_filename(snapshot: BomSnapshot, extension: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram_name).strip("-.").lower() or "bom"
+    return f"bom-{slug}-rev{snapshot.revision}.{extension}"
+
+
+def _bom_header(db: Session, snapshot: BomSnapshot) -> dict:
+    """Header block of a BoM export: what it was generated from and its release state."""
+    header: dict = {"list": "Bill of materials"}
+    if snapshot.drawing is not None:
+        drawing = snapshot.drawing
+        project = db.get(Project, drawing.project_id)
+        header.update(
+            {
+                "project": project.name if project else "",
+                "drawing_number": drawing.number,
+                "drawing_title": drawing.title.replace("\n", " "),
+                "drawing_revision": snapshot.drawing_revision or "-",
+            }
+        )
+    elif snapshot.diagram is not None:
+        header.update(
+            {
+                "project": snapshot.diagram.system.project.name,
+                "diagram": snapshot.diagram.name,
+            }
+        )
+    header.update(
+        {
+            "bom_revision": snapshot.revision,
+            "status": snapshot.status,
+            "generated": snapshot.created_at.strftime("%Y-%m-%d %H:%M UTC")
+            if snapshot.created_at
+            else "",
+        }
+    )
+    if snapshot.released_by:
+        header["released_by"] = snapshot.released_by
+    if snapshot.stale_sheets:
+        header["warning"] = stale_sheets_note(snapshot.stale_sheets)
+    return header
+
+
 @router.get("/bom/{snapshot_id}/csv")
 def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
     snapshot = require_model(db, BomSnapshot, snapshot_id)
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=BOM_CSV_FIELDS)
     writer.writeheader()
-    for row in snapshot.rows:
-        record = {key: row.get(key) for key in BOM_CSV_FIELDS}
-        for key in ("component_tags", "dnp_tags", "sheets"):
-            if isinstance(record.get(key), list):
-                record[key] = "; ".join(str(entry) for entry in record[key])
+    for record in _bom_export_rows(snapshot):
         writer.writerow({key: spreadsheet_safe(value) for key, value in record.items()})
-
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram_name).strip("-.").lower() or "bom"
-    filename = f"bom-{slug}-rev{snapshot.revision}.csv"
     return Response(
         buffer.getvalue(),
         media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{_bom_filename(snapshot, "csv")}"'},
+    )
+
+
+@router.get("/bom/{snapshot_id}/xlsx")
+def export_bom_xlsx(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
+    """BoM snapshot as a workbook with a header block (project, source, revision, status)."""
+    snapshot = require_model(db, BomSnapshot, snapshot_id)
+    columns = [(key, BOM_COLUMN_LABELS[key]) for key in BOM_CSV_FIELDS]
+    filename = _bom_filename(snapshot, "xlsx")
+    return Response(
+        rows_to_xlsx(_bom_header(db, snapshot), columns, _bom_export_rows(snapshot)),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
