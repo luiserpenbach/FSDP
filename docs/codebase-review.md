@@ -154,11 +154,7 @@ Explicit `null` on required fields returns a misleading 409; over-length strings
 
 > **Status (2026-10-04): Phase A delivered.** Fixed: C1–C6, H1–H5, H7–H10, the drafting shortcuts, invisible parts-catalog errors, and XLSX formula injection, each with regression tests.
 >
-> Known follow-ups:
-> - Edits made while a sheet save is in flight are marked as saved without being sent; this needs a versioned `markSaved`.
-> - Tag uniqueness covers the drawing's sheets, not yet the whole project.
-> - The server rejects symbol SVGs with editor metadata (Inkscape `sodipodi:`/`inkscape:`), so the client should strip it before upload.
-> - Compose now refuses to start without `FSDP_SECRET_KEY`, even for the database alone.
+> Phase A follow-ups resolved in Phase B: versioned saves (`markSaved(version)`), and client-side stripping of editor metadata from symbol SVGs. Still open: tag uniqueness is per drawing rather than per project, and Compose refuses to start without `FSDP_SECRET_KEY`, even for the database alone.
 
 1. Navigation guard for dirty editors (`createBrowserRouter` + `useBlocker`); fix save-to-wrong-sheet (C2); stop recreating the editor when the registry changes (C3).
 2. Sanitize symbol SVG on server (allowlist parser) and client (C5); refuse to boot with the default secret (C6).
@@ -178,5 +174,18 @@ Explicit `null` on required fields returns a misleading 409; over-length strings
 2. Roll it out to parts, requirements, line classes, drafting lists, BoM, and the verification matrix.
 3. Bulk actions: assign part to N tags from the valve/instrument list; set line class/service on N lines; bulk lifecycle changes.
 4. Connectivity performance (spatial index) so 300-symbol sheets drag smoothly.
+
+> **Status (2026-10-04): Phases B and C delivered.**
+>
+> - **Phase B, one workflow:** draft → in review → released, with server-stamped approvals, an immutable snapshot on release, a lock on released drawings, and a gate that blocks release on stale sheets or open DRC errors. Stale-index tracking with background re-indexing. A drawing BoM page with release gate, diff, and CSV/XLSX. A global project switcher and an actionable dashboard. The legacy Diagrams editor is retired; Drafting is the only editor, and legacy diagrams can only be imported, keeping their tags and parts. `App.tsx` went from 2,398 to 160 lines, and the main bundle from 788 kB to 320 kB.
+> - **Phase C, beat Excel:** a shared `DataGrid` (sort, filter, multi-select, inline edit, paste from Excel, CSV/XLSX export, keyboard navigation, virtualization) used for parts, requirements, the verification matrix, line classes, BoMs, and the drafting lists. An import wizard (CSV/XLSX/paste with a dry-run diff, all-or-nothing commit) for parts and requirements. Bulk edit and delete. List cells write back into the drawing, including across sheets, and bulk part, line class, and service edits work from the lists or a canvas multi-selection. Drag on a 300-symbol sheet: about 140 ms → 4 ms per step.
+>
+> Open items:
+> - The lists drawer is short, showing about 3 rows; make it resizable.
+> - Legacy requirement→component trace links are not migrated to drawing items on conversion.
+> - The Reviews page still shows a "Review workflows" placeholder.
+> - Requirement status and verification-method values are a fixed UI list; the backend stores free text.
+> - Tag uniqueness is per drawing, not per project.
+> - Run the acceptance test below with a real Excel-managed system.
 
 **Acceptance test for "better than Excel":** take a real Excel-managed system (valve list, line list, BoM, requirements). Time an engineer (a) importing it, (b) changing a line's design pressure and finding every affected part and requirement, and (c) producing a released BoM with a diff to the previous release. FSDP is ready when (a) takes no longer than the Excel setup and (b) and (c) are at least 5× faster, which matches the PRD targets of a BoM in under 5 minutes and impact analysis in under 1 minute.
