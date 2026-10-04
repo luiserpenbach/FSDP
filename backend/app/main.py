@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.api.auth_routes import auth_router
 from app.api.drawing_routes import drawing_router
 from app.api.routes import router
-from app.core.bootstrap import ensure_bootstrap_admin, warn_if_insecure_defaults
+from app.core.bootstrap import check_secret_key, ensure_bootstrap_admin
 from app.core.config import settings
 from app.core.security import get_current_user
 from app.db import get_db
@@ -19,7 +19,7 @@ from app.db import get_db
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    warn_if_insecure_defaults()
+    check_secret_key()
     ensure_bootstrap_admin()
     yield
 

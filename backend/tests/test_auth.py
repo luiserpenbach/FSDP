@@ -221,3 +221,27 @@ def test_change_history_lists_recent_events_with_actor(client: TestClient) -> No
     assert len(changes) >= 1
     assert all("summary" in change for change in changes)
     assert changes[0]["actor"] == TEST_USER_EMAIL
+
+
+def test_startup_refuses_default_secret_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.bootstrap import check_secret_key
+    from app.core.config import INSECURE_DEFAULT_SECRET_KEY, settings
+
+    monkeypatch.setattr(settings, "secret_key", INSECURE_DEFAULT_SECRET_KEY)
+    monkeypatch.setattr(settings, "allow_insecure_secret", False)
+    with pytest.raises(RuntimeError, match="FSDP_SECRET_KEY"):
+        check_secret_key()
+    with pytest.raises(RuntimeError, match="FSDP_SECRET_KEY"), TestClient(app):
+        pass
+
+    monkeypatch.setattr(settings, "secret_key", "   ")
+    with pytest.raises(RuntimeError, match="FSDP_SECRET_KEY"):
+        check_secret_key()
+
+    monkeypatch.setattr(settings, "secret_key", INSECURE_DEFAULT_SECRET_KEY)
+    monkeypatch.setattr(settings, "allow_insecure_secret", True)
+    check_secret_key()
+
+    monkeypatch.setattr(settings, "secret_key", "a-strong-unique-secret-for-this-test")
+    monkeypatch.setattr(settings, "allow_insecure_secret", False)
+    check_secret_key()

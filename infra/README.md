@@ -6,7 +6,8 @@ Two supported deployment shapes share one backend container image:
 2. **Internal server behind Tailscale** — full stack via `docker-compose.yml`, reachable only on the tailnet.
 
 Authentication is built in; both shapes require setting a strong `FSDP_SECRET_KEY` and the
-bootstrap admin credentials. See `backend/.env.example` for every backend variable.
+bootstrap admin credentials. Compose and the API both refuse to start without a non-default
+`FSDP_SECRET_KEY`. See `backend/.env.example` for every backend variable.
 
 ---
 

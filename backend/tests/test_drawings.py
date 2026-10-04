@@ -213,3 +213,24 @@ def test_sheet_export_pdf_png_and_svg(client: TestClient) -> None:
     assert scripted.status_code == 422
     not_svg = client.post(f"/sheets/{sheet_id}/export", json={"svg": "hello", "format": "pdf"})
     assert not_svg.status_code == 422
+
+
+def test_deleting_first_sheet_renumbers_remaining_sheets(client: TestClient) -> None:
+    """Renumbering must not collide on uq_drawing_sheet_no, whatever the row order (H7)."""
+    project_id = _project(client)
+    for attempt in range(20):
+        drawing = client.post(
+            f"/projects/{project_id}/drawings", json={"title": f"Renumber {attempt}"}
+        ).json()
+        drawing_id = drawing["id"]
+        first_id = drawing["sheets"][0]["id"]
+        second_id = client.post(f"/drawings/{drawing_id}/sheets", json={}).json()["id"]
+        third_id = client.post(f"/drawings/{drawing_id}/sheets", json={}).json()["id"]
+
+        removed = client.delete(f"/sheets/{first_id}")
+        assert removed.status_code == 204, removed.text
+        sheets = client.get(f"/drawings/{drawing_id}").json()["sheets"]
+        assert [(sheet["id"], sheet["sheet_no"]) for sheet in sheets] == [
+            (second_id, 1),
+            (third_id, 2),
+        ]

@@ -274,9 +274,9 @@ def _cell(value) -> str:
     return str(value)
 
 
-def _csv_safe(value: str) -> str:
-    # Guard spreadsheet formula injection when the CSV is opened in Excel.
-    if value.startswith(("=", "+", "-", "@", "\t", "\r")):
+def spreadsheet_safe(value):
+    # Guard formula injection when a CSV/XLSX export is opened in a spreadsheet.
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
         return f"'{value}"
     return value
 
@@ -285,11 +285,11 @@ def rows_to_csv(header: dict, columns: list[tuple[str, str]], rows: list[dict]) 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     for key, value in header.items():
-        writer.writerow([key.replace("_", " ").title(), _csv_safe(_cell(value))])
+        writer.writerow([key.replace("_", " ").title(), spreadsheet_safe(_cell(value))])
     writer.writerow([])
     writer.writerow([label for _, label in columns])
     for row in rows:
-        writer.writerow([_csv_safe(_cell(row.get(key))) for key, _ in columns])
+        writer.writerow([spreadsheet_safe(_cell(row.get(key))) for key, _ in columns])
     return buffer.getvalue()
 
 
@@ -299,7 +299,7 @@ def rows_to_xlsx(header: dict, columns: list[tuple[str, str]], rows: list[dict])
     sheet.title = (header.get("list") or "List")[:31]
     bold = Font(bold=True)
     for key, value in header.items():
-        sheet.append([key.replace("_", " ").title(), _cell(value)])
+        sheet.append([key.replace("_", " ").title(), spreadsheet_safe(_cell(value))])
         sheet.cell(row=sheet.max_row, column=1).font = bold
     sheet.append([])
     sheet.append([label for _, label in columns])
@@ -313,7 +313,9 @@ def rows_to_xlsx(header: dict, columns: list[tuple[str, str]], rows: list[dict])
     for row in rows:
         sheet.append(
             [
-                row.get(key) if isinstance(row.get(key), int | float) else _cell(row.get(key))
+                row.get(key)
+                if isinstance(row.get(key), int | float)
+                else spreadsheet_safe(_cell(row.get(key)))
                 for key, _ in columns
             ]
         )

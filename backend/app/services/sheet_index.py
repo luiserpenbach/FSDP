@@ -12,18 +12,19 @@ from sqlalchemy.orm import Session
 
 from app.models import Drawing, DrawingSheet, Part, SheetItem, SheetLine
 from app.schemas import SheetIndexIn
+from app.services.traceability import delete_trace_links_for_many
 
 ItemRow = tuple[SheetItem, DrawingSheet, Drawing]
 LineRow = tuple[SheetLine, DrawingSheet, Drawing]
 
 
 def replace_sheet_index(db: Session, sheet: DrawingSheet, index: SheetIndexIn) -> None:
-    """Replace the stored index rows of a sheet with the given ones."""
-    for existing in db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id)):
-        db.delete(existing)
-    for existing in db.scalars(select(SheetLine).where(SheetLine.sheet_id == sheet.id)):
-        db.delete(existing)
-    db.flush()
+    """Replace the stored index rows of a sheet with the given ones.
+
+    Rows are matched by item_id / line_id and updated in place so their ids, which
+    trace links reference, survive a save. Rows no longer on the sheet are deleted
+    together with their trace links.
+    """
     known_parts = {
         part_id
         for (part_id,) in db.execute(
@@ -31,6 +32,14 @@ def replace_sheet_index(db: Session, sheet: DrawingSheet, index: SheetIndexIn) -
                 Part.id.in_({item.part_id for item in index.items if item.part_id})
             )
         )
+    }
+    existing_items = {
+        row.item_id: row
+        for row in db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id))
+    }
+    existing_lines = {
+        row.line_id: row
+        for row in db.scalars(select(SheetLine).where(SheetLine.sheet_id == sheet.id))
     }
     seen_items: set[str] = set()
     for item in index.items:
@@ -40,14 +49,34 @@ def replace_sheet_index(db: Session, sheet: DrawingSheet, index: SheetIndexIn) -
         data = item.model_dump()
         if data["part_id"] not in known_parts:
             data["part_id"] = None
-        db.add(SheetItem(sheet_id=sheet.id, **data))
+        _upsert(db, existing_items.get(item.item_id), SheetItem, sheet.id, data)
     seen_lines: set[str] = set()
     for line in index.lines:
         if line.line_id in seen_lines:
             continue
         seen_lines.add(line.line_id)
-        db.add(SheetLine(sheet_id=sheet.id, **line.model_dump()))
+        _upsert(db, existing_lines.get(line.line_id), SheetLine, sheet.id, line.model_dump())
+
+    stale_items = [row for key, row in existing_items.items() if key not in seen_items]
+    stale_lines = [row for key, row in existing_lines.items() if key not in seen_lines]
+    delete_trace_links_for_many(
+        db,
+        [("sheet_item", row.id) for row in stale_items]
+        + [("sheet_line", row.id) for row in stale_lines],
+    )
+    for row in [*stale_items, *stale_lines]:
+        db.delete(row)
     db.flush()
+
+
+def _upsert(
+    db: Session, row: SheetItem | SheetLine | None, model: type, sheet_id: str, data: dict
+) -> None:
+    if row is None:
+        db.add(model(sheet_id=sheet_id, **data))
+        return
+    for field, value in data.items():
+        setattr(row, field, value)
 
 
 def drawing_index_rows(db: Session, drawings: list[Drawing]) -> tuple[list[ItemRow], list[LineRow]]:

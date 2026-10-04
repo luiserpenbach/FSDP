@@ -20,7 +20,7 @@ services:
     restart: unless-stopped
     environment:
       FSDP_DATABASE_URL: postgresql+psycopg://fsdp:${FSDP_DB_PASSWORD:-fsdp}@db:5432/fsdp
-      FSDP_SECRET_KEY: ${FSDP_SECRET_KEY:-dev-insecure-secret-key-change-me}
+      FSDP_SECRET_KEY: ${FSDP_SECRET_KEY:?set FSDP_SECRET_KEY}
       FSDP_SESSION_COOKIE_SECURE: ${FSDP_SESSION_COOKIE_SECURE:-false}
       FSDP_ADMIN_EMAIL: ${FSDP_ADMIN_EMAIL:-}
       FSDP_ADMIN_PASSWORD: ${FSDP_ADMIN_PASSWORD:-}

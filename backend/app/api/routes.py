@@ -87,9 +87,11 @@ from app.services.catalog import (
     sanitize_upload_filename,
 )
 from app.services.change_impact import get_change_impact
+from app.services.lists import spreadsheet_safe
 from app.services.traceability import (
     delete_trace_links_for,
     delete_trace_links_for_many,
+    drawing_trace_endpoints,
     get_trace_links,
 )
 
@@ -173,6 +175,8 @@ def _project_trace_endpoints(db: Session, project_id: str) -> list[tuple[str, st
         endpoints.extend(_system_trace_endpoints(db, system.id))
     for requirement in db.scalars(select(Requirement).where(Requirement.project_id == project_id)):
         endpoints.append(("requirement", requirement.id))
+    drawing_ids = db.scalars(select(Drawing.id).where(Drawing.project_id == project_id))
+    endpoints.extend(drawing_trace_endpoints(db, drawing_ids))
     return endpoints
 
 
@@ -1281,12 +1285,28 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
 }
 
 
+def _trace_object_project_id(obj: object) -> str | None:
+    """Project a trace endpoint belongs to; None for catalog parts, which are shared."""
+    if isinstance(obj, Project):
+        return obj.id
+    if isinstance(obj, FluidSystem | Drawing | Requirement):
+        return obj.project_id
+    if isinstance(obj, Diagram):
+        return obj.system.project_id
+    if isinstance(obj, ComponentInstance):
+        return obj.diagram.system.project_id
+    if isinstance(obj, SheetItem | SheetLine):
+        return obj.sheet.drawing.project_id
+    return None
+
+
 @router.post("/trace-links", response_model=TraceLinkRead, status_code=201)
 def create_trace_link(
     payload: TraceLinkCreate,
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> TraceLink:
+    project_ids: list[str | None] = []
     for kind, type_name, object_id in (
         ("source", payload.source_type, payload.source_id),
         ("target", payload.target_type, payload.target_id),
@@ -1300,7 +1320,11 @@ def create_trace_link(
                     + ", ".join(sorted(TRACE_OBJECT_MODELS))
                 ),
             )
-        require_model(db, model, object_id)
+        project_ids.append(_trace_object_project_id(require_model(db, model, object_id)))
+    if None not in project_ids and project_ids[0] != project_ids[1]:
+        raise HTTPException(
+            status_code=400, detail="Trace link endpoints belong to different projects"
+        )
 
     existing = db.scalar(
         select(TraceLink).where(
@@ -1483,8 +1507,15 @@ def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 def _bom_row_key(row: dict) -> str:
+    """Identity of a BoM row across snapshots, mirroring how services/bom.py rolls rows up."""
     if row.get("part_id"):
         return f"part:{row['part_id']}"
+    if row.get("kind") == "bulk":
+        # Tube rows roll up per (class or spec, size), fittings and tees per size; the
+        # description and unit name all of that. Line refs are shared across these rows.
+        return f"bulk:{row.get('unit')}|{row.get('description')}"
+    if row.get("symbol_key"):
+        return f"symbol:{row['symbol_key']}"
     tags = row.get("component_tags") or []
     return f"tag:{tags[0] if tags else row.get('description', '?')}"
 
@@ -1493,9 +1524,11 @@ def _bom_row_key(row: dict) -> str:
 def bom_diff(snapshot_id: str, against_id: str, db: Session = Depends(get_db)) -> dict:
     current = require_model(db, BomSnapshot, snapshot_id)
     baseline = require_model(db, BomSnapshot, against_id)
-    if current.diagram_id != baseline.diagram_id:
+    # Drawing snapshots have no diagram_id, so both sources must match.
+    if (current.diagram_id, current.drawing_id) != (baseline.diagram_id, baseline.drawing_id):
         raise HTTPException(
-            status_code=400, detail="BoM snapshots must belong to the same diagram to compare"
+            status_code=400,
+            detail="BoM snapshots must belong to the same diagram or drawing to compare",
         )
 
     current_rows = {_bom_row_key(row): row for row in current.rows}
@@ -1542,13 +1575,6 @@ BOM_CSV_FIELDS = [
 ]
 
 
-def csv_safe(value):
-    # Guard spreadsheet formula injection when the CSV is opened in Excel.
-    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
-        return f"'{value}"
-    return value
-
-
 @router.get("/bom/{snapshot_id}/csv")
 def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
     snapshot = require_model(db, BomSnapshot, snapshot_id)
@@ -1560,7 +1586,7 @@ def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
         for key in ("component_tags", "dnp_tags", "sheets"):
             if isinstance(record.get(key), list):
                 record[key] = "; ".join(str(entry) for entry in record[key])
-        writer.writerow({key: csv_safe(value) for key, value in record.items()})
+        writer.writerow({key: spreadsheet_safe(value) for key, value in record.items()})
 
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram_name).strip("-.").lower() or "bom"
     filename = f"bom-{slug}-rev{snapshot.revision}.csv"
