@@ -390,3 +390,40 @@ def test_part_usage_and_delete_guard_include_drawings(client: TestClient) -> Non
     assert client.delete(f"/drawings/{drawing['id']}").status_code == 204
     assert client.get(f"/parts/{part['id']}/usage").json()["drawing_items"] == []
     assert client.delete(f"/parts/{part['id']}").status_code == 204
+
+
+def test_xlsx_list_export_writes_formula_like_cells_as_text(client: TestClient) -> None:
+    """XLSX gets the same formula-injection guard as CSV (M3)."""
+    project_id = _project(client)
+    drawing = _drawing(client, project_id)
+    payload = '=HYPERLINK("https://evil.example","click")'
+    index = {
+        "items": [
+            {
+                "item_id": "hv",
+                "kind": "symbol",
+                "category": "valve",
+                "tag": payload,
+                "zone": "D-4",
+                "fields": {"service": "+1+1", "size": "-2", "line_number": "@SUM(A1)"},
+            }
+        ],
+        "lines": [],
+    }
+    client.put(f"/sheets/{drawing['sheets'][0]['id']}", json={"index": index})
+
+    response = client.get(f"/drawings/{drawing['id']}/lists/valve?format=xlsx")
+    assert response.status_code == 200
+    sheet = load_workbook(io.BytesIO(response.content)).active
+    cells = {cell.value: cell for row in sheet.iter_rows() for cell in row if cell.value}
+    assert payload not in cells
+    for value in (payload, "+1+1", "-2", "@SUM(A1)"):
+        cell = cells[f"'{value}"]
+        assert cell.data_type == "s"
+    assert all(cell.data_type != "f" for cell in cells.values())
+    # Numbers stay numeric.
+    assert cells[1].data_type == "n"
+
+    csv_text = client.get(f"/drawings/{drawing['id']}/lists/valve?format=csv").text
+    csv_rows = list(csv.reader(io.StringIO(csv_text)))
+    assert f"'{payload}" in [cell for row in csv_rows for cell in row]

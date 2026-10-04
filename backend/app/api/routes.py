@@ -87,6 +87,7 @@ from app.services.catalog import (
     sanitize_upload_filename,
 )
 from app.services.change_impact import get_change_impact
+from app.services.lists import spreadsheet_safe
 from app.services.traceability import (
     delete_trace_links_for,
     delete_trace_links_for_many,
@@ -1542,13 +1543,6 @@ BOM_CSV_FIELDS = [
 ]
 
 
-def csv_safe(value):
-    # Guard spreadsheet formula injection when the CSV is opened in Excel.
-    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
-        return f"'{value}"
-    return value
-
-
 @router.get("/bom/{snapshot_id}/csv")
 def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
     snapshot = require_model(db, BomSnapshot, snapshot_id)
@@ -1560,7 +1554,7 @@ def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
         for key in ("component_tags", "dnp_tags", "sheets"):
             if isinstance(record.get(key), list):
                 record[key] = "; ".join(str(entry) for entry in record[key])
-        writer.writerow({key: csv_safe(value) for key, value in record.items()})
+        writer.writerow({key: spreadsheet_safe(value) for key, value in record.items()})
 
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram_name).strip("-.").lower() or "bom"
     filename = f"bom-{slug}-rev{snapshot.revision}.csv"
