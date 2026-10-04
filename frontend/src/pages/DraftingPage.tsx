@@ -33,6 +33,7 @@ import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
 import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, Requirement, User } from "../types";
+import { useUnsavedChanges } from "../unsavedChanges";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
@@ -252,7 +253,12 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
-  const [editor, setEditor] = useState<Editor | null>(null);
+  // The editor is bound to the sheet it was loaded from. `sheetId` moves first
+  // on a switch; until the new sheet loads there is no editor, so Save, the BoM,
+  // and exports can never pair the old document with the new sheet id.
+  const [session, setSession] = useState<{ editor: Editor; sheetId: string } | null>(null);
+  const sessionEditor = session?.editor ?? null;
+  const editor = session && session.sheetId === sheetId ? session.editor : null;
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
@@ -290,13 +296,20 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const sheetSummary = drawing?.sheets.find((entry) => entry.id === sheetId) ?? null;
   const systemName = systems.find((system) => system.id === drawing?.system_id)?.name;
 
+  const projectIdRef = useRef(projectId);
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+
+  /** Reload the drawing list; resolves null (and changes nothing) if the project changed meanwhile. */
   const refreshDrawings = useCallback(
-    async (selectId?: string) => {
+    async (selectId?: string): Promise<Drawing[] | null> => {
       if (!projectId) {
         setDrawings([]);
         return [];
       }
       const list = await api.listDrawings(projectId);
+      if (projectIdRef.current !== projectId) return null;
       setDrawings(list);
       if (selectId) setDrawingId(selectId);
       return list;
@@ -309,14 +322,14 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     let cancelled = false;
     setDrawingId("");
     setSheetId("");
-    setEditor(null);
+    setSession(null);
     if (!projectId) {
       setDrawings([]);
       return;
     }
     refreshDrawings()
       .then((list) => {
-        if (cancelled) return;
+        if (cancelled || !list) return;
         const remembered = localStorage.getItem(`fsdp.drafting.drawing.${projectId}`);
         const pick = list.find((entry) => entry.id === remembered) ?? list[0];
         setDrawingId(pick?.id ?? "");
@@ -424,24 +437,24 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawing?.id, drawing?.sheets.length]);
 
-  // Load the sheet document into an editor session.
+  // Load the sheet document into an editor session. Only a sheet change
+  // reloads: a rebuilt registry (custom symbol metadata saved) is applied to
+  // the open editor below, keeping unsaved edits and undo history.
   useEffect(() => {
     let cancelled = false;
     if (!sheetId) {
-      setEditor(null);
+      setSession(null);
       return;
     }
+    const loadingSheetId = sheetId;
     setLoading(true);
     api
-      .getSheet(sheetId)
+      .getSheet(loadingSheetId)
       .then((sheet) => {
         if (cancelled) return;
         const document = withFrameTemplate(sheet.document as unknown as SchematicDocument, drawing?.frame_template ?? "basic");
         const store = new DocumentStore(document);
-        setEditor((previous) => {
-          previous?.dispose();
-          return new Editor(store, registry, { author: user.name, tagScheme });
-        });
+        setSession({ editor: new Editor(store, registry, { author: user.name, tagScheme }), sheetId: loadingSheetId });
       })
       .catch((error) => {
         if (!cancelled) notify(error instanceof Error ? error.message : "Could not open the sheet.", true);
@@ -453,7 +466,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetId, registry]);
+  }, [sheetId]);
+
+  useEffect(() => {
+    sessionEditor?.setRegistry(registry);
+  }, [sessionEditor, registry]);
 
   // Keep the document's frame template in step with the drawing setting.
   useEffect(() => {
@@ -462,7 +479,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     if (next !== editor.store.doc) editor.store.dispatch({ type: "sheet", sheet: next.sheet });
   }, [editor, drawing]);
 
-  useEffect(() => () => editor?.dispose(), [editor]);
+  useEffect(() => () => sessionEditor?.dispose(), [sessionEditor]);
 
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => {
@@ -472,12 +489,16 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     return () => window.removeEventListener("beforeunload", guard);
   }, [editor]);
 
+  // In-app navigation and sign-out ask before this page's unsaved sheet is dropped.
+  useUnsavedChanges("drafting", () => Boolean(editor?.store.dirty), { routeScoped: true });
+
   const context = useMemo(
     () => (drawing && sheetSummary ? buildDrawingContext(drawing, sheetSummary.sheet_no, sheetSummary.title, projectName, systemName) : undefined),
     [drawing, sheetSummary, projectName, systemName]
   );
 
   const save = useCallback(async (): Promise<boolean> => {
+    // `editor` is only set while it holds `sheetId`'s document (see `session`).
     if (!editor || !sheetId || !drawing) return false;
     try {
       const sheetNo = sheetSummary?.sheet_no ?? 1;
@@ -655,6 +676,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   }
 
   async function createDrawing(form: NewDrawingForm) {
+    // The created drawing opens in place of the current sheet.
+    if (!confirmDiscard()) return;
     try {
       let firstSheet: { document?: unknown; source_diagram_id?: string | null } | undefined;
       let title = form.title;
@@ -694,7 +717,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   }
 
   async function addSheet() {
-    if (!drawing) return;
+    // The new sheet opens in place of this one.
+    if (!drawing || !confirmDiscard()) return;
     try {
       const sheet = await api.createSheet(drawing.id, {});
       await refreshDrawings(drawing.id);
@@ -720,9 +744,9 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     if (!drawing || !window.confirm(`Delete drawing ${drawing.number} and all of its sheets?`)) return;
     try {
       await api.deleteDrawing(drawing.id);
-      setEditor(null);
+      setSession(null);
       const list = await refreshDrawings();
-      setDrawingId(list[0]?.id ?? "");
+      if (list) setDrawingId(list[0]?.id ?? "");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not delete the drawing.", true);
     }

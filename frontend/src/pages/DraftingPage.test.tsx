@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Diagram, Drawing, DrawingSheet, FluidSystem, Part, User } from "../types";
+import { Editor } from "../engine/editor";
+import { CUSTOM_LIBRARY } from "../engine/library";
+import type { Diagram, Drawing, DrawingSheet, FluidSystem, Part, PidSymbolDef, User } from "../types";
 
 const apiMock = vi.hoisted(() => ({
   listDrawings: vi.fn(),
@@ -505,5 +507,84 @@ describe("DraftingPage", () => {
     expect(body.drc.findings.map((finding) => finding.key)).toContain("open_port:hv:in");
     expect(body.drc.findings.find((finding) => finding.key === "requirement:r1:hv")?.requirementId).toBe("r1");
     expect(body.drc.checks).toEqual([{ requirementId: "r1", itemId: "hv", subject: "PT-3222", zone: expect.any(String), status: "fail", message: "AMB2-003 material brass is not one of 316L" }]);
+  });
+
+  it("binds the editor to its sheet so nothing can save the old document into the sheet being opened", async () => {
+    const sheet2: DrawingSheet = { ...sheet, id: "sh2", sheet_no: 2, title: "Vent", document: { ...sheet.document, items: [] } };
+    const pendingSheet2: Array<(value: DrawingSheet) => void> = [];
+    apiMock.getSheet.mockImplementation((id: string) =>
+      id === "sh2" ? new Promise<DrawingSheet>((resolve) => pendingSheet2.push(resolve)) : Promise.resolve(sheet)
+    );
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("tab", { name: "2" }));
+    expect(confirm).toHaveBeenCalledWith("Discard unsaved drafting changes?");
+    // Sheet 2 is still loading: sheet 1's editor is no longer offered, so there is no Save to click.
+    expect(screen.getByRole("tab", { name: "2" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("schematic-canvas")).not.toBeInTheDocument();
+    expect(screen.getByText("Opening sheet…")).toBeInTheDocument();
+
+    pendingSheet2.forEach((resolve) => resolve(sheet2));
+    const reopened = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(reopened.querySelector('[data-id="pt"]')).toBeNull());
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+    expect(apiMock.updateSheet).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("keeps the open sheet and its unsaved edits when custom symbol metadata changes", async () => {
+    const setRegistry = vi.spyOn(Editor.prototype, "setRegistry");
+    const widget: PidSymbolDef = { id: "cs1", name: "Widget", view_box: "0 0 20 20", svg: "<rect width='20' height='20'/>", ports: [], category: "custom", legend: "WIDGET", tag_prefix: "W" };
+    const page = (customSymbols: PidSymbolDef[]) => (
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={customSymbols} parts={parts} user={user} canWrite notify={vi.fn()} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page([widget]));
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    const sheetLoads = apiMock.getSheet.mock.calls.length;
+    // Saving symbol metadata refreshes the custom symbols, which rebuilds the registry.
+    rerender(page([{ ...widget, tag_prefix: "WX" }]));
+    await waitFor(() => {
+      const latest = setRegistry.mock.calls.at(-1)?.[0];
+      expect(latest?.resolve({ library: CUSTOM_LIBRARY, key: "cs1", version: 1 }).tagPrefix).toBe("WX");
+    });
+    // Applied to the open editor: the sheet was not reloaded and the edit is still unsaved.
+    expect(apiMock.getSheet).toHaveBeenCalledTimes(sheetLoads);
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    setRegistry.mockRestore();
+  });
+
+  it("ignores a drawing list that arrives after the project changed", async () => {
+    const otherDrawing: Drawing = { ...drawing, id: "dw2", project_id: "p2", number: "AMB2-9100", sheets: [{ id: "sh9", sheet_no: 1, title: null, source_diagram_id: null }] };
+    let resolveFirstProject!: (value: Drawing[]) => void;
+    apiMock.listDrawings.mockImplementation((projectId: string) =>
+      projectId === "p1" ? new Promise<Drawing[]>((resolve) => (resolveFirstProject = resolve)) : Promise.resolve([otherDrawing])
+    );
+    const page = (projectId: string) => (
+      <MemoryRouter>
+        <DraftingPage projectId={projectId} projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[]} parts={parts} user={user} canWrite notify={vi.fn()} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page("p1"));
+    rerender(page("p2"));
+    await waitFor(() => expect(screen.getByLabelText("Drawing")).toHaveValue("dw2"));
+
+    resolveFirstProject([drawing]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByLabelText("Drawing")).toHaveValue("dw2");
+    expect(screen.queryByRole("option", { name: /AMB2-9003/ })).not.toBeInTheDocument();
   });
 });
