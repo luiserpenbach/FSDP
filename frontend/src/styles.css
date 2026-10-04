@@ -3330,3 +3330,64 @@ button.ribbonButton.active {
   gap: 6px 10px;
   margin: 0;
 }
+
+/* ---------- DataGrid rollout: line classes and BoM ---------- */
+
+.lineClassPanel {
+  grid-column: 1 / -1;
+}
+
+.lineClassAdd {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  margin: 0;
+}
+
+.lineClassAdd input {
+  font-size: 12.5px;
+  margin: 0;
+  padding: 4px 8px;
+  width: 160px;
+}
+
+.lineClassStatus {
+  margin-top: 8px;
+}
+
+.lineClassStatus .hint {
+  margin: 0;
+}
+
+.lineClassRowErrors {
+  color: var(--red);
+  font-size: 12.5px;
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.lineClassCsv {
+  margin-top: 10px;
+}
+
+.lineClassCsv summary {
+  color: var(--text-2);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.bomFilter {
+  font-size: 12.5px;
+  margin: 0;
+  padding: 4px 8px;
+  width: auto;
+}
+
+.dataGrid .dgRow.dgRowCurrent,
+.dataGrid .dgRow.dgRowCurrent .dgFrozen {
+  background: var(--accent-soft);
+}
+
+.dataGrid .dgRow.dgRowCurrent .dgCell:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
