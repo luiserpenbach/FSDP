@@ -175,4 +175,48 @@ describe("PartsCatalog", () => {
     expect(click).toHaveBeenCalled();
     click.mockRestore();
   });
+
+  it("shows a failed delete on the page, not only inside the closed edit modal", async () => {
+    stubCatalogFetch((path, init) =>
+      path === "/parts/p1" && init?.method === "DELETE" ? jsonResponse({ detail: "Part is used in 2 BoM snapshots." }, 409) : null
+    );
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<CatalogHarness initialId="p1" />);
+
+    expect(await screen.findByText("Part details")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Part is used in 2 BoM snapshots.");
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss error" }));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it("does not show a previously selected part's documents after the selection changes", async () => {
+    const otherPart: Part = { ...samplePart, id: "p2", part_number: "AMPH-011", description: "Regulator" };
+    let resolveFirstDocuments!: (response: Promise<Response>) => void;
+    stubCatalogFetch((path) => {
+      if (path === "/parts/p1/documents") return new Promise<Response>((resolve) => (resolveFirstDocuments = resolve));
+      if (path === "/parts/p2/usage") return jsonResponse({ components: [], bom_snapshots: [] });
+      if (path === "/parts/p2/documents") return jsonResponse([]);
+      return null;
+    });
+    function TwoPartHarness() {
+      const [selectedPartId, setSelectedPartId] = useState("p1");
+      return <PartsCatalog parts={[samplePart, otherPart]} selectedPartId={selectedPartId} onSelectPart={setSelectedPartId} onPartsChanged={() => undefined} />;
+    }
+    render(<TwoPartHarness />);
+
+    expect(await screen.findByText("Part details")).toBeInTheDocument();
+    await waitFor(() => expect(resolveFirstDocuments).toBeDefined());
+    fireEvent.click(screen.getByText("AMPH-011"));
+    await waitFor(() => expect(screen.getByText("Regulator", { selector: ".catalogOverview *" })).toBeInTheDocument());
+
+    resolveFirstDocuments(
+      jsonResponse([{ id: "doc-1", part_id: "p1", title: "Solenoid datasheet", kind: "datasheet", original_filename: "solenoid.pdf" }])
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByText("solenoid.pdf")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+  });
 });

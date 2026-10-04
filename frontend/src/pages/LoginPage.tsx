@@ -4,7 +4,8 @@ import { Brand } from "../components/AppShell";
 import { FormError, TextInput } from "../components/ui";
 import type { User } from "../types";
 
-export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
+/** `notice` replaces the default hint, e.g. to explain an expired session. */
+export function LoginPage({ onLogin, notice }: { onLogin: (user: User) => void; notice?: string }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -29,7 +30,7 @@ export function LoginPage({ onLogin }: { onLogin: (user: User) => void }) {
         <form className="loginCard" onSubmit={submit}>
           <Brand />
           <h1>Sign in</h1>
-          <p className="hint">Use your FSDP account. Ask an administrator if you need one.</p>
+          <p className="hint">{notice ?? "Use your FSDP account. Ask an administrator if you need one."}</p>
           <TextInput label="Email" value={email} onChange={setEmail} />
           <TextInput label="Password" type="password" value={password} onChange={setPassword} />
           <FormError message={error} />

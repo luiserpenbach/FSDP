@@ -60,7 +60,7 @@ import {
 import { EditorSettingsContext, type LabelMode } from "./components/pid/settings";
 import { SymbolEditorModal } from "./components/pid/SymbolEditorModal";
 import { PanelResizer, useStoredWidth } from "./components/resizable";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, RouterProvider, Routes, createBrowserRouter, useBlocker, useLocation } from "react-router-dom";
 import { api, bomCsvUrl, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
 import { DataTable, FormError, Panel, Select, StatusPill, SummaryCard, TextArea, TextInput } from "./components/ui";
@@ -71,6 +71,7 @@ import { PartsCatalog } from "./pages/PartsCatalog";
 import { DraftingPage } from "./pages/DraftingPage";
 import { TagSchemePanel } from "./pages/TagSchemePanel";
 import { LineClassPanel } from "./pages/LineClassPanel";
+import { UnsavedChangesContext, createUnsavedChangesRegistry, unsavedPrompt, useUnsavedChanges, useUnsavedChangesRegistry } from "./unsavedChanges";
 import type { BomDiff, BomReadiness, BomSnapshot, ChangeEvent as ChangeLogEvent, ComponentInstance, Diagram, Drawing, FluidSystem, Impact, Part, PidSymbolDef, Project, ProjectBom, Requirement, RequirementConstraintRead, TraceLink, User, VerificationMatrix } from "./types";
 
 /** Loose union of the data carried by the canvas node types. */
@@ -319,20 +320,32 @@ function normalizeOrthogonalEdge(edge: Edge): Edge<OrthogonalEdgeData> {
   };
 }
 
-export function App() {
-  return (
-    <BrowserRouter>
-      <AuthGate />
-    </BrowserRouter>
-  );
+export type AppRouter = ReturnType<typeof createBrowserRouter>;
+
+/**
+ * A data router, so the workspace can block in-app navigation (useBlocker)
+ * while an editor holds unsaved work; the workspace's own <Routes> render
+ * under the catch-all route.
+ */
+export function createAppRouter(): AppRouter {
+  return createBrowserRouter([{ path: "*", element: <AuthGate /> }]);
+}
+
+export function App({ router }: { router?: AppRouter }) {
+  const [appRouter] = useState(() => router ?? createAppRouter());
+  return <RouterProvider router={appRouter} />;
 }
 
 function AuthGate() {
   const [user, setUser] = useState<User | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  // A 401 mid-session shows the login form over the still-mounted workspace,
+  // so signing in again keeps unsaved drafting and diagram edits.
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const [unsaved] = useState(createUnsavedChangesRegistry);
 
   useEffect(() => {
-    setUnauthorizedHandler(() => setUser(null));
+    setUnauthorizedHandler(() => setSessionExpired(true));
     api
       .me()
       .then(setUser)
@@ -341,10 +354,18 @@ function AuthGate() {
     return () => setUnauthorizedHandler(null);
   }, []);
 
+  function signIn(next: User) {
+    setSessionExpired(false);
+    setUser(next);
+  }
+
   async function signOut() {
+    const pending = unsaved.pending();
+    if (pending.length && !window.confirm(unsavedPrompt(pending, "Sign out"))) return;
     try {
       await api.logout();
     } finally {
+      setSessionExpired(false);
       setUser(null);
     }
   }
@@ -357,9 +378,24 @@ function AuthGate() {
     );
   }
   if (!user) {
-    return <LoginPage onLogin={setUser} />;
+    return <LoginPage onLogin={signIn} />;
   }
-  return <WorkspaceApp user={user} onSignOut={() => void signOut()} />;
+  return (
+    <UnsavedChangesContext.Provider value={unsaved}>
+      {/* Keyed by account: signing back in as someone else starts a fresh workspace. */}
+      <div inert={sessionExpired}>
+        <WorkspaceApp key={user.id} user={user} onSignOut={() => void signOut()} />
+      </div>
+      {sessionExpired && (
+        <div className="sessionExpiredOverlay" role="dialog" aria-modal="true" aria-label="Session expired">
+          <LoginPage
+            onLogin={signIn}
+            notice="Your session has expired. Sign in again to continue; unsaved work is kept."
+          />
+        </div>
+      )}
+    </UnsavedChangesContext.Provider>
+  );
 }
 
 function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }) {
@@ -463,6 +499,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   const diagramLoadGeneration = useRef(0);
   const selectedDiagramIdRef = useRef(selectedDiagramId);
   selectedDiagramIdRef.current = selectedDiagramId;
+  // Current selections for async actions: a response for a previous selection
+  // must not overwrite what is on screen now.
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  selectedProjectIdRef.current = selectedProjectId;
+  const selectedRequirementIdRef = useRef(selectedRequirementId);
+  selectedRequirementIdRef.current = selectedRequirementId;
+  const selectedBomIdRef = useRef(selectedBomId);
+  selectedBomIdRef.current = selectedBomId;
   const busyCountRef = useRef(0);
   // Bumped on every local edit so an in-flight save cannot clear dirty after
   // newer canvas changes that were not included in the saved payload.
@@ -471,6 +515,22 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     graphDirtyGeneration.current += 1;
     setGraphDirty(true);
   }, []);
+
+  // The legacy canvas state lives here and survives route changes, so only
+  // sign-out asks about it; editors that unmount with their page (Drafting)
+  // register as route-scoped and block in-app navigation while dirty.
+  useUnsavedChanges("diagram", () => graphDirty);
+  const unsaved = useUnsavedChangesRegistry();
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      currentLocation.pathname !== nextLocation.pathname && unsaved.pending({ routeScoped: true }).length > 0
+  );
+  useEffect(() => {
+    if (blocker.state !== "blocked") return;
+    const pending = unsaved.pending({ routeScoped: true });
+    if (!pending.length || window.confirm(unsavedPrompt(pending, "Leave this page"))) blocker.proceed();
+    else blocker.reset();
+  }, [blocker, unsaved]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
@@ -591,30 +651,46 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
   useEffect(() => {
     setBomDiff(null);
     setDiffAgainstId("");
-    if (!selectedBomId) {
-      setBomReadiness(null);
-      return;
-    }
+    // Never show the previous snapshot's readiness under the new one.
+    setBomReadiness(null);
+    if (!selectedBomId) return;
+    let cancelled = false;
     api
       .getBomReadiness(selectedBomId)
-      .then(setBomReadiness)
-      .catch(() => setBomReadiness(null));
+      .then((readiness) => {
+        if (!cancelled) setBomReadiness(readiness);
+      })
+      .catch(() => {
+        if (!cancelled) setBomReadiness(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedBomId]);
 
   useEffect(() => {
-    if (!selectedRequirementId) {
-      setTraceLinks([]);
-      return;
-    }
+    // Clear first: the previous requirement's links (and their Remove
+    // buttons) must not be shown under the newly selected requirement.
+    setTraceLinks([]);
+    if (!selectedRequirementId) return;
+    let cancelled = false;
     api
       .listTraceLinks("requirement", selectedRequirementId)
-      .then(setTraceLinks)
-      .catch(() => setTraceLinks([]));
+      .then((links) => {
+        if (!cancelled) setTraceLinks(links);
+      })
+      .catch(() => {
+        if (!cancelled) setTraceLinks([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedRequirementId]);
 
   // Drawings of the project (trace-link targets) and the verification matrix.
   const refreshVerification = useCallback(async (projectId: string) => {
     const [nextDrawings, matrix] = await Promise.all([api.listDrawings(projectId), api.getVerificationMatrix(projectId)]);
+    if (selectedProjectIdRef.current !== projectId) return;
     setDrawings(nextDrawings);
     setVerificationMatrix(matrix);
   }, []);
@@ -624,11 +700,23 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setVerificationMatrix(null);
       return;
     }
-    refreshVerification(selectedProjectId).catch(() => {
-      setDrawings([]);
-      setVerificationMatrix(null);
-    });
-  }, [selectedProjectId, requirements, refreshVerification]);
+    let cancelled = false;
+    const projectId = selectedProjectId;
+    Promise.all([api.listDrawings(projectId), api.getVerificationMatrix(projectId)])
+      .then(([nextDrawings, matrix]) => {
+        if (cancelled) return;
+        setDrawings(nextDrawings);
+        setVerificationMatrix(matrix);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDrawings([]);
+        setVerificationMatrix(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProjectId, requirements]);
 
   // Mark nodes that have a placed component with a badge.
   useEffect(() => {
@@ -974,7 +1062,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setSelectedEdgeId("");
     markGraphDirty();
     return true;
-  }, [recordHistory, setEdges, setNodes]);
+  }, [markGraphDirty, recordHistory, setEdges, setNodes]);
 
   const rotateNodeById = useCallback(
     (id: string) => {
@@ -988,7 +1076,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       );
       markGraphDirty();
     },
-    [recordHistory, setNodes]
+    [markGraphDirty, recordHistory, setNodes]
   );
 
   const duplicateNodeById = useCallback(
@@ -1009,7 +1097,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       setSelectedNodeId(copy.id);
       markGraphDirty();
     },
-    [recordHistory, setNodes]
+    [markGraphDirty, recordHistory, setNodes]
   );
 
   const updateNodeDataById = useCallback(
@@ -1020,7 +1108,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       );
       markGraphDirty();
     },
-    [recordHistory, setNodes]
+    [markGraphDirty, recordHistory, setNodes]
   );
 
   const updateEdgeFromToolbar = useCallback(
@@ -1048,7 +1136,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
       );
       markGraphDirty();
     },
-    [recordHistory, setEdges]
+    [markGraphDirty, recordHistory, setEdges]
   );
 
   const handleNodeDragStart = useCallback(
@@ -1154,8 +1242,14 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     setSelectedEdgeId("");
   }
 
+  // The legacy canvas shortcuts act on state that outlives its page, so they
+  // only listen on /diagrams (Drafting has its own undo/delete), and they
+  // leave alone keys another handler has already consumed.
+  const onDiagramsRoute = location.pathname === "/diagrams";
   useEffect(() => {
+    if (!onDiagramsRoute) return;
     function handleKeydown(event: KeyboardEvent) {
+      if (event.defaultPrevented) return;
       if (event.key === "Escape") {
         setPlacementTool(null);
         setContextMenu(null);
@@ -1184,7 +1278,7 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     }
     window.addEventListener("keydown", handleKeydown);
     return () => window.removeEventListener("keydown", handleKeydown);
-  }, [deleteSelection, redo, undo]);
+  }, [deleteSelection, onDiagramsRoute, redo, undo]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -1690,19 +1784,27 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
     });
   }
 
+  /** Reload a requirement's trace links unless the selection moved on meanwhile. */
+  async function reloadTraceLinks(requirementId: string) {
+    const links = await api.listTraceLinks("requirement", requirementId);
+    if (selectedRequirementIdRef.current === requirementId) setTraceLinks(links);
+  }
+
   function linkRequirementToComponent() {
     if (!selectedRequirement || !selectedComponent) return;
+    const requirementId = selectedRequirement.id;
     void runAction("Linked requirement.", async () => {
-      await api.createTraceLink({ source_type: "requirement", source_id: selectedRequirement.id, target_type: "component", target_id: selectedComponent.id, link_type: "satisfied_by" });
-      setTraceLinks(await api.listTraceLinks("requirement", selectedRequirement.id));
+      await api.createTraceLink({ source_type: "requirement", source_id: requirementId, target_type: "component", target_id: selectedComponent.id, link_type: "satisfied_by" });
+      await reloadTraceLinks(requirementId);
     }, "traceLink");
   }
 
   function linkRequirementToDrawing() {
     if (!selectedRequirement || !selectedDrawingId) return;
+    const requirementId = selectedRequirement.id;
     void runAction("Linked requirement to drawing.", async () => {
-      await api.createTraceLink({ source_type: "requirement", source_id: selectedRequirement.id, target_type: "drawing", target_id: selectedDrawingId, link_type: "verified_by" });
-      setTraceLinks(await api.listTraceLinks("requirement", selectedRequirement.id));
+      await api.createTraceLink({ source_type: "requirement", source_id: requirementId, target_type: "drawing", target_id: selectedDrawingId, link_type: "verified_by" });
+      await reloadTraceLinks(requirementId);
       await refreshVerification(selectedRequirement.project_id);
     }, "traceLink");
   }
@@ -1725,36 +1827,50 @@ function WorkspaceApp({ user, onSignOut }: { user: User; onSignOut: () => void }
 
   function generateBom() {
     if (!selectedDiagram) return;
+    const diagramId = selectedDiagram.id;
+    const projectId = selectedProjectId;
     void runAction("Generated BoM snapshot.", async () => {
-      const snapshot = await api.generateBom(selectedDiagram.id);
-      const snapshots = await api.listDiagramBoms(selectedDiagram.id);
-      setBomSnapshots(snapshots);
-      setSelectedBomId(snapshot.id);
-      setProjectBoms(selectedProjectId ? await api.listProjectBoms(selectedProjectId) : []);
+      const snapshot = await api.generateBom(diagramId);
+      const snapshots = await api.listDiagramBoms(diagramId);
+      // The snapshot list belongs to the diagram that was open when Generate was clicked.
+      if (selectedDiagramIdRef.current === diagramId) {
+        setBomSnapshots(snapshots);
+        setSelectedBomId(snapshot.id);
+      }
+      await reloadProjectBoms(projectId);
     });
+  }
+
+  async function reloadProjectBoms(projectId: string) {
+    const next = projectId ? await api.listProjectBoms(projectId) : [];
+    if (selectedProjectIdRef.current === projectId) setProjectBoms(next);
   }
 
   function setBomStatus(status: string) {
     if (!bom) return;
+    const projectId = selectedProjectId;
     void runAction(`BoM revision ${bom.revision} marked ${status}.`, async () => {
       const updated = await api.setBomStatus(bom.id, status);
       setBomSnapshots((current) => current.map((snapshot) => (snapshot.id === updated.id ? updated : snapshot)));
-      setProjectBoms(selectedProjectId ? await api.listProjectBoms(selectedProjectId) : []);
+      await reloadProjectBoms(projectId);
     });
   }
 
   function runBomDiff() {
     if (!bom || !diffAgainstId) return;
+    const bomId = bom.id;
     void runAction("Compared BoM revisions.", async () => {
-      setBomDiff(await api.getBomDiff(bom.id, diffAgainstId));
+      const diff = await api.getBomDiff(bomId, diffAgainstId);
+      if (selectedBomIdRef.current === bomId) setBomDiff(diff);
     });
   }
 
   function removeTraceLink(linkId: string) {
     if (!selectedRequirement) return;
+    const requirementId = selectedRequirement.id;
     void runAction("Removed trace link.", async () => {
       await api.deleteTraceLink(linkId);
-      setTraceLinks(await api.listTraceLinks("requirement", selectedRequirement.id));
+      await reloadTraceLinks(requirementId);
     });
   }
 

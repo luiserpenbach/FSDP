@@ -336,15 +336,45 @@ export function PartsCatalog({
     void api.getCatalogSettings().then(setCatalogSettings).catch(() => undefined);
   }, []);
 
+  // Keyed by id, and responses for a part that is no longer selected are
+  // dropped: another part's documents (and their Remove buttons) must never
+  // show under the current one.
+  const selectedId = selectedPart?.id ?? "";
+  const selectedIdRef = useRef(selectedId);
   useEffect(() => {
-    if (!selectedPart) {
-      setUsage(null);
-      setDocuments([]);
-      return;
-    }
-    void api.getPartUsage(selectedPart.id).then(setUsage).catch(() => setUsage(null));
-    void api.listPartDocuments(selectedPart.id).then(setDocuments).catch(() => setDocuments([]));
-  }, [selectedPart]);
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
+
+  useEffect(() => {
+    setUsage(null);
+    setDocuments([]);
+    if (!selectedId) return;
+    let cancelled = false;
+    api
+      .getPartUsage(selectedId)
+      .then((next) => {
+        if (!cancelled) setUsage(next);
+      })
+      .catch(() => {
+        if (!cancelled) setUsage(null);
+      });
+    api
+      .listPartDocuments(selectedId)
+      .then((next) => {
+        if (!cancelled) setDocuments(next);
+      })
+      .catch(() => {
+        if (!cancelled) setDocuments([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
+  async function reloadDocuments(partId: string) {
+    const next = await api.listPartDocuments(partId);
+    if (selectedIdRef.current === partId) setDocuments(next);
+  }
 
   async function run(message: string, work: () => Promise<void>) {
     setBusy(true);
@@ -443,9 +473,10 @@ export function PartsCatalog({
   function onUpload(fileList: FileList | null) {
     const file = fileList?.[0];
     if (!file || !selectedPart) return;
+    const partId = selectedPart.id;
     void run("Uploaded document.", async () => {
-      await api.uploadPartDocument(selectedPart.id, file, file.name, uploadKind);
-      setDocuments(await api.listPartDocuments(selectedPart.id));
+      await api.uploadPartDocument(partId, file, file.name, uploadKind);
+      await reloadDocuments(partId);
     });
   }
 
@@ -488,6 +519,15 @@ export function PartsCatalog({
           </button>
         </div>
       </header>
+      {/* The edit modal shows its own errors; delete, obsolete, and document failures report here. */}
+      {error && !editorOpen && (
+        <div className="pageError" role="alert">
+          <span>{error}</span>
+          <button type="button" className="modalClose" aria-label="Dismiss error" onClick={() => setError("")}>
+            ×
+          </button>
+        </div>
+      )}
       <section className="catalogWorkspace">
       <article className="panel catalogLibrary">
         <div className="catalogTableToolbar">
@@ -672,7 +712,7 @@ export function PartsCatalog({
                                 onClick={() =>
                                   void run("Removed document.", async () => {
                                     await api.deletePartDocument(selectedPart.id, doc.id);
-                                    setDocuments(await api.listPartDocuments(selectedPart.id));
+                                    await reloadDocuments(selectedPart.id);
                                   })
                                 }
                               >

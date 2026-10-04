@@ -845,6 +845,26 @@ tr.selectedRow:hover {
   padding: 7px 10px;
 }
 
+/* Dismissible page-level error, for failures outside any open form. */
+.pageError {
+  align-items: center;
+  background: var(--red-soft);
+  border: 1px solid #ecc8c5;
+  border-radius: var(--radius-sm);
+  color: var(--red-deep);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 13px;
+  gap: 10px;
+  justify-content: space-between;
+  margin: 0 0 10px;
+  padding: 7px 10px;
+}
+
+.pageError .modalClose {
+  color: inherit;
+}
+
 .hint {
   color: var(--text-3);
   font-size: 13px;
@@ -2725,6 +2745,14 @@ span.symbolListPendingName.untitled {
 
 .authScreen > .hint {
   color: #93a5bb;
+}
+
+/* Sign-in over the still-mounted workspace after a 401, so unsaved work survives. */
+.sessionExpiredOverlay {
+  inset: 0;
+  overflow: auto;
+  position: fixed;
+  z-index: 100;
 }
 
 .loginPanel {

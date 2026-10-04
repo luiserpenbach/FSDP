@@ -173,6 +173,13 @@ export class Editor {
     return () => this.listeners.delete(listener);
   }
 
+  /** Swap in a rebuilt registry (custom symbol metadata changed) without reloading the document or its undo history. */
+  setRegistry(registry: SymbolRegistry): void {
+    if (registry === this.registry) return;
+    (this as { registry: SymbolRegistry }).registry = registry;
+    this.onDocumentChanged();
+  }
+
   private onDocumentChanged(): void {
     this.index = new SpatialIndex(this.store.doc, this.registry);
     this.ports = indexPorts(this.store.doc, this.registry);

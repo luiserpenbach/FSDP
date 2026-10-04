@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
@@ -184,6 +184,52 @@ const COMPONENT_B = {
   tag: "V-B",
   quantity: 1,
   properties: { node_external_id: "valve-b" },
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
+
+const DRAWING = {
+  id: "dw1",
+  project_id: "p1",
+  system_id: "s1",
+  number: "AMB2-9003",
+  title: "HELIUM PANEL",
+  size: "A3",
+  units: "mm",
+  discipline: "P&ID",
+  status: "working",
+  frame_template: "basic",
+  fields: {},
+  notes: [],
+  sheets: [{ id: "sh1", sheet_no: 1, title: null, source_diagram_id: null }],
+  revisions: [],
+  created_at: "2026-01-01T00:00:00Z",
+  updated_at: "2026-01-01T00:00:00Z"
+};
+const DRAWING_SHEET = {
+  id: "sh1",
+  drawing_id: "dw1",
+  sheet_no: 1,
+  title: null,
+  source_diagram_id: null,
+  document: {
+    schemaVersion: 1,
+    sheet: { size: "A3", orientation: "landscape", frame: { kind: "basic", columns: 4, rows: 3, margin: 10 } },
+    layers: [],
+    items: [
+      {
+        id: "pt",
+        kind: "symbol",
+        layer: "symbols",
+        symbol: { library: "fsdp", key: "instrument", version: 1 },
+        position: { x: 100, y: 100 },
+        rotation: 0,
+        tag: "PT-1",
+        fields: {}
+      }
+    ],
+    meta: { grid: 2.5 }
+  },
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z"
 };
@@ -739,5 +785,153 @@ describe("App", () => {
     expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Discard them?");
     expect(createdSystem).toBe(false);
     confirmSpy.mockRestore();
+  });
+
+  it("asks before signing out discards unsaved diagram edits", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const fetchMock = mockWorkspaceFetch();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await openDirtyDiagram();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(confirmSpy).toHaveBeenCalledWith("You have unsaved diagram changes. Sign out and discard them?");
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/auth/logout"))).toBe(false);
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it("keeps the workspace and its unsaved edits behind a sign-in overlay when the session expires", async () => {
+    const base = mockWorkspaceFetch();
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const path = new URL(String(input), "http://localhost").pathname;
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (path === "/diagrams/d1/graph" && method === "PUT") return jsonResponse({ detail: "Not authenticated" }, 401);
+      if (path === "/auth/login" && method === "POST") return jsonResponse(TEST_USER);
+      return base(input, init);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await openDirtyDiagram();
+    fireEvent.click(screen.getByRole("button", { name: "Save graph" }));
+
+    const overlay = await screen.findByRole("dialog", { name: "Session expired" });
+    expect(overlay).toHaveTextContent("Your session has expired.");
+    // The workspace stays mounted (inert) underneath, with the edit still pending.
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+
+    fireEvent.change(within(overlay).getByLabelText("Email"), { target: { value: TEST_USER.email } });
+    fireEvent.change(within(overlay).getByLabelText("Password"), { target: { value: "secret-password" } });
+    fireEvent.click(within(overlay).getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Session expired" })).not.toBeInTheDocument());
+    expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save graph" })).not.toBeDisabled();
+  });
+
+  it("asks before leaving the Drafting page with an unsaved sheet", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const base = mockWorkspaceFetch();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/projects/p1/drawings") return jsonResponse([DRAWING]);
+        if (path === "/sheets/sh1") return jsonResponse(DRAWING_SHEET);
+        if (path === "/sheets/sh1/drc") return jsonResponse({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
+        if (path === "/projects/p1/tag-scheme") return jsonResponse({ project_id: "p1", scheme: null });
+        if (path === "/projects/p1/line-classes" || path === "/symbols") return jsonResponse([]);
+        return base(input, init);
+      })
+    );
+
+    render(<App />);
+    await waitForWorkspace();
+    fireEvent.click(screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/drafting"]')!);
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    const partsLink = screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/parts"]')!;
+    fireEvent.click(partsLink);
+    await waitFor(() =>
+      expect(confirmSpy).toHaveBeenCalledWith("You have unsaved drafting changes. Leave this page and discard them?")
+    );
+    expect(screen.getByRole("heading", { level: 1, name: "Drafting" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+
+    confirmSpy.mockReturnValue(true);
+    fireEvent.click(partsLink);
+    expect(await screen.findByRole("heading", { level: 1, name: "Parts" })).toBeInTheDocument();
+    confirmSpy.mockRestore();
+  });
+
+  it("only handles legacy canvas shortcuts on the Diagrams page, and not keys already handled", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.stubGlobal("fetch", mockWorkspaceFetch());
+    const primaryNav = () => screen.getByRole("navigation", { name: "Primary navigation" });
+
+    const rotor = () => document.querySelector<HTMLElement>(".pidGlyphRotor")!;
+
+    // Rotates Valve A by 90 degrees: one undoable step.
+    await openDirtyDiagram();
+    expect(rotor().style.transform).toBe("rotate(90deg)");
+
+    fireEvent.click(primaryNav().querySelector('a[href="/parts"]')!);
+    expect(await screen.findByRole("heading", { level: 1, name: "Parts" })).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+
+    fireEvent.click(primaryNav().querySelector('a[href="/diagrams"]')!);
+    expect(await screen.findByRole("heading", { level: 1, name: "Diagrams" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Valve A")).toBeInTheDocument());
+    expect(rotor().style.transform).toBe("rotate(90deg)");
+
+    // A handler that already consumed the key wins.
+    const consume = (event: KeyboardEvent) => event.preventDefault();
+    window.addEventListener("keydown", consume, { capture: true });
+    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+    window.removeEventListener("keydown", consume, { capture: true });
+    expect(rotor().style.transform).toBe("rotate(90deg)");
+
+    fireEvent.keyDown(document.body, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(rotor().style.transform).toBe(""));
+    // Leaving and returning to Diagrams never prompts: the legacy canvas state outlives the page.
+    expect(confirmSpy).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it("does not show a previous requirement's trace links after the selection changes", async () => {
+    let resolveFirstLinks!: (body: unknown) => void;
+    const base = mockWorkspaceFetch();
+    const requirement = (id: string, key: string) => ({ id, project_id: "p1", key, title: `Requirement ${key}`, text: "", requirement_type: "safety", verification_method: null, status: "draft", constraint: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input), "http://localhost").pathname;
+        if (path === "/projects/p1/requirements") return jsonResponse([requirement("r1", "REQ-1"), requirement("r2", "REQ-2")]);
+        if (path === "/objects/requirement/r1/trace") {
+          return new Promise<unknown>((resolve) => (resolveFirstLinks = resolve)).then((body) => jsonResponse(body));
+        }
+        if (path === "/objects/requirement/r2/trace") return jsonResponse([]);
+        return base(input, init);
+      })
+    );
+
+    render(<App />);
+    await waitForWorkspace();
+    fireEvent.click(screen.getByRole("navigation", { name: "Primary navigation" }).querySelector('a[href="/requirements"]')!);
+    expect(await screen.findByRole("heading", { level: 1, name: "Requirements" })).toBeInTheDocument();
+    await waitFor(() => expect(resolveFirstLinks).toBeDefined());
+
+    fireEvent.click(screen.getAllByText("REQ-2")[0]!);
+    expect(await screen.findByText("No trace links for REQ-2 yet.")).toBeInTheDocument();
+
+    resolveFirstLinks([{ id: "link-1", source_type: "requirement", source_id: "r1", target_type: "component", target_id: "c-a", link_type: "satisfied_by", created_at: "2026-01-01T00:00:00Z" }]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(screen.getByText("No trace links for REQ-2 yet.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
   });
 });
