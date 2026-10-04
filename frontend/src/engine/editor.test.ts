@@ -164,6 +164,27 @@ describe("editor tags and shortcuts", () => {
     expect((store.doc.items.find((item) => item.id === again) as SymbolItem).tag).toBe("PT 3225");
   });
 
+  it("leaves Ctrl/Cmd letter shortcuts other than clipboard combos to the page", () => {
+    const { editor, store } = makeEditor();
+    editor.setTool("wire");
+    expect(editor.key("s", { ctrl: true })).toBe(false);
+    expect(editor.state.tool).toBe("wire");
+    editor.select(["hv"]);
+    const before = store.doc;
+    expect(editor.key("r", { ctrl: true })).toBe(false);
+    expect(editor.key("x", { ctrl: true })).toBe(false);
+    expect(editor.key("w", { ctrl: true })).toBe(false);
+    expect(store.doc).toBe(before);
+    expect(editor.key("c", { ctrl: true })).toBe(true);
+    expect(editor.key("V", { ctrl: true })).toBe(true);
+    expect(store.doc.items.length).toBe(before.items.length + 1);
+    expect(editor.key("a", { ctrl: true })).toBe(true);
+    expect(editor.state.selection.length).toBe(store.doc.items.length);
+    expect(editor.key("s")).toBe(true);
+    expect(editor.state.tool).toBe("select");
+    expect(editor.key("r")).toBe(true);
+    expect(store.doc).not.toBe(before);
+  });
 });
 
 describe("edit helpers", () => {

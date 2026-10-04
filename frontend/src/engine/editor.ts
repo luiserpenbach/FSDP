@@ -842,9 +842,31 @@ export class Editor {
 
   /* ---------- Keyboard ---------- */
 
-  /** Returns true when the key was consumed. */
+  /**
+   * Returns true when the key was consumed. Letter shortcuts with Ctrl/Cmd
+   * are only the clipboard and selection combos; others (Ctrl+S, Ctrl+R, ...)
+   * return false so the page or browser handles them.
+   */
   key(key: string, modifiers: Modifiers = {}): boolean {
     const grid = this.stateValue.grid;
+    if (modifiers.ctrl && /^[a-z]$/i.test(key)) {
+      switch (key.toLowerCase()) {
+        case "c":
+          this.copySelection();
+          return true;
+        case "v":
+          this.paste();
+          return true;
+        case "a":
+          this.selectAll();
+          return true;
+        case "d":
+          this.duplicateSelection();
+          return true;
+        default:
+          return false;
+      }
+    }
     switch (key) {
       case "Escape":
         this.cancel();
@@ -867,19 +889,8 @@ export class Editor {
         return true;
       case "v":
       case "V":
-        if (modifiers.ctrl) {
-          this.paste();
-          return true;
-        }
         this.setTool("select");
         return true;
-      case "c":
-      case "C":
-        if (modifiers.ctrl) {
-          this.copySelection();
-          return true;
-        }
-        return false;
       case "m":
       case "M":
         this.setTool("measure");
@@ -910,20 +921,6 @@ export class Editor {
       case "Enter":
         if (this.stateValue.wire) {
           this.finishWire();
-          return true;
-        }
-        return false;
-      case "a":
-      case "A":
-        if (modifiers.ctrl) {
-          this.selectAll();
-          return true;
-        }
-        return false;
-      case "d":
-      case "D":
-        if (modifiers.ctrl) {
-          this.duplicateSelection();
           return true;
         }
         return false;

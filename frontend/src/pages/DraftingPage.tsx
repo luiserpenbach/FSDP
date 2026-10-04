@@ -581,6 +581,17 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     setBomReadiness(null);
   }, [drawing?.id]);
 
+  // Ctrl/Cmd+S saves the sheet (the canvas leaves the shortcut to the page).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      if (canWrite && editor?.store.dirty) void save();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canWrite, editor, save]);
+
   const focusItem = useCallback(
     (itemId: string) => {
       if (!editor) return;
