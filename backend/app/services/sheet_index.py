@@ -108,23 +108,42 @@ def document_needs_index(document: dict | None) -> bool:
     return bool((document or {}).get("items"))
 
 
+def _unreleased_drawing_ids():
+    # Released drawings are frozen baselines: their sheets cannot be re-indexed until a
+    # new revision is started, and revise_drawing flags every sheet stale at that point.
+    return select(Drawing.id).where(Drawing.status != "released")
+
+
 def mark_sheets_stale_for_part(db: Session, part_id: str) -> None:
-    """Flag every sheet whose index assigns the part: its DRC used the old part data."""
+    """Flag every unreleased sheet whose index assigns the part: its DRC used the old part data."""
     sheet_ids = select(SheetItem.sheet_id).where(SheetItem.part_id == part_id)
     db.execute(
         update(DrawingSheet)
-        .where(DrawingSheet.id.in_(sheet_ids))
+        .where(
+            DrawingSheet.id.in_(sheet_ids),
+            DrawingSheet.drawing_id.in_(_unreleased_drawing_ids()),
+        )
         .values(index_stale=True)
         .execution_options(synchronize_session=False)
     )
 
 
 def mark_project_sheets_stale(db: Session, project_id: str) -> None:
-    """Flag every sheet of a project, e.g. after a requirement constraint changed."""
-    drawing_ids = select(Drawing.id).where(Drawing.project_id == project_id)
+    """Flag every unreleased sheet of a project, e.g. after a requirement constraint changed."""
+    drawing_ids = _unreleased_drawing_ids().where(Drawing.project_id == project_id)
     db.execute(
         update(DrawingSheet)
         .where(DrawingSheet.drawing_id.in_(drawing_ids))
+        .values(index_stale=True)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def mark_drawing_sheets_stale(db: Session, drawing_id: str) -> None:
+    """Flag every sheet of a drawing: a new revision re-checks current parts and requirements."""
+    db.execute(
+        update(DrawingSheet)
+        .where(DrawingSheet.drawing_id == drawing_id)
         .values(index_stale=True)
         .execution_options(synchronize_session=False)
     )

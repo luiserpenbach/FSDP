@@ -72,6 +72,7 @@ from app.services.lists import (
 from app.services.release import next_revision_label, release_blockers, release_snapshot
 from app.services.sheet_index import (
     document_needs_index,
+    mark_drawing_sheets_stale,
     replace_sheet_index,
     stale_sheets,
     stale_sheets_note,
@@ -632,6 +633,8 @@ def revise_drawing(
     )
     db.add(revision)
     drawing.status = "draft"
+    # Parts and requirements may have changed while the drawing was frozen.
+    mark_drawing_sheets_stale(db, drawing.id)
     record_change(
         db,
         "drawing",

@@ -395,6 +395,22 @@ def test_part_changes_mark_sheets_using_it_stale(client: TestClient) -> None:
     assert _sheet_stale(client, unrelated["id"]) == [False]
 
 
+def test_released_drawings_stay_current_until_revised(client: TestClient) -> None:
+    project_id = _project(client)
+    part = _part(client)
+    drawing = _drawing(client, project_id, "hv")
+    _save(client, drawing["sheets"][0]["id"], part_id=part["id"])
+    assert client.post(f"/drawings/{drawing['id']}/release").status_code == 200
+
+    # A frozen baseline cannot be re-indexed, so part changes leave it alone ...
+    client.put(f"/parts/{part['id']}", json={"pressure_rating_bar": 100})
+    assert _sheet_stale(client, drawing["id"]) == [False]
+
+    # ... and the new revision re-checks every sheet against current data.
+    assert client.post(f"/drawings/{drawing['id']}/revise").status_code == 200
+    assert _sheet_stale(client, drawing["id"]) == [True]
+
+
 def test_requirement_constraint_changes_mark_project_sheets_stale(client: TestClient) -> None:
     project_id = _project(client)
     other_project = _project(client, "Other")
