@@ -67,7 +67,7 @@ export function pressureToBar(text: string | undefined | null): number | null {
 }
 
 /** Warn-only findings for assigning `part` to an item touched by `lines`. */
-export function partWarnings(part: PartLike, lines: LineItem[] = []): string[] {
+export function partWarnings(part: PartLike, lines: ReadonlyArray<Pick<LineItem, "designPressure">> = []): string[] {
   const warnings: string[] = [];
   if (part.lifecycle_status === "obsolete") warnings.push("Part is obsolete and cannot be assigned.");
   if (part.lifecycle_status === "restricted") warnings.push("Part is restricted.");
@@ -76,7 +76,7 @@ export function partWarnings(part: PartLike, lines: LineItem[] = []): string[] {
   if (part.pressure_rating_bar === null || part.pressure_rating_bar === undefined) {
     warnings.push("Pressure rating is missing.");
   } else {
-    const design = Math.max(...lines.map((line) => pressureToBar(line.designPressure) ?? -1));
+    const design = lines.reduce((highest, line) => Math.max(highest, pressureToBar(line.designPressure) ?? -1), -1);
     if (design > part.pressure_rating_bar) {
       warnings.push(`Rated ${part.pressure_rating_bar} bar, below the connected line design pressure of ${Math.round(design * 10) / 10} bar.`);
     }
