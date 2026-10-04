@@ -51,12 +51,17 @@ export function itemBounds(item: Item, registry: SymbolRegistry): Rect {
 export class SpatialIndex {
   private readonly cells = new Map<string, Item[]>();
   private readonly bounds = new Map<string, Rect>();
+  /** Document position of each indexed item, for ordering query results. */
+  private readonly order = new Map<Item, number>();
 
   constructor(
     readonly doc: SchematicDocument,
     readonly registry: SymbolRegistry,
     readonly cellSize = 50
   ) {
+    doc.items.forEach((item, position) => {
+      if (!this.order.has(item)) this.order.set(item, position);
+    });
     for (const item of doc.items) {
       const rect = itemBounds(item, registry);
       this.bounds.set(item.id, rect);
@@ -93,7 +98,7 @@ export class SpatialIndex {
         if (rectsIntersect(this.bounds.get(item.id)!, rect)) result.push(item);
       }
     }
-    return result.sort((a, b) => this.doc.items.indexOf(a) - this.doc.items.indexOf(b));
+    return result.sort((a, b) => this.order.get(a)! - this.order.get(b)!);
   }
 
   /** Items fully inside `rect` (window selection). */
