@@ -13,7 +13,7 @@ import {
   moveItemsCommand,
   rotateItemsCommand
 } from "./edit";
-import { DEFAULT_TAG_SCHEME, nextTag, renumberCommand, type TagContext, type TagScheme } from "./tags";
+import { DEFAULT_TAG_SCHEME, nextTag, parseTag, renumberCommand, type TagContext, type TagScheme } from "./tags";
 import { normalizeRotation, rectFromPoints, simplifyPolyline, snapPoint, subtract } from "./geometry";
 import { type SymbolRegistry } from "./library";
 import { previewSegment } from "./routing";
@@ -77,7 +77,13 @@ export type EditorSnapshot = {
   version: number;
 };
 
-export type EditorOptions = { author?: string; makeId?: () => string; tagScheme?: TagScheme };
+export type EditorOptions = {
+  author?: string;
+  makeId?: () => string;
+  tagScheme?: TagScheme;
+  /** Tags used on other sheets of the drawing (see `setReservedTags`). */
+  reservedTags?: Iterable<string>;
+};
 
 function parseLetters(tag: string): string | null {
   const match = /^([A-Za-z]+)/.exec(tag.trim());
@@ -103,6 +109,8 @@ export class Editor {
   /** Hit tolerance in mm; the host sets it from the zoom level. */
   tolerance = 1.5;
   tagScheme: TagScheme;
+  /** Tags used on other sheets of the drawing: suggestions skip them and tag checks flag duplicates. */
+  reservedTags: ReadonlySet<string>;
 
   setTolerance(mm: number): void {
     this.tolerance = mm;
@@ -116,6 +124,7 @@ export class Editor {
   ) {
     this.makeId = options.makeId ?? defaultId;
     this.tagScheme = options.tagScheme ?? DEFAULT_TAG_SCHEME;
+    this.reservedTags = new Set(options.reservedTags ?? []);
     this.stateValue = {
       tool: "select",
       selection: [],
@@ -308,7 +317,11 @@ export class Editor {
     return this.clipboard.length;
   }
 
-  /** Paste the clipboard offset by the paste count; symbol tags are re-suggested under the scheme. */
+  /**
+   * Paste the clipboard offset by the paste count. Symbol and equipment tags
+   * are re-suggested under the scheme; a structured tag keeps its own system
+   * and class digits.
+   */
   paste(): string[] {
     if (!this.clipboard.length) return [];
     this.pasteCount += 1;
@@ -321,10 +334,13 @@ export class Editor {
     for (const original of this.clipboard) {
       const copy = translateItem(original, offset);
       copy.id = idMap.get(original.id) ?? this.makeId();
-      if (copy.kind === "symbol") {
-        copy.componentId = undefined;
-        const definition = this.registry.resolve(copy.symbol);
-        copy.tag = copy.tag ? nextTag(working, this.tagScheme, parseLetters(copy.tag) ?? definition.tagPrefix ?? "X", this.stateValue.tagContext) : undefined;
+      if (copy.kind === "symbol") copy.componentId = undefined;
+      if ((copy.kind === "symbol" || copy.kind === "equipment") && copy.tag) {
+        const parsed = parseTag(copy.tag, this.tagScheme);
+        const context = parsed && this.tagScheme.kind === "structured" ? { system: parsed.system, cls: parsed.cls } : this.stateValue.tagContext;
+        const fallback = copy.kind === "symbol" ? this.registry.resolve(copy.symbol).tagPrefix : undefined;
+        const letters = parsed?.letters ?? parseLetters(copy.tag) ?? fallback ?? "X";
+        copy.tag = nextTag(working, this.tagScheme, letters, context, this.reservedTags) ?? undefined;
       }
       items.push(copy);
       working = applyCommand(working, { type: "add", items: [copy] });
@@ -395,6 +411,12 @@ export class Editor {
     this.emit();
   }
 
+  /** Tags used on the drawing's other sheets; replaces the previous set. */
+  setReservedTags(tags: Iterable<string>): void {
+    this.reservedTags = new Set(tags);
+    this.emit();
+  }
+
   setTagContext(context: TagContext): void {
     this.setState({ tagContext: { ...this.stateValue.tagContext, ...context } });
   }
@@ -402,13 +424,13 @@ export class Editor {
   /** Suggested tag for a symbol definition under the project scheme. */
   suggestTagFor(tagPrefix: string | undefined): string | undefined {
     if (!tagPrefix) return undefined;
-    return nextTag(this.store.doc, this.tagScheme, tagPrefix, this.stateValue.tagContext);
+    return nextTag(this.store.doc, this.tagScheme, tagPrefix, this.stateValue.tagContext, this.reservedTags) ?? undefined;
   }
 
   /** Re-sequence the selected symbols' tags per letter group in reading order. */
   renumberSelection(startAt = 1): void {
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(renumberCommand(this.store.doc, this.tagScheme, this.stateValue.selection, this.stateValue.tagContext, startAt));
+    this.store.dispatch(renumberCommand(this.store.doc, this.tagScheme, this.stateValue.selection, this.stateValue.tagContext, startAt, this.reservedTags));
   }
 
   /** Escape: cancel the in-progress action, else drop back to select. */
@@ -820,9 +842,31 @@ export class Editor {
 
   /* ---------- Keyboard ---------- */
 
-  /** Returns true when the key was consumed. */
+  /**
+   * Returns true when the key was consumed. Letter shortcuts with Ctrl/Cmd
+   * are only the clipboard and selection combos; others (Ctrl+S, Ctrl+R, ...)
+   * return false so the page or browser handles them.
+   */
   key(key: string, modifiers: Modifiers = {}): boolean {
     const grid = this.stateValue.grid;
+    if (modifiers.ctrl && /^[a-z]$/i.test(key)) {
+      switch (key.toLowerCase()) {
+        case "c":
+          this.copySelection();
+          return true;
+        case "v":
+          this.paste();
+          return true;
+        case "a":
+          this.selectAll();
+          return true;
+        case "d":
+          this.duplicateSelection();
+          return true;
+        default:
+          return false;
+      }
+    }
     switch (key) {
       case "Escape":
         this.cancel();
@@ -845,19 +889,8 @@ export class Editor {
         return true;
       case "v":
       case "V":
-        if (modifiers.ctrl) {
-          this.paste();
-          return true;
-        }
         this.setTool("select");
         return true;
-      case "c":
-      case "C":
-        if (modifiers.ctrl) {
-          this.copySelection();
-          return true;
-        }
-        return false;
       case "m":
       case "M":
         this.setTool("measure");
@@ -888,20 +921,6 @@ export class Editor {
       case "Enter":
         if (this.stateValue.wire) {
           this.finishWire();
-          return true;
-        }
-        return false;
-      case "a":
-      case "A":
-        if (modifiers.ctrl) {
-          this.selectAll();
-          return true;
-        }
-        return false;
-      case "d":
-      case "D":
-        if (modifiers.ctrl) {
-          this.duplicateSelection();
           return true;
         }
         return false;

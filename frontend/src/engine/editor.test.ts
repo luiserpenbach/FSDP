@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { computeConnectivity } from "./connectivity";
-import { dragSegment, suggestTag } from "./edit";
+import { dragSegment } from "./edit";
 import { Editor } from "./editor";
 import { smallPanelDocument } from "./fixtures";
 import { BUILTIN_LIBRARY, SymbolRegistry } from "./library";
 import { DocumentStore } from "./store";
+import { REFERENCE_TAG_SCHEME } from "./tags";
 import type { LineItem, SymbolItem } from "./types";
 
 const registry = SymbolRegistry.withBuiltins();
@@ -136,6 +137,56 @@ describe("editor session", () => {
   });
 });
 
+describe("editor tags and shortcuts", () => {
+  it("suggests tags that skip those reserved on other sheets", () => {
+    const { editor, store } = makeEditor();
+    editor.setReservedTags(["HV-3202", "HV-3205"]);
+    const placed = editor.addSymbolAt({ library: BUILTIN_LIBRARY, key: "hand_valve", version: 1 }, { x: 250, y: 200 });
+    expect(placed.tag).toBe("HV-3206");
+    const constructed = new Editor(new DocumentStore(store.doc), registry, { reservedTags: ["HV-3210"] });
+    expect(constructed.suggestTagFor("HV")).toBe("HV-3211");
+  });
+
+  it("pastes a structured tag into its own system and class", () => {
+    let counter = 0;
+    const doc = smallPanelDocument();
+    (doc.items[1] as SymbolItem).tag = "PT 3222"; // helium, test hardware
+    (doc.items[2] as SymbolItem).tag = "PT 0101"; // vacuum, facility hardware
+    const store = new DocumentStore(doc);
+    const editor = new Editor(store, registry, { makeId: () => `new${++counter}`, tagScheme: REFERENCE_TAG_SCHEME });
+    editor.setTagContext({ system: "0", cls: "1" });
+    editor.setReservedTags(["PT 3223"]);
+    editor.select(["hv"]);
+    editor.copySelection();
+    const [pasted] = editor.paste();
+    expect((store.doc.items.find((item) => item.id === pasted) as SymbolItem).tag).toBe("PT 3224");
+    const [again] = editor.paste();
+    expect((store.doc.items.find((item) => item.id === again) as SymbolItem).tag).toBe("PT 3225");
+  });
+
+  it("leaves Ctrl/Cmd letter shortcuts other than clipboard combos to the page", () => {
+    const { editor, store } = makeEditor();
+    editor.setTool("wire");
+    expect(editor.key("s", { ctrl: true })).toBe(false);
+    expect(editor.state.tool).toBe("wire");
+    editor.select(["hv"]);
+    const before = store.doc;
+    expect(editor.key("r", { ctrl: true })).toBe(false);
+    expect(editor.key("x", { ctrl: true })).toBe(false);
+    expect(editor.key("w", { ctrl: true })).toBe(false);
+    expect(store.doc).toBe(before);
+    expect(editor.key("c", { ctrl: true })).toBe(true);
+    expect(editor.key("V", { ctrl: true })).toBe(true);
+    expect(store.doc.items.length).toBe(before.items.length + 1);
+    expect(editor.key("a", { ctrl: true })).toBe(true);
+    expect(editor.state.selection.length).toBe(store.doc.items.length);
+    expect(editor.key("s")).toBe(true);
+    expect(editor.state.tool).toBe("select");
+    expect(editor.key("r")).toBe(true);
+    expect(store.doc).not.toBe(before);
+  });
+});
+
 describe("edit helpers", () => {
   it("drags end segments by growing a corner", () => {
     expect(dragSegment([{ x: 0, y: 0 }, { x: 20, y: 0 }], 0, 5)).toEqual([
@@ -144,10 +195,5 @@ describe("edit helpers", () => {
       { x: 20, y: 5 },
       { x: 20, y: 0 }
     ]);
-  });
-
-  it("suggests the next tag number for a prefix", () => {
-    expect(suggestTag(smallPanelDocument(), "HV")).toBe("HV-3202");
-    expect(suggestTag(smallPanelDocument(), "FV")).toBe("FV-1");
   });
 });
