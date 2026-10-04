@@ -488,3 +488,76 @@ export type ImpactSheetItem = {
 export type ImpactRequirement = { id: string; project_id: string; key: string; title: string; status: string | null };
 
 export type ImpactPart = { id: string; part_number: string; description: string };
+
+// ---------------------------------------------------------------- bulk import / bulk edit
+
+export type ImportMode = "create_only" | "upsert";
+
+export type ImportRowAction = "create" | "update" | "unchanged" | "error";
+
+/** One data row of an import plan; `row` is 1-based below the header row. */
+export type ImportRowReport = {
+  row: number;
+  action: ImportRowAction;
+  /** The row's part_number / requirement key as given in the file. */
+  key: string | null;
+  /** Matched object (update/unchanged), or the new object after a committed create. */
+  id: string | null;
+  errors: Array<{ field: string; message: string }>;
+  /** field -> [old, new]; old is null for creates. */
+  changes: Record<string, [unknown, unknown]>;
+};
+
+export type ImportReport = {
+  entity: "part" | "requirement";
+  mode: ImportMode;
+  dry_run: boolean;
+  committed: boolean;
+  /** Source column header -> model field, or null when the column is ignored. */
+  mapping: Record<string, string | null>;
+  warnings: string[];
+  rows: ImportRowReport[];
+  summary: { create: number; update: number; unchanged: number; error: number };
+};
+
+/** Rows pasted from a spreadsheet: cell lists (header first, or `headers`) or header-keyed objects. */
+export type ImportRowsBody = {
+  headers?: string[];
+  rows: unknown[][] | Array<Record<string, unknown>>;
+  /** Cells use a decimal comma (2,5 = 2.5). */
+  decimal_comma?: boolean;
+};
+
+export type ImportOptions = { dryRun?: boolean; mode?: ImportMode };
+
+export type PartBulkChanges = Partial<
+  Pick<
+    Part,
+    | "manufacturer"
+    | "part_type"
+    | "source_type"
+    | "material"
+    | "pressure_rating_bar"
+    | "temperature_min_c"
+    | "temperature_max_c"
+    | "cv"
+    | "mass_kg"
+    | "certification_status"
+    | "qualification_status"
+    | "lifecycle_status"
+    | "preferred"
+    | "notes"
+  >
+>;
+
+export type RequirementBulkChanges = Partial<
+  Pick<Requirement, "requirement_type" | "verification_method" | "status" | "constraint">
+> & { owner?: string | null };
+
+export type BulkUpdateResult<T> = { updated: number; unchanged: number; items: T[] };
+
+export type BulkDeleteResult = {
+  deleted: number;
+  refused: number;
+  results: Array<{ id: string; deleted: boolean; reason: string | null }>;
+};

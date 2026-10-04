@@ -435,3 +435,139 @@ export function setBomStatusChecked(snapshotId: string, status: "draft" | "relea
 export function bomXlsxUrl(snapshotId: string): string {
   return `${API_BASE_URL}/bom/${snapshotId}/xlsx`;
 }
+
+// ---------------------------------------------------------------- bulk import / bulk edit
+
+type ImportReport = import("./types").ImportReport;
+type ImportRowsBody = import("./types").ImportRowsBody;
+type ImportOptions = import("./types").ImportOptions;
+type PartBulkChanges = import("./types").PartBulkChanges;
+type RequirementBulkChanges = import("./types").RequirementBulkChanges;
+type BulkUpdateResult<T> = import("./types").BulkUpdateResult<T>;
+type BulkDeleteResult = import("./types").BulkDeleteResult;
+
+function importQuery(options: ImportOptions = {}): string {
+  return new URLSearchParams({
+    dry_run: String(options.dryRun ?? true),
+    mode: options.mode ?? "create_only"
+  }).toString();
+}
+
+/**
+ * POST an import. A refused commit (some rows have errors) answers 422 with the
+ * full report; that report is resolved (with `committed: false`) rather than
+ * thrown, so callers can show the per-row errors. Other failures throw.
+ */
+async function importRequest(path: string, source: File | ImportRowsBody, options?: ImportOptions): Promise<ImportReport> {
+  let init: RequestInit;
+  if (source instanceof File) {
+    const form = new FormData();
+    form.append("file", source);
+    init = { method: "POST", credentials: "include", body: form };
+  } else {
+    init = {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(source)
+    };
+  }
+  const response = await fetch(`${API_BASE_URL}${path}?${importQuery(options)}`, init);
+  if (response.ok) return response.json() as Promise<ImportReport>;
+  if (response.status === 401) unauthorizedHandler?.();
+  if (response.status === 422) {
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text) as Partial<ImportReport>;
+      if (Array.isArray(parsed.rows) && parsed.summary) return parsed as ImportReport;
+    } catch {
+      // Not a report; fall through to the generic error.
+    }
+    throw await toApiError(new Response(text, { status: 422 }));
+  }
+  throw await toApiError(response);
+}
+
+async function downloadTemplate(path: string, format: "csv" | "xlsx", fallback: string) {
+  const response = await rawRequest(`${path}?format=${format}`);
+  const match = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "");
+  return { blob: await response.blob(), filename: match?.[1] ?? `${fallback}.${format}` };
+}
+
+/** Import catalog parts from a .csv/.xlsx file or pasted rows. Defaults: dry run, create_only. */
+export function importParts(source: File | ImportRowsBody, options?: ImportOptions): Promise<ImportReport> {
+  return importRequest("/parts/import", source, options);
+}
+
+/** Import requirements into a project from a .csv/.xlsx file or pasted rows. Defaults: dry run, create_only. */
+export function importRequirements(
+  projectId: string,
+  source: File | ImportRowsBody,
+  options?: ImportOptions
+): Promise<ImportReport> {
+  return importRequest(`/projects/${projectId}/requirements/import`, source, options);
+}
+
+/** Header row + example row with the canonical part import columns; resolves to the blob and filename. */
+export function downloadPartsImportTemplate(format: "csv" | "xlsx" = "xlsx") {
+  return downloadTemplate("/parts/import-template", format, "parts-import-template");
+}
+
+/** Header row + example row with the canonical requirement import columns. */
+export function downloadRequirementsImportTemplate(projectId: string, format: "csv" | "xlsx" = "xlsx") {
+  return downloadTemplate(
+    `/projects/${projectId}/requirements/import-template`,
+    format,
+    "requirements-import-template"
+  );
+}
+
+/** The line class CSV import, fed from an uploaded .csv or .xlsx file. */
+export async function importLineClassesFile(
+  projectId: string,
+  file: File,
+  replace = false
+): Promise<{ created: number; updated: number; errors: string[] }> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_BASE_URL}/projects/${projectId}/line-classes/import-file?replace=${replace}`, {
+    method: "POST",
+    credentials: "include",
+    body: form
+  });
+  if (!response.ok) {
+    if (response.status === 401) unauthorizedHandler?.();
+    throw await toApiError(response);
+  }
+  return response.json() as Promise<{ created: number; updated: number; errors: string[] }>;
+}
+
+/** Set the same values on many parts (all or none; rejects with 404 if any id is unknown). */
+export function bulkUpdateParts(ids: string[], changes: PartBulkChanges): Promise<BulkUpdateResult<Part>> {
+  return request<BulkUpdateResult<Part>>("/parts/bulk", { method: "PATCH", body: JSON.stringify({ ids, changes }) });
+}
+
+/** Set the same values on many requirements of one project (all or none). */
+export function bulkUpdateRequirements(
+  projectId: string,
+  ids: string[],
+  changes: RequirementBulkChanges
+): Promise<BulkUpdateResult<Requirement>> {
+  return request<BulkUpdateResult<Requirement>>(`/projects/${projectId}/requirements/bulk`, {
+    method: "PATCH",
+    body: JSON.stringify({ ids, changes })
+  });
+}
+
+/** Delete the parts that can be deleted; refused ones (in use, unknown) come back with a reason. */
+export function bulkDeleteParts(ids: string[]): Promise<BulkDeleteResult> {
+  return request<BulkDeleteResult>("/parts/bulk-delete", { method: "POST", body: JSON.stringify({ ids }) });
+}
+
+/** Delete requirements of one project; ids outside the project come back refused. */
+export function bulkDeleteRequirements(projectId: string, ids: string[]): Promise<BulkDeleteResult> {
+  return request<BulkDeleteResult>(`/projects/${projectId}/requirements/bulk-delete`, {
+    method: "POST",
+    body: JSON.stringify({ ids })
+  });
+}
