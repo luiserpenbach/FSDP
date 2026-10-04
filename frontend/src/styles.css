@@ -3377,6 +3377,20 @@ button.ribbonButton.active {
 }
 
 .bomFilter {
+  font-size: 12.5px;
+  margin: 0;
+  padding: 4px 8px;
+  width: auto;
+}
+
+.dataGrid .dgRow.dgRowCurrent,
+.dataGrid .dgRow.dgRowCurrent .dgFrozen {
+  background: var(--accent-soft);
+}
+
+.dataGrid .dgRow.dgRowCurrent .dgCell:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 
 /* ---------- Spreadsheet-grade tables: Parts catalog, Requirements, Import wizard ---------- */
 
@@ -3433,14 +3447,6 @@ button.ribbonButton.active {
   padding: 4px 8px;
   width: auto;
 }
-
-.dataGrid .dgRow.dgRowCurrent,
-.dataGrid .dgRow.dgRowCurrent .dgFrozen {
-  background: var(--accent-soft);
-}
-
-.dataGrid .dgRow.dgRowCurrent .dgCell:first-child {
-  box-shadow: inset 2px 0 0 var(--accent);
 
 .dataGrid input.bulkInput {
   max-width: 160px;
@@ -3668,6 +3674,7 @@ textarea.importPaste {
 .importActions .hint {
   flex: 1;
   font-size: 12px;
+}
 
 /* ---------- Lists drawer: editable DataGrid and bulk edits ---------- */
 
