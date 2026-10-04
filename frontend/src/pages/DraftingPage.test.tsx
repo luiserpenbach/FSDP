@@ -19,6 +19,7 @@ const apiMock = vi.hoisted(() => ({
   exportSheet: vi.fn(),
   getSchematic: vi.fn(),
   getDiagram: vi.fn(),
+  listComponents: vi.fn(),
   listProjectDiagrams: vi.fn(),
   deleteDiagram: vi.fn(),
   getTagScheme: vi.fn(),
@@ -166,6 +167,7 @@ describe("DraftingPage", () => {
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.listLineClasses.mockResolvedValue([]);
     apiMock.listProjectDiagrams.mockResolvedValue([]);
+    apiMock.listComponents.mockResolvedValue([]);
     apiMock.getSheetDrc.mockResolvedValue({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
     apiMock.updateSheet.mockImplementation(async (_id: string, body: { document: unknown }) => ({ ...sheet, document: body.document }));
   });
@@ -216,6 +218,7 @@ describe("DraftingPage", () => {
     apiMock.listProjectDiagrams.mockResolvedValue([summaryOf(legacyDiagram), loxFeed]);
     apiMock.getSchematic.mockResolvedValue({ diagram_id: "d1", revision: 3, document: null });
     apiMock.getDiagram.mockResolvedValue(legacyDiagram);
+    apiMock.listComponents.mockResolvedValue([]);
     apiMock.createDrawing.mockResolvedValue(converted);
     apiMock.listDrawings.mockResolvedValueOnce([drawing]).mockResolvedValue([drawing, converted]);
     apiMock.deleteDiagram.mockResolvedValue(undefined);
@@ -241,6 +244,8 @@ describe("DraftingPage", () => {
     expect(picker.value).toBe("d1");
     fireEvent.click(screen.getByRole("button", { name: "Convert" }));
     await waitFor(() => expect(apiMock.createDrawing).toHaveBeenCalledTimes(1));
+    // Placed parts come from the legacy component table, not the graph.
+    expect(apiMock.listComponents).toHaveBeenCalledWith(legacyDiagram.id);
     const [projectId, body] = apiMock.createDrawing.mock.calls[0] as [
       string,
       { title: string; system_id: string | null; first_sheet: { document: { items: Array<{ id: string }> }; source_diagram_id: string } }

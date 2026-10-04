@@ -55,6 +55,30 @@ describe("legacy graph converter", () => {
     expect(doc.meta.title).toBe("Demo");
   });
 
+  it("carries legacy component tags and parts onto the converted symbols", () => {
+    const graph = legacyGraph();
+    graph.nodes.push({ id: "f1", type: "pidSymbol", position: { x: 700, y: 200 }, style: { width: 56, height: 50 }, data: { symbolType: "filter", label: "F-1: AMPH-FL-001" } });
+    const doc = convertLegacyGraph(graph, registry, {
+      components: [
+        { node_external_id: "f1", tag: "F-1", part_id: "part-filter" },
+        { node_external_id: "v1", tag: "HV-7", part_id: null },
+        { node_external_id: null, tag: "LOOSE-1", part_id: "part-x" }
+      ]
+    });
+    const symbol = (id: string) => {
+      const item = doc.items.find((entry) => entry.id === id);
+      return item && item.kind === "symbol" ? item : null;
+    };
+    expect(symbol("f1")).toMatchObject({ tag: "F-1", partId: "part-filter" });
+    // The "TAG: PART" caption is redundant once the tag and part are real fields.
+    expect(symbol("f1")?.label).toBeUndefined();
+    // The component's tag wins over the node's own tag; no part leaves partId unset.
+    expect(symbol("v1")).toMatchObject({ tag: "HV-7" });
+    expect(symbol("v1")?.partId).toBeUndefined();
+    // Labels that are not tag captions survive.
+    expect(symbol("s1")?.label).toBe("PT");
+  });
+
   it("turns edges into orthogonal lines that stay connected to ports and tees", () => {
     const doc = convertLegacyGraph(legacyGraph(), registry);
     const connectivity = computeConnectivity(doc, registry);

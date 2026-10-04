@@ -128,7 +128,12 @@ def test_demo_seed_creates_a_convertible_legacy_diagram(
     graph = client.get(f"/diagrams/{diagrams[0]['id']}").json()["graph"]
     assert len(graph["nodes"]) == 7
     assert len(graph["edges"]) == 6
-    assert len(client.get(f"/diagrams/{diagrams[0]['id']}/components").json()) == 5
+    components = client.get(f"/diagrams/{diagrams[0]['id']}/components").json()
+    assert len(components) == 5
+    # Conversion matches components to graph nodes by the node's external id.
+    graph_node_ids = {node["id"] for node in graph["nodes"]}
+    assert {row["node_external_id"] for row in components} <= graph_node_ids
+    assert {row["tag"]: row["node_external_id"] for row in components}["F-1"] == "node-filter"
     requirements = client.get(f"/projects/{project_id}/requirements").json()
     assert len(requirements) == 3
 

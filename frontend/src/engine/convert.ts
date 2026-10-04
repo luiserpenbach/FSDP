@@ -141,8 +141,19 @@ function lineTypeFor(edge: LegacyEdge): LineType {
   return "process";
 }
 
-export function convertLegacyGraph(graph: LegacyGraph, registry: SymbolRegistry, options: { title?: string } = {}): SchematicDocument {
+/** A part placed on a legacy diagram node (from GET /diagrams/{id}/components). */
+export type LegacyComponent = { node_external_id?: string | null; tag: string; part_id?: string | null };
+
+export function convertLegacyGraph(
+  graph: LegacyGraph,
+  registry: SymbolRegistry,
+  options: { title?: string; components?: LegacyComponent[] } = {}
+): SchematicDocument {
   const nodes = graph.nodes ?? [];
+  // Placed parts live in the component table, not the graph; the node label only showed "TAG: PART".
+  const componentByNode = new Map(
+    (options.components ?? []).filter((component) => component.node_external_id).map((component) => [component.node_external_id as string, component])
+  );
   const edges = graph.edges ?? [];
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const grid = DEFAULT_GRID_MM;
@@ -203,6 +214,12 @@ export function convertLegacyGraph(graph: LegacyGraph, registry: SymbolRegistry,
       default: {
         const symbolType = String(data.symbolType ?? node.type ?? "component");
         const scaleFromWidth = (size.width * PX_TO_MM) / 20;
+        const component = componentByNode.get(node.id);
+        const nodeTag = typeof data.tag === "string" && data.tag ? data.tag : undefined;
+        const tag = component?.tag || nodeTag;
+        const nodeLabel = typeof data.label === "string" && data.label && data.label !== node.id ? data.label : undefined;
+        // Drop labels that only repeated the tag (legacy "TAG" or "TAG: PART-NUMBER" captions).
+        const label = nodeLabel && tag && (nodeLabel === tag || nodeLabel.startsWith(`${tag}:`)) ? undefined : nodeLabel;
         symbols.push({
           id: node.id,
           kind: "symbol",
@@ -211,8 +228,9 @@ export function convertLegacyGraph(graph: LegacyGraph, registry: SymbolRegistry,
           position: centre,
           rotation: normalizeRotation(Number(data.rotation ?? 0)),
           scale: Math.abs(scaleFromWidth - 1) < 0.15 ? undefined : Number(scaleFromWidth.toFixed(2)),
-          tag: typeof data.tag === "string" && data.tag ? data.tag : undefined,
-          label: typeof data.label === "string" && data.label && data.label !== node.id ? data.label : undefined,
+          tag,
+          label,
+          partId: component?.part_id ?? undefined,
           color: typeof data.color === "string" ? data.color : undefined,
           fields: { legacySymbolType: symbolType }
         });

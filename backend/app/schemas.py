@@ -1281,6 +1281,7 @@ class ComponentInstanceRead(OrmModel):
     id: str
     diagram_id: str
     node_id: str | None = None
+    node_external_id: str | None = None
     part_id: str | None = None
     tag: str
     quantity: int

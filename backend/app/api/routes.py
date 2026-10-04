@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session, defer
+from sqlalchemy.orm import Session, defer, selectinload
 
 from app.core.security import require_admin, require_writer
 from app.db import get_db
@@ -894,7 +894,11 @@ def delete_part_document(
 def list_components(diagram_id: str, db: Session = Depends(get_db)) -> list[ComponentInstance]:
     require_model(db, Diagram, diagram_id)
     return list(
-        db.scalars(select(ComponentInstance).where(ComponentInstance.diagram_id == diagram_id))
+        db.scalars(
+            select(ComponentInstance)
+            .where(ComponentInstance.diagram_id == diagram_id)
+            .options(selectinload(ComponentInstance.node))
+        )
     )
 
 

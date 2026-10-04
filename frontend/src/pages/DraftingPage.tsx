@@ -1056,7 +1056,10 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
         const stored = await api.getSchematic(source.id);
         const converted = stored.document
           ? (stored.document as unknown as SchematicDocument)
-          : convertLegacyGraph((await api.getDiagram(source.id)).graph ?? {}, registry, { title: source.name });
+          : convertLegacyGraph((await api.getDiagram(source.id)).graph ?? {}, registry, {
+              title: source.name,
+              components: await api.listComponents(source.id)
+            });
         // The chosen paper size wins over the converter's best-fit guess.
         const document: SchematicDocument = {
           ...converted,

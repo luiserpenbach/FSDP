@@ -205,6 +205,11 @@ class ComponentInstance(TimestampMixin, Base):
     node: Mapped[DiagramNode | None] = relationship(back_populates="component")
     part: Mapped[Part | None] = relationship()
 
+    @property
+    def node_external_id(self) -> str | None:
+        """The canvas node id in the diagram graph (what conversion matches on)."""
+        return self.node.external_id if self.node else None
+
 
 class Drawing(TimestampMixin, Base):
     """Controlled drawing: a numbered, titled document made of sheets."""

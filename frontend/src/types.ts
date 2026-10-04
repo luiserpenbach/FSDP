@@ -206,6 +206,8 @@ export type ComponentInstance = {
   id: string;
   diagram_id: string;
   node_id?: string | null;
+  /** The node's id in the diagram graph. */
+  node_external_id?: string | null;
   part_id?: string | null;
   tag: string;
   quantity: number;
