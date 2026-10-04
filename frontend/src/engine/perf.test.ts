@@ -80,6 +80,22 @@ describe.skipIf(!BENCH)("drafting engine benchmark (300 symbols / 450 lines)", (
     results["pointer-up"] = up;
     editor.dispose();
 
+    // Worst case per animation frame: one pointer step plus a fresh connectivity
+    // (what the frame-coalesced recompute costs when every frame has a step).
+    const frameStore = new DocumentStore(benchmarkDocument(300, 450));
+    const frameEditor = new Editor(frameStore, registry);
+    frameEditor.pointerDown(origin);
+    const frames: number[] = [];
+    for (let step = 1; step <= 20; step += 1) {
+      const start = performance.now();
+      frameEditor.pointerMove({ x: origin.x + step * 2.5, y: origin.y + (step % 2) * 2.5 });
+      void frameEditor.connectivity;
+      frames.push(performance.now() - start);
+    }
+    frameEditor.pointerUp({ x: origin.x + 50, y: origin.y });
+    frameEditor.dispose();
+    results["drag step + connectivity (median of 20)"] = median(frames);
+
     nodeProcess?.stdout?.write(
       ["", "benchmark (300 symbols / 450 lines):", ...Object.entries(results).map(([name, ms]) => `  ${name.padEnd(40)} ${fmt(ms)}`), ""].join("\n")
     );

@@ -101,6 +101,9 @@ export class Editor {
   private index: SpatialIndex;
   private ports: IndexedPort[];
   private connectivityValue: Connectivity;
+  /** Set while a drag defers the connectivity recompute to the next frame. */
+  private connectivityStale = false;
+  private connectivityFrame: { cancel: () => void } | null = null;
   private snapshotValue: EditorSnapshot;
   private listeners = new Set<() => void>();
   private unsubscribeStore: () => void;
@@ -148,6 +151,8 @@ export class Editor {
   }
 
   dispose(): void {
+    this.connectivityFrame?.cancel();
+    this.connectivityFrame = null;
     this.unsubscribeStore();
     this.listeners.clear();
   }
@@ -165,6 +170,7 @@ export class Editor {
   }
 
   get connectivity(): Connectivity {
+    if (this.connectivityStale) this.refreshConnectivity();
     return this.connectivityValue;
   }
 
@@ -183,11 +189,47 @@ export class Editor {
   private onDocumentChanged(): void {
     this.index = new SpatialIndex(this.store.doc, this.registry);
     this.ports = indexPorts(this.store.doc, this.registry);
-    this.connectivityValue = computeConnectivity(this.store.doc, this.registry);
+    if (this.dragging()) this.deferConnectivity();
+    else this.refreshConnectivity();
     const present = new Set(this.store.doc.items.map((item) => item.id));
     const selection = this.stateValue.selection.filter((id) => present.has(id));
     this.stateValue = { ...this.stateValue, selection };
     this.emit();
+  }
+
+  /** A move or segment drag is in progress (connectivity recompute is deferred). */
+  private dragging(): boolean {
+    const drag = this.stateValue.drag;
+    return drag?.kind === "move" || drag?.kind === "segment";
+  }
+
+  private refreshConnectivity(): void {
+    this.connectivityStale = false;
+    this.connectivityValue = computeConnectivity(this.store.doc, this.registry);
+  }
+
+  /**
+   * During a drag, recompute connectivity (junction dots, hops, dangling
+   * ends) at most once per animation frame instead of on every pointer step.
+   * Ending the drag, or reading `connectivity`, brings it up to date at once.
+   */
+  private deferConnectivity(): void {
+    this.connectivityStale = true;
+    if (this.connectivityFrame) return;
+    const run = () => {
+      this.connectivityFrame = null;
+      if (this.connectivityStale) this.refreshConnectivity();
+      if (this.snapshotValue.connectivity !== this.connectivityValue) this.emit();
+    };
+    const raf = (globalThis as { requestAnimationFrame?: (callback: () => void) => number }).requestAnimationFrame;
+    const caf = (globalThis as { cancelAnimationFrame?: (handle: number) => void }).cancelAnimationFrame;
+    if (raf && caf) {
+      const handle = raf(run);
+      this.connectivityFrame = { cancel: () => caf(handle) };
+    } else {
+      const handle = setTimeout(run, 16);
+      this.connectivityFrame = { cancel: () => clearTimeout(handle) };
+    }
   }
 
   private setState(patch: Partial<EditorState>): void {
@@ -196,6 +238,7 @@ export class Editor {
   }
 
   private emit(): void {
+    if (this.connectivityStale && !this.dragging()) this.refreshConnectivity();
     this.snapshotValue = {
       doc: this.store.doc,
       state: this.stateValue,
@@ -563,8 +606,10 @@ export class Editor {
     const grid = state.grid;
     const drag = state.drag;
     if (!drag) {
-      const hit = this.hitAt(raw);
-      this.setState({ cursor: raw, hover: hit?.item.id ?? null });
+      const hover = this.hitAt(raw)?.item.id ?? null;
+      // Only re-render when the hovered item changes; the select tool draws nothing at the cursor.
+      if (hover === state.hover) this.stateValue = { ...state, cursor: raw };
+      else this.setState({ cursor: raw, hover });
       return;
     }
     if (drag.kind === "window") {
