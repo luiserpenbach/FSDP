@@ -25,8 +25,8 @@ def check_secret_key() -> None:
         return
     raise RuntimeError(
         "FSDP_SECRET_KEY is unset or the insecure development default, so session tokens "
-        "could be forged. Set a strong secret (python -c \"import secrets; "
-        "print(secrets.token_urlsafe(48))\"), or set FSDP_ALLOW_INSECURE_SECRET=true "
+        'could be forged. Set a strong secret (python -c "import secrets; '
+        'print(secrets.token_urlsafe(48))"), or set FSDP_ALLOW_INSECURE_SECRET=true '
         "for local development only."
     )
 
