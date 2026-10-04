@@ -21,7 +21,9 @@ const apiMock = vi.hoisted(() => ({
   getDiagram: vi.fn(),
   getTagScheme: vi.fn(),
   updateTagScheme: vi.fn(),
+  createSymbol: vi.fn(),
   updateSymbol: vi.fn(),
+  deleteSymbol: vi.fn(),
   listLineClasses: vi.fn(),
   createLineClass: vi.fn(),
   importLineClasses: vi.fn(),
@@ -565,6 +567,80 @@ describe("DraftingPage", () => {
     expect(apiMock.getSheet).toHaveBeenCalledTimes(sheetLoads);
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
     setRegistry.mockRestore();
+  });
+
+  it("draws a new custom symbol from the library and uploads it without editor metadata", async () => {
+    const refreshSymbols = vi.fn();
+    apiMock.createSymbol.mockImplementation(async (body: Omit<PidSymbolDef, "id">) => ({ id: "cs9", ...body }));
+    const notify = vi.fn();
+    render(
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[]} refreshSymbols={refreshSymbols} parts={parts} user={user} canWrite notify={notify} />
+      </MemoryRouter>
+    );
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+    const sheetLoads = apiMock.getSheet.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "New symbol" }));
+    const dialog = screen.getByRole("dialog", { name: "New symbol" });
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Inline heater" } });
+    const markup = within(dialog).getByLabelText(/SVG markup/);
+    fireEvent.change(markup, { target: { value: '<path inkscape:label="pipe" sodipodi:nodetypes="cc" style="stroke:#000;-inkscape-stroke:none" d="M2 20 H62"/>' } });
+    fireEvent.blur(markup);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save symbol" }));
+
+    await waitFor(() => expect(apiMock.createSymbol).toHaveBeenCalledTimes(1));
+    expect(apiMock.createSymbol).toHaveBeenCalledWith({
+      name: "Inline heater",
+      view_box: "0 0 64 40",
+      svg: '<path xmlns="http://www.w3.org/2000/svg" style="stroke:#000" d="M2 20 H62"/>',
+      ports: []
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(refreshSymbols).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("Saved symbol Inline heater.");
+    // The library refreshes through the registry; the open sheet keeps its unsaved edit.
+    expect(apiMock.getSheet).toHaveBeenCalledTimes(sheetLoads);
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("edits and deletes custom symbols from the library, for writers only", async () => {
+    const refreshSymbols = vi.fn();
+    const widget: PidSymbolDef = { id: "cs1", name: "Widget", view_box: "0 0 20 20", svg: '<rect width="20" height="20"/>', ports: [{ id: "p1", x: 0, y: 10, side: "left" }], category: "custom", legend: "WIDGET", tag_prefix: "W" };
+    apiMock.updateSymbol.mockImplementation(async (id: string, body: Partial<PidSymbolDef>) => ({ ...widget, ...body, id }));
+    apiMock.deleteSymbol.mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const page = (canWrite: boolean) => (
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[widget]} refreshSymbols={refreshSymbols} parts={parts} user={user} canWrite={canWrite} notify={vi.fn()} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page(true));
+    await screen.findByTestId("schematic-canvas");
+
+    fireEvent.click(screen.getByTitle("Widget (W)"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit symbol…" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit symbol" });
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("Widget");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Widget 2" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Update symbol" }));
+    await waitFor(() => expect(apiMock.updateSymbol).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateSymbol).toHaveBeenCalledWith("cs1", { name: "Widget 2", view_box: "0 0 20 20", svg: '<rect xmlns="http://www.w3.org/2000/svg" width="20" height="20"/>', ports: widget.ports });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete symbol" }));
+    expect(confirm).toHaveBeenCalledWith('Delete symbol "Widget"? Sheets that use it will show it as missing.');
+    await waitFor(() => expect(apiMock.deleteSymbol).toHaveBeenCalledWith("cs1"));
+    expect(refreshSymbols).toHaveBeenCalledTimes(2);
+
+    rerender(page(false));
+    expect(screen.queryByRole("button", { name: "New symbol" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit symbol…" })).not.toBeInTheDocument();
+    confirm.mockRestore();
   });
 
   it("ignores a drawing list that arrives after the project changed", async () => {

@@ -1,7 +1,8 @@
 /**
  * Library browser: searchable, categorised symbol palette with rendered
- * previews. Click a symbol to start placing it. Custom symbols expose their
- * library metadata (category, legend, tag letters) for editing.
+ * previews. Click a symbol to start placing it. Writers can draw new custom
+ * symbols, and edit or delete existing ones, including their library metadata
+ * (category, legend, tag letters).
  */
 import { useMemo, useState } from "react";
 import { CATEGORY_LABELS, CATEGORY_ORDER, CUSTOM_LIBRARY, SYMBOL_STROKE_MM, refFor, type SymbolRegistry } from "../../engine/library";
@@ -37,16 +38,30 @@ export function LibraryPanel({
   placing,
   canWrite,
   onPlace,
-  onUpdateCustom
+  onUpdateCustom,
+  onNewSymbol,
+  onEditSymbol,
+  onDeleteSymbol
 }: {
   registry: SymbolRegistry;
   placing: SymbolRef | null;
   canWrite: boolean;
   onPlace: (ref: SymbolRef) => void;
   onUpdateCustom?: (symbolId: string, patch: { category?: string; legend?: string; tag_prefix?: string }) => void;
+  /** Open the symbol editor on a new custom symbol. */
+  onNewSymbol?: () => void;
+  /** Open the symbol editor on an existing custom symbol (its drawing and ports). */
+  onEditSymbol?: (symbolId: string) => void;
+  /** Delete a custom symbol; the caller confirms. */
+  onDeleteSymbol?: (symbolId: string) => void;
 }) {
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<SymbolDef | null>(null);
+  // Selection by library/key, resolved against the registry so edits and deletes show at once.
+  const [selectedKey, setSelectedKey] = useState("");
+  const selected = useMemo(
+    () => (selectedKey ? registry.list().find((definition) => `${definition.library}/${definition.key}` === selectedKey) ?? null : null),
+    [registry, selectedKey]
+  );
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ actuator: true });
   const [meta, setMeta] = useState({ category: "", legend: "", tag_prefix: "" });
 
@@ -73,7 +88,7 @@ export function LibraryPanel({
   }, [registry, query]);
 
   function choose(definition: SymbolDef) {
-    setSelected(definition);
+    setSelectedKey(`${definition.library}/${definition.key}`);
     setMeta({ category: definition.category, legend: definition.legend ?? "", tag_prefix: definition.tagPrefix ?? "" });
     if (definition.category !== "actuator") onPlace(refFor(definition));
   }
@@ -85,6 +100,11 @@ export function LibraryPanel({
       <div className="libraryHead">
         <strong>Library</strong>
         <input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search symbols…" aria-label="Search symbols" />
+        {canWrite && onNewSymbol && (
+          <button type="button" onClick={onNewSymbol} title="Draw a custom symbol or import it from SVG">
+            New symbol
+          </button>
+        )}
       </div>
       <div className="libraryGroups">
         {groups.map((group) => {
@@ -132,6 +152,20 @@ export function LibraryPanel({
             {selected.width} × {selected.height} mm · ports:{" "}
             {selected.ports.map((port) => `${port.id} (${port.kind ?? "process"})`).join(", ") || "none"}
           </p>
+          {selected.library === CUSTOM_LIBRARY && canWrite && (onEditSymbol || onDeleteSymbol) && (
+            <div className="toolGroup">
+              {onEditSymbol && (
+                <button type="button" onClick={() => onEditSymbol(selected.key)}>
+                  Edit symbol…
+                </button>
+              )}
+              {onDeleteSymbol && (
+                <button type="button" className="danger" onClick={() => onDeleteSymbol(selected.key)}>
+                  Delete symbol
+                </button>
+              )}
+            </div>
+          )}
           {selected.library === CUSTOM_LIBRARY && onUpdateCustom ? (
             <form
               className="libraryMetaForm"

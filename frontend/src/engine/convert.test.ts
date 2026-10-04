@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { Edge, Node } from "reactflow";
 import { computeConnectivity } from "./connectivity";
-import { convertLegacyGraph } from "./convert";
+import { convertLegacyGraph, type LegacyEdge as Edge, type LegacyNode as Node } from "./convert";
 import { SymbolRegistry } from "./library";
 import { frameRect } from "./sheet";
 

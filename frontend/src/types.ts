@@ -112,10 +112,8 @@ export type Diagram = {
   name: string;
   diagram_type: string;
   revision: number;
-  graph: {
-    nodes?: import("reactflow").Node[];
-    edges?: import("reactflow").Edge[];
-  };
+  /** React Flow graph saved by the retired Diagrams editor; read only to convert it into a drawing. */
+  graph: import("./engine/convert").LegacyGraph;
 };
 
 export type DrawingRevision = {

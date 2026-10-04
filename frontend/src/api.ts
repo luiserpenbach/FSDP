@@ -114,22 +114,12 @@ export const api = {
   ) => request<FluidSystem>(`/systems/${systemId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteSystem: (systemId: string) =>
     requestNoContent(`/systems/${systemId}`, { method: "DELETE" }),
+  // Legacy diagrams are read-only: they are converted into drawings on the Drafting page.
   listDiagrams: (systemId: string) => request<Diagram[]>(`/systems/${systemId}/diagrams`),
-  createDiagram: (systemId: string, body: { name: string; diagram_type?: string }) =>
-    request<Diagram>(`/systems/${systemId}/diagrams`, { method: "POST", body: JSON.stringify(body) }),
   getDiagram: (diagramId: string) => request<Diagram>(`/diagrams/${diagramId}`),
-  updateDiagram: (diagramId: string, body: { name?: string; diagram_type?: string }) =>
-    request<Diagram>(`/diagrams/${diagramId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteDiagram: (diagramId: string) =>
     requestNoContent(`/diagrams/${diagramId}`, { method: "DELETE" }),
-  updateDiagramGraph: (diagramId: string, body: unknown) =>
-    request<Diagram>(`/diagrams/${diagramId}/graph`, { method: "PUT", body: JSON.stringify(body) }),
   getSchematic: (diagramId: string) => request<SchematicRead>(`/diagrams/${diagramId}/schematic`),
-  saveSchematic: (diagramId: string, document: unknown) =>
-    request<SchematicRead>(`/diagrams/${diagramId}/schematic`, {
-      method: "PUT",
-      body: JSON.stringify({ document })
-    }),
   listDrawings: (projectId: string) => request<Drawing[]>(`/projects/${projectId}/drawings`),
   createDrawing: (
     projectId: string,
@@ -270,20 +260,6 @@ export const api = {
     requestNoContent(`/parts/${partId}/documents/${documentId}`, { method: "DELETE" }),
   listComponents: (diagramId: string) =>
     request<ComponentInstance[]>(`/diagrams/${diagramId}/components`),
-  createComponent: (
-    diagramId: string,
-    body: {
-      tag: string;
-      part_id?: string;
-      node_id?: string;
-      quantity?: number;
-      properties?: Record<string, unknown>;
-    }
-  ) =>
-    request<ComponentInstance>(`/diagrams/${diagramId}/components`, {
-      method: "POST",
-      body: JSON.stringify(body)
-    }),
   updateComponent: (componentId: string, body: Partial<ComponentInstance>) =>
     request<ComponentInstance>(`/components/${componentId}`, {
       method: "PUT",

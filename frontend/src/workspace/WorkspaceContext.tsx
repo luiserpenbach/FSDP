@@ -84,11 +84,10 @@ export type WorkspaceContextValue = {
   customSymbols: PidSymbolDef[];
   refreshSymbols: () => void;
 
-  /** Legacy diagrams of the selected system (Diagrams page, BoM, trace links, conversion). */
+  /** Legacy diagrams of the selected system (read-only; listed by the BoM page). */
   diagrams: Diagram[];
-  refreshDiagrams: (systemId: string) => Promise<Diagram[]>;
+  /** First legacy diagram of the selected system (the BoM page's legacy history). */
   selectedDiagramId: string;
-  setSelectedDiagramId: (diagramId: string) => void;
   /** Legacy component selected on the Diagrams or Requirements page (impact, trace links). */
   selectedComponentId: string;
   setSelectedComponentId: (componentId: string) => void;
@@ -186,12 +185,6 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
   const refreshRequirements = useCallback(async (projectId: string) => {
     const next = await api.listRequirements(projectId);
     if (selectedProjectIdRef.current === projectId) setRequirements(next);
-    return next;
-  }, []);
-
-  const refreshDiagrams = useCallback(async (systemId: string) => {
-    const next = await api.listDiagrams(systemId);
-    if (selectedSystemIdRef.current === systemId) setDiagrams(next);
     return next;
   }, []);
 
@@ -335,9 +328,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       customSymbols,
       refreshSymbols,
       diagrams,
-      refreshDiagrams,
       selectedDiagramId,
-      setSelectedDiagramId,
       selectedComponentId,
       setSelectedComponentId
     }),
@@ -369,7 +360,6 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       customSymbols,
       refreshSymbols,
       diagrams,
-      refreshDiagrams,
       selectedDiagramId,
       selectedComponentId
     ]

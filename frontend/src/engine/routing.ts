@@ -1,6 +1,6 @@
 /**
  * Orthogonal routing between two points that leave in known directions.
- * Ported from the React Flow edge (OrthogonalEdge.tsx) into mm paper space.
+ * Ported from the retired React Flow editor's orthogonal edge into mm paper space.
  */
 import {
   dominantSide,

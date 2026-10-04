@@ -15,6 +15,7 @@ import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
+import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
 import { convertLegacyGraph } from "../engine/convert";
 import { Editor, type AlignMode, type ToolId } from "../engine/editor";
 import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
@@ -24,7 +25,7 @@ import { renderFindingsSheet } from "../engine/drcSheet";
 import { buildSheetIndex, lineLengthM } from "../engine/index";
 import type { ListKind } from "../engine/lists";
 import { partBadge, partWarnings } from "../engine/parts";
-import { SymbolRegistry } from "../engine/library";
+import { CUSTOM_LIBRARY, SymbolRegistry } from "../engine/library";
 import { LINE_TYPE_LABELS, renderDocumentSvg, type PartBadge } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
@@ -265,6 +266,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [showGrid, setShowGrid] = useState(true);
   const [showDrawingPanel, setShowDrawingPanel] = useState(false);
   const [creating, setCreating] = useState<null | { mode: "new" | "convert" }>(null);
+  // Custom symbol open in the symbol editor (null symbol = a new one).
+  const [symbolEditor, setSymbolEditor] = useState<null | { symbol: PidSymbolDef | null }>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [tagScheme, setTagScheme] = useState<TagScheme>(DEFAULT_TAG_SCHEME);
@@ -779,6 +782,28 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     }
   }
 
+  /** A saved symbol reaches the open sheet through the rebuilt registry; the sheet is not reloaded. */
+  function symbolSaved(symbol: PidSymbolDef) {
+    setSymbolEditor(null);
+    refreshSymbols?.();
+    notify(`Saved symbol ${symbol.name}.`);
+  }
+
+  async function deleteCustomSymbol(symbolId: string) {
+    const symbol = customSymbols.find((entry) => entry.id === symbolId);
+    if (!symbol) return;
+    const used = editor?.store.doc.items.filter((item) => item.kind === "symbol" && item.symbol.library === CUSTOM_LIBRARY && item.symbol.key === symbolId).length ?? 0;
+    const usage = used ? ` ${used} item(s) on this sheet use it and will show as missing.` : " Sheets that use it will show it as missing.";
+    if (!window.confirm(`Delete symbol "${symbol.name}"?${usage}`)) return;
+    try {
+      await api.deleteSymbol(symbolId);
+      refreshSymbols?.();
+      notify(`Deleted symbol ${symbol.name}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not delete the symbol.", true);
+    }
+  }
+
   async function updateDrawing(patch: Parameters<typeof api.updateDrawing>[1]) {
     if (!drawing) return;
     try {
@@ -850,7 +875,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           <button type="button" disabled={!canWrite || !projectId} onClick={() => setCreating({ mode: "new" })}>
             New drawing
           </button>
-          <button type="button" disabled={!canWrite || !diagrams.length} onClick={() => setCreating({ mode: "convert" })} title="Create a drawing from a diagram on the Diagrams page">
+          <button type="button" disabled={!canWrite || !diagrams.length} onClick={() => setCreating({ mode: "convert" })} title="Create a drawing from a legacy diagram">
             Convert diagram…
           </button>
           {editor && (
@@ -887,6 +912,9 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           onCancel={() => setCreating(null)}
         />
       )}
+      {symbolEditor && canWrite && (
+        <SymbolEditorModal symbol={symbolEditor.symbol} onClose={() => setSymbolEditor(null)} onSaved={symbolSaved} />
+      )}
       <section className="draftingWorkspace">
         {editor && (
           <EditorToolbar
@@ -907,7 +935,15 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           {editor && showLibrary && (
             <>
               <aside className="draftingLibrary" style={{ width: libraryWidth }}>
-                <LibraryPanelHost editor={editor} registry={registry} canWrite={canWrite} onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)} />
+                <LibraryPanelHost
+                  editor={editor}
+                  registry={registry}
+                  canWrite={canWrite}
+                  onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)}
+                  onNewSymbol={() => setSymbolEditor({ symbol: null })}
+                  onEditSymbol={(id) => setSymbolEditor({ symbol: customSymbols.find((entry) => entry.id === id) ?? null })}
+                  onDeleteSymbol={(id) => void deleteCustomSymbol(id)}
+                />
               </aside>
               <PanelResizer width={libraryWidth} onResize={setLibraryWidth} direction={1} label="Resize symbol library" />
             </>
@@ -937,7 +973,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                       ? "Select a project with the project switcher in the sidebar."
                       : drawings.length
                         ? "Select a drawing."
-                        : "Create a new drawing, or convert a diagram from the Diagrams page."}
+                        : "Create a new drawing, or convert a legacy diagram."}
                 </p>
               </div>
             )}
@@ -1010,18 +1046,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
 
 function LibraryPanelHost({
   editor,
-  registry,
-  canWrite,
-  onUpdateCustom
-}: {
-  editor: Editor;
-  registry: SymbolRegistry;
-  canWrite: boolean;
-  onUpdateCustom: (symbolId: string, patch: { category?: string; legend?: string; tag_prefix?: string }) => void;
-}) {
+  ...panel
+}: { editor: Editor } & Omit<Parameters<typeof LibraryPanel>[0], "placing" | "onPlace">) {
   const { state } = useEditorSnapshot(editor);
   const placing = state.tool === "place" && state.place ? state.place.symbol : null;
-  return <LibraryPanel registry={registry} placing={placing} canWrite={canWrite} onPlace={(ref) => editor.startPlacing(ref)} onUpdateCustom={onUpdateCustom} />;
+  return <LibraryPanel {...panel} placing={placing} onPlace={(ref) => editor.startPlacing(ref)} />;
 }
 
 type NewDrawingForm = {
