@@ -58,43 +58,79 @@ export function fractionAlong(points: Point[], point: Point): number {
 /**
  * Crossing points between lines that are not connected there. Hops are drawn
  * on the horizontal segment; keyed by the line that carries the hop.
+ *
+ * Vertical segments are sorted by x so each horizontal segment only visits the
+ * verticals inside its x-span (instead of every line pair). Output order
+ * matches the pairwise scan: lines in input order, then for each line its hops
+ * ordered by (crossing line, horizontal segment, vertical segment).
  */
 export function computeCrossings(lines: LineItem[]): Map<string, Point[]> {
-  const result = new Map<string, Point[]>();
-  const bounds = lines.map((line) => {
-    const xs = line.points.map((point) => point.x);
-    const ys = line.points.map((point) => point.y);
-    return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  // Vertical segments, sorted by x, in flat typed arrays.
+  const found: Array<{ line: number; segment: number; x: number; y0: number; y1: number }> = [];
+  lines.forEach((line, lineIndex) => {
+    for (let u = 0; u < line.points.length - 1; u += 1) {
+      const v0 = line.points[u];
+      const v1 = line.points[u + 1];
+      // A non-finite x can never lie strictly inside a horizontal run; keeping it out keeps the sort sane.
+      if (v0.x !== v1.x || !Number.isFinite(v0.x)) continue;
+      found.push({ line: lineIndex, segment: u, x: v0.x, y0: Math.min(v0.y, v1.y), y1: Math.max(v0.y, v1.y) });
+    }
   });
-  for (let i = 0; i < lines.length; i += 1) {
-    for (let j = 0; j < lines.length; j += 1) {
-      if (i === j) continue;
-      const a = bounds[i];
-      const b = bounds[j];
-      if (a.maxX < b.minX || b.maxX < a.minX || a.maxY < b.minY || b.maxY < a.minY) continue;
-      const horizontal = lines[i];
-      const vertical = lines[j];
-      for (let s = 0; s < horizontal.points.length - 1; s += 1) {
-        const h0 = horizontal.points[s];
-        const h1 = horizontal.points[s + 1];
-        if (h0.y !== h1.y) continue;
-        const hx0 = Math.min(h0.x, h1.x);
-        const hx1 = Math.max(h0.x, h1.x);
-        for (let u = 0; u < vertical.points.length - 1; u += 1) {
-          const v0 = vertical.points[u];
-          const v1 = vertical.points[u + 1];
-          if (v0.x !== v1.x) continue;
-          const vy0 = Math.min(v0.y, v1.y);
-          const vy1 = Math.max(v0.y, v1.y);
-          // Strictly interior on both segments: touching ends are tees, not crossings.
-          if (v0.x > hx0 + EPSILON && v0.x < hx1 - EPSILON && h0.y > vy0 + EPSILON && h0.y < vy1 - EPSILON) {
-            const bucket = result.get(horizontal.id) ?? [];
-            bucket.push({ x: v0.x, y: h0.y });
-            result.set(horizontal.id, bucket);
-          }
-        }
+  found.sort((a, b) => a.x - b.x);
+  const count = found.length;
+  const vx = new Float64Array(count);
+  const vy0 = new Float64Array(count);
+  const vy1 = new Float64Array(count);
+  const vLine = new Int32Array(count);
+  const vSegment = new Int32Array(count);
+  found.forEach((vertical, k) => {
+    vx[k] = vertical.x;
+    vy0[k] = vertical.y0;
+    vy1[k] = vertical.y1;
+    vLine[k] = vertical.line;
+    vSegment[k] = vertical.segment;
+  });
+
+  // Hops are collected as numeric sort keys of (crossing line, horizontal segment, vertical segment).
+  const span = lines.reduce((max, line) => Math.max(max, line.points.length), 1);
+  const result = new Map<string, Point[]>();
+  const keys: number[] = [];
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const horizontal = lines[lineIndex];
+    keys.length = 0;
+    for (let s = 0; s < horizontal.points.length - 1; s += 1) {
+      const h0 = horizontal.points[s];
+      const h1 = horizontal.points[s + 1];
+      if (h0.y !== h1.y) continue;
+      const low = Math.min(h0.x, h1.x) + EPSILON;
+      const high = Math.max(h0.x, h1.x) - EPSILON;
+      const y = h0.y;
+      // First vertical strictly right of the run's start.
+      let k = 0;
+      let end = count;
+      while (k < end) {
+        const mid = (k + end) >>> 1;
+        if (vx[mid] > low) end = mid;
+        else k = mid + 1;
+      }
+      // Strictly interior on both segments: touching ends are tees, not crossings.
+      for (; k < count && vx[k] < high; k += 1) {
+        if (vLine[k] !== lineIndex && y > vy0[k] + EPSILON && y < vy1[k] - EPSILON) keys.push((vLine[k] * span + s) * span + vSegment[k]);
       }
     }
+    if (!keys.length) continue;
+    const sorted = new Float64Array(keys).sort();
+    const hops: Point[] = new Array(sorted.length);
+    for (let index = 0; index < sorted.length; index += 1) {
+      const key = sorted[index];
+      const u = key % span;
+      const s = Math.floor(key / span) % span;
+      const other = Math.floor(key / (span * span));
+      hops[index] = { x: lines[other].points[u].x, y: horizontal.points[s].y };
+    }
+    const existing = result.get(horizontal.id);
+    if (existing) existing.push(...hops);
+    else result.set(horizontal.id, hops);
   }
   return result;
 }

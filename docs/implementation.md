@@ -39,7 +39,7 @@ FSDP/
 FSDP is currently implemented as a split web application:
 
 - Backend: FastAPI, SQLAlchemy, Alembic, PostgreSQL.
-- Frontend: React, TypeScript, Vite, React Flow.
+- Frontend: React, TypeScript, Vite; Drafting runs on the in-house schematic engine in `frontend/src/engine/`.
 - Local infrastructure: Docker Compose for PostgreSQL.
 
 ```mermaid
@@ -83,28 +83,24 @@ Core tables:
 
 - `projects`: top-level engineering project.
 - `fluid_systems`: project-owned fluid systems.
-- `diagrams`: saved P&ID graph documents with revision and graph JSON.
-- `diagram_nodes`: normalized graph nodes for queryable diagram structure.
-- `diagram_edges`: normalized graph edges and line-like attributes.
+- `drawings`, `drawing_sheets`, `drawing_revisions`: controlled P&ID drawings authored in Drafting (see "Schematic Engine" below).
+- `diagrams`, `diagram_nodes`, `diagram_edges`, `component_instances`: legacy diagrams from the retired React Flow editor. Read-only: kept so Drafting can convert them and so old BoMs and trace links stay readable.
 - `parts`: internal or vendor catalog parts.
-- `component_instances`: part usage on a diagram, optionally bound to a persisted diagram node.
 - `requirements`: project-level requirements.
 - `trace_links`: typed links between requirements, components, and other object types.
-- `bom_snapshots`: generated BoM rows for a diagram at a point in time.
+- `bom_snapshots`: generated BoM rows for a drawing (or, as history, a legacy diagram) at a point in time.
 - `change_events`: simple audit/change records used by change impact views.
 
 Important modeling choices:
 
-- `Diagram.graph` stores the full React Flow payload for round-tripping the editor state.
-- `DiagramNode` and `DiagramEdge` store normalized graph data for BoM, traceability, and later analysis.
-- `ComponentInstance.node_id` binds a placed component to an actual `DiagramNode`.
+- `Diagram.graph` keeps the legacy React Flow payload that Drafting's converter reads; no endpoint writes legacy diagrams any more.
 - `Part.metadata_` maps to the database column named `metadata` to avoid colliding with SQLAlchemy's reserved `metadata` attribute.
 
 ### Services
 
 Service modules live in `backend/app/services/`.
 
-- `bom.py`: rolls component instances up into BoM snapshot rows.
+- `bom.py`: rolls a drawing's sheet index up into BoM snapshot rows.
 - `traceability.py`: returns trace links for an object in either source or target direction.
 - `change_impact.py`: identifies linked objects, affected components, and affected BoM snapshots.
 - `catalog.py`: contains early catalog-quality warnings for missing qualification data.
@@ -134,14 +130,16 @@ Fluid systems:
 - `PUT /systems/{system_id}`
 - `DELETE /systems/{system_id}`
 
-Diagrams:
+Drawings, sheets, revisions, lists, and DRC: see "Schematic Engine" below; `GET /projects/{project_id}/sheet-items` lists the tagged items of a project's saved sheets (trace-link targets).
 
-- `POST /systems/{system_id}/diagrams`
+Legacy diagrams (read-only; converted into drawings on the Drafting page):
+
 - `GET /systems/{system_id}/diagrams`
+- `GET /projects/{project_id}/diagrams` (every system, without graphs)
 - `GET /diagrams/{diagram_id}`
-- `PUT /diagrams/{diagram_id}`
-- `DELETE /diagrams/{diagram_id}`
-- `PUT /diagrams/{diagram_id}/graph`
+- `GET /diagrams/{diagram_id}/schematic`
+- `GET /diagrams/{diagram_id}/components`
+- `DELETE /diagrams/{diagram_id}` (clean-up after conversion)
 
 Parts:
 
@@ -150,13 +148,6 @@ Parts:
 - `GET /parts/{part_id}`
 - `PUT /parts/{part_id}`
 - `DELETE /parts/{part_id}`
-
-Components:
-
-- `POST /diagrams/{diagram_id}/components`
-- `GET /diagrams/{diagram_id}/components`
-- `PUT /components/{component_id}`
-- `DELETE /components/{component_id}`
 
 Requirements:
 
@@ -167,15 +158,18 @@ Requirements:
 
 Traceability:
 
-- `POST /trace-links`
+- `POST /trace-links` (new links to legacy `diagram`/`component` objects are refused)
+- `DELETE /trace-links/{link_id}`
 - `GET /objects/{object_type}/{object_id}/trace`
 
 BoM:
 
-- `POST /diagrams/{diagram_id}/bom`
-- `GET /diagrams/{diagram_id}/bom`
+- `POST /drawings/{drawing_id}/bom`
+- `GET /drawings/{drawing_id}/bom`
+- `GET /diagrams/{diagram_id}/bom` (legacy history)
 - `GET /projects/{project_id}/bom`
-- `GET /bom/{snapshot_id}/csv`
+- `PUT /bom/{snapshot_id}/status` (drawing BoMs; legacy snapshots are read-only)
+- `GET /bom/{snapshot_id}/readiness`, `/diff`, `/csv`, `/xlsx`
 
 Change impact:
 
@@ -188,8 +182,7 @@ Current explicit validations:
 - Duplicate project names return `409`.
 - Duplicate part numbers return `409`.
 - Duplicate requirement keys within a project return `409`.
-- Component placement validates that the selected graph node exists in the target diagram.
-- Component updates validate that selected nodes belong to the component's diagram.
+- Trace links validate that both endpoints exist and belong to the same project (catalog parts are shared).
 
 Future validation should add stronger field constraints, engineering-unit validation, and object-type validation for trace links.
 
@@ -197,7 +190,7 @@ Future validation should add stronger field constraints, engineering-unit valida
 
 ### Entry Points
 
-- `frontend/src/main.tsx` mounts the React app and imports React Flow styles.
+- `frontend/src/main.tsx` mounts the React app and imports the fonts and styles.
 - `frontend/src/App.tsx` contains the current MVP workspace.
 - `frontend/src/api.ts` wraps backend HTTP calls.
 - `frontend/src/types.ts` defines frontend data types aligned with backend responses.
@@ -209,36 +202,17 @@ The current page supports this workflow:
 
 1. Create, select, update, or delete a project.
 2. Create, select, update, or delete a fluid system under the active project.
-3. Create, open, rename, delete, edit, and save a P&ID diagram graph.
-4. Add graph nodes and lines with React Flow.
-5. Create, select, update, or delete catalog parts.
-6. Place a selected part onto a selected diagram node as a component instance.
-7. Create, select, update, or delete requirements.
-8. Link a selected requirement to a selected component.
-9. Generate BoM snapshots and download CSV.
-10. Inspect basic change impact for the selected component or part.
+3. Create drawings on the Drafting page (or convert a legacy diagram), draw sheets, and save them.
+4. Draw or import custom symbols from the Drafting library panel.
+5. Create, select, update, or delete catalog parts, and assign them to drawing items.
+6. Create, select, update, or delete requirements.
+7. Trace a requirement to a tagged drawing item or a whole drawing.
+8. Generate drawing BoM snapshots and download CSV/XLSX.
+9. Inspect the change impact of a part or requirement and open affected tags in Drafting.
 
-### Diagram Persistence
+### Legacy Diagrams
 
-React Flow nodes and edges are saved through:
-
-```text
-PUT /diagrams/{diagram_id}/graph
-```
-
-The backend stores:
-
-- `Diagram.graph`: full editor payload used to restore the React Flow canvas.
-- `DiagramNode`: normalized nodes.
-- `DiagramEdge`: normalized edges.
-
-When a user selects an existing diagram in the frontend, the app fetches the diagram and restores `graph.nodes` and `graph.edges` into React Flow state.
-
-### Component Placement
-
-The frontend sends `properties.node_external_id` when placing a part on a graph node. The backend resolves that external graph id to the persisted `DiagramNode.id` and stores it in `ComponentInstance.node_id`.
-
-This means placed components are tied to queryable diagram nodes, not only to frontend-only graph ids.
+Diagrams drawn in the retired React Flow editor are import-only. The Drafting page lists every legacy diagram of the project (`GET /projects/{project_id}/diagrams`), converts the selected one with `engine/convert.ts` (from its stored schematic document when present, else from `Diagram.graph`), and creates a drawing whose first sheet records `source_diagram_id`. A one-time hint names unconverted diagrams; converted ones can be deleted from the convert form. Their components, trace links, and diagram BoM snapshots remain readable history.
 
 ## Local Development
 
@@ -297,7 +271,7 @@ Current backend tests cover:
 - Traceability lookup.
 - Change impact lookup.
 - Catalog warnings.
-- End-to-end API workflow for project/system/diagram/part/component/BoM.
+- Legacy diagram reads, the removed write endpoints, and the demo seed (`test_legacy_diagrams.py`).
 - Duplicate validation and delete flow.
 
 ## Current Limitations
@@ -305,7 +279,6 @@ Current backend tests cover:
 - The frontend is still a single-page MVP workspace, not a production navigation model.
 - There is no authentication, authorization, or role-based approval workflow.
 - Change impact is shallow and only follows direct trace links plus part/component BoM usage.
-- Diagram symbols are generic React Flow nodes, not a full P&ID symbol library.
 - Engineering analysis modules are not implemented yet.
 - Configuration baselines, branches, and releases are not implemented yet.
 - Certification package generation is not implemented beyond BoM CSV export and future-oriented stubs.
@@ -327,11 +300,11 @@ The Drafting page is the first slice of the [P&ID professional upgrade plan](pid
 - **Commands** (`commands.ts`, `store.ts`): every edit is a serialisable command with an exact inverse; the store keeps undo/redo and dirtiness. Drags coalesce into one undo step.
 - **Renderer** (`render.ts`): one renderer produces SVG markup for the canvas and for export at paper size (`renderDocumentSvg`), so the screen and the file never drift.
 - **Editor** (`editor.ts`): tool state machines for select/move, wire, place, label, equipment, and note, driven by pointer events in mm and a KiCad-style key map (W wire, R rotate, X mirror, Esc cancel, Ctrl+D duplicate, arrows nudge).
-- **Converter** (`convert.ts`): turns a legacy React Flow `graph` into a document on first open; item ids are preserved so component bindings keep lining up.
+- **Converter** (`convert.ts`): turns a legacy React Flow `graph` into a document when a legacy diagram is converted into a drawing; item ids are preserved.
 
 **Drawings** (`backend/app/api/drawing_routes.py`, migration `0008`): a drawing (`/projects/{id}/drawings`) has a number, up to three title lines, size, units, status, frame template, title-block fields, and general notes; it owns numbered sheets (`/drawings/{id}/sheets`, each with a schematic document) and revisions (`/drawings/{id}/revisions`). Frame templates (`frontend/src/engine/frames.ts`) bind those rows into the title block, revision table, notes block, and proprietary notice when the sheet renders.
 
-**Symbol library** (`frontend/src/engine/builtinSymbols.ts`, `library.ts`): 104 built-in ISA/ISO symbols with typed ports, legend text, and tag letters; valve bodies accept a composed actuator (`SymbolItem.actuator`) whose signal port joins the body's ports through `registry.portsOf`. Custom symbols from `/symbols` carry `category`, `legend`, and `tag_prefix` (migration `0009`). The Drafting page's library panel browses, searches, previews, and places symbols.
+**Symbol library** (`frontend/src/engine/builtinSymbols.ts`, `library.ts`): 104 built-in ISA/ISO symbols with typed ports, legend text, and tag letters; valve bodies accept a composed actuator (`SymbolItem.actuator`) whose signal port joins the body's ports through `registry.portsOf`. Custom symbols from `/symbols` carry `category`, `legend`, and `tag_prefix` (migration `0009`). The Drafting page's library panel browses, searches, previews, and places symbols; writers create, edit, and delete custom symbols there in the symbol editor (`components/schematic/SymbolEditorModal.tsx`), which strips editor metadata such as Inkscape's `sodipodi:`/`inkscape:` markup (`engine/svgSanitize.ts`, mirroring the server's allowlist in `clean_symbol_svg`).
 
 **Tag schemes** (`frontend/src/engine/tags.ts`, `GET/PUT /projects/{id}/tag-scheme`): per-project simple (`HV-12`) or structured (`PT 3222`) tags; the editor suggests, validates, and renumbers tags; the Settings page edits the scheme. The frame renderer can print a symbol legend and the ISA letter table when the drawing enables them.
 
@@ -345,6 +318,25 @@ The Drafting page is the first slice of the [P&ID professional upgrade plan](pid
 
 **Export** (`POST /sheets/{id}/export`): the browser renders the sheet SVG with the shared renderer and the server converts it with Cairo (`app/services/export.py`) to PDF at paper size or PNG at a DPI; the image installs `libcairo2`.
 
-Legacy persistence: `GET/PUT /diagrams/{id}/schematic` stores a schematic document on a classic diagram (`diagrams.schematic`, migration `0007`); "Convert diagram" on the Drafting page uses it as the source when present, else converts the React Flow `graph`.
+Legacy persistence: `GET /diagrams/{id}/schematic` reads a schematic document stored on a legacy diagram by earlier builds (`diagrams.schematic`, migration `0007`); "Convert diagram…" on the Drafting page uses it as the source when present, else converts the React Flow `graph`.
 
-Tests: `npx vitest run src/engine` covers geometry, library grid conformance, undo/redo (including a randomised inverse property), connectivity, routing, snapping, hit testing, conversion, rendering, frame templates, and the editor tools; `src/pages/DraftingPage.test.tsx` covers opening a sheet with a bound title block, saving, converting a diagram, and exporting; `backend/tests/test_schematic.py` and `test_drawings.py` cover the API including PDF/PNG export.
+Tests: `npx vitest run src/engine` covers geometry, library grid conformance, undo/redo (including a randomised inverse property), connectivity, routing, snapping, hit testing, conversion, rendering, frame templates, and the editor tools; `src/pages/DraftingPage.test.tsx` covers opening a sheet with a bound title block, saving, converting a diagram, the symbol editor, deep links, and exporting; `backend/tests/test_drawings.py` and `test_legacy_diagrams.py` cover the API including PDF/PNG export.
+
+### Release workflow
+
+A drawing and its current revision move through three states, changed only by explicit actions (`PUT /drawings/{id}` with a different `status` is refused with 422):
+
+| State | Actions (writers) | Endpoint | Stamps |
+|---|---|---|---|
+| `draft` | Submit for review, Release | `POST /drawings/{id}/submit`, `/release` | `submitted_by/at` on submit |
+| `in_review` | Withdraw (back to draft), Release | `POST /drawings/{id}/withdraw`, `/release` | |
+| `released` | Start new revision (optional label and description; the label defaults to the next letter, `-`→`A`→`B`, `Z`→`AA`) | `POST /drawings/{id}/revise` | `drawn_by/date` on the new revision |
+
+- **Signatures are server-stamped.** Release records `approved_by/at/date` from the signed-in user; `checked_by`/`approved_by` in revision requests are rejected (422). The Drafting revision table shows the drawn / submitted / approved stamps read-only.
+- **Release gate.** `POST /release` returns 409 with `detail.reasons` (`{code, sheet_id, sheet_no, count?, message}`) while any sheet's index is stale (`index_stale`) or has open (unwaived) DRC errors (`drc_errors`). Drafting lists the reasons; clicking one opens the sheet (and brings its DRC panel into view), and stale sheets offer "Re-index now".
+- **Released drawings are locked.** Sheet create/update/delete, drawing metadata, revisions, and waivers return 409 until a new revision is started. Release stores an immutable snapshot of every sheet (document, index rows, DRC findings and waivers) on the revision, served by `GET /revisions/{id}/snapshot`; Drafting's "View" opens it read-only with a sheet preview and SVG download.
+- **Read-only editing.** For released drawings and for viewers the canvas runs the editor in read-only mode (`Editor.setReadOnly`, `SchematicCanvas readOnly`): every document command, undo/redo, paste, and drawing tool is dropped, while select, pan, zoom, find, copy, and measure keep working. The inspector, toolbar, and drawing form are disabled, and released drawings show a "Released — start a new revision to edit" banner.
+
+**Staleness.** A sheet's stored index and DRC are stale when its document changed without them (a new or converted sheet with content), when an assigned part changes, or when a project requirement changes (`app/services/sheet_index.py`). List, BoM, and verification-matrix responses carry `stale_sheets`, BoM snapshots record the sheets that were stale when they were generated, and exports print a warning row. When a writer opens a drawing that is not released, Drafting re-indexes its stale sheets in the background (`components/schematic/useStaleReindex.ts`): one sheet at a time, from the stored document, through the same `deriveSheetData` (`engine/derived.ts`) that save uses (registry, tag scheme, parts, requirement constraints, waivers, reserved tags and connector targets from the other sheets), then `PUT /sheets/{id}` with document, index, and DRC. The run stops when the drawing changes, and the open sheet is left alone while it has unsaved edits (its save indexes it). Saves are versioned (`DocumentStore.markSaved(version)`), so edits made while a save is in flight stay unsaved.
+
+**BoM release.** `PUT /bom/{id}/status` with `released` is refused (409, `detail.issues`) while readiness has blocking issues: rows without a catalog part, obsolete or restricted parts, or a snapshot generated from stale sheets. It stamps `released_by/at`; released BoMs are immutable (no return to draft; generate a new snapshot instead). The BoM page lists a drawing's snapshots, splits readiness into blocking issues and warnings, diffs two snapshots of the same drawing, and exports CSV and XLSX (`GET /bom/{id}/xlsx`, with a header block for project, drawing, revision, and status). Legacy diagram BoMs stay visible there as read-only history.

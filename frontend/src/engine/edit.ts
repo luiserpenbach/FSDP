@@ -225,16 +225,3 @@ export function dragSegment(points: Point[], index: number, coordinate: number):
   }
   return simplifyPolyline(next);
 }
-
-/** Next free tag for a prefix, e.g. "HV-3" when HV-1 and HV-2 exist. */
-export function suggestTag(doc: SchematicDocument, prefix: string): string {
-  const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`^${escaped}[-\\s]?(\\d+)$`);
-  let highest = 0;
-  for (const item of doc.items) {
-    const tag = item.kind === "symbol" || item.kind === "equipment" ? item.tag : undefined;
-    const match = tag ? pattern.exec(tag) : null;
-    if (match) highest = Math.max(highest, Number(match[1]));
-  }
-  return `${prefix}-${highest + 1}`;
-}

@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Diagram, Drawing, DrawingSheet, FluidSystem, Part, User } from "../types";
+import { Editor } from "../engine/editor";
+import { CUSTOM_LIBRARY } from "../engine/library";
+import type { Diagram, DiagramSummary, Drawing, DrawingSheet, FluidSystem, Part, PidSymbolDef, User } from "../types";
 
 const apiMock = vi.hoisted(() => ({
   listDrawings: vi.fn(),
@@ -17,9 +19,14 @@ const apiMock = vi.hoisted(() => ({
   exportSheet: vi.fn(),
   getSchematic: vi.fn(),
   getDiagram: vi.fn(),
+  listComponents: vi.fn(),
+  listProjectDiagrams: vi.fn(),
+  deleteDiagram: vi.fn(),
   getTagScheme: vi.fn(),
   updateTagScheme: vi.fn(),
+  createSymbol: vi.fn(),
   updateSymbol: vi.fn(),
+  deleteSymbol: vi.fn(),
   listLineClasses: vi.fn(),
   createLineClass: vi.fn(),
   importLineClasses: vi.fn(),
@@ -53,6 +60,11 @@ const legacyDiagram: Diagram = {
     edges: [{ id: "e1", source: "v1", sourceHandle: "out", target: "s1", targetHandle: "process", data: { fluid: "GHe" } }]
   }
 };
+
+function summaryOf(diagram: Diagram): DiagramSummary {
+  const { id, system_id, name, diagram_type, revision } = diagram;
+  return { id, system_id, name, diagram_type, revision };
+}
 
 const drawing: Drawing = {
   id: "dw1",
@@ -133,7 +145,6 @@ function renderPage(notify = vi.fn()) {
         projectId="p1"
         projectName="AMB2"
         systems={systems}
-        diagrams={[legacyDiagram]}
         selectedSystemId="s1"
         customSymbols={[]}
         parts={parts}
@@ -155,6 +166,8 @@ describe("DraftingPage", () => {
     apiMock.getSheet.mockResolvedValue(sheet);
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.listLineClasses.mockResolvedValue([]);
+    apiMock.listProjectDiagrams.mockResolvedValue([]);
+    apiMock.listComponents.mockResolvedValue([]);
     apiMock.getSheetDrc.mockResolvedValue({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
     apiMock.updateSheet.mockImplementation(async (_id: string, body: { document: unknown }) => ({ ...sheet, document: body.document }));
   });
@@ -198,16 +211,41 @@ describe("DraftingPage", () => {
     expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1 (1 items, 0 lines indexed; DRC: 0 error(s), 1 warning(s)).");
   });
 
-  it("converts a legacy diagram into a new drawing", async () => {
+  it("converts any legacy diagram of the project, grouped by system, and marks converted ones", async () => {
+    const oxidizer = { id: "s2", project_id: "p1", name: "Oxidizer", fluid: "LOX", description: "" } as FluidSystem;
+    const loxFeed: DiagramSummary = { id: "d2", system_id: "s2", name: "LOX feed", diagram_type: "pid", revision: 1 };
+    const converted: Drawing = { ...drawing, id: "dw2", number: "AMB2-0002", title: "Helium panel", sheets: [{ id: "sh5", sheet_no: 1, title: null, source_diagram_id: "d1" }] };
+    apiMock.listProjectDiagrams.mockResolvedValue([summaryOf(legacyDiagram), loxFeed]);
     apiMock.getSchematic.mockResolvedValue({ diagram_id: "d1", revision: 3, document: null });
     apiMock.getDiagram.mockResolvedValue(legacyDiagram);
-    apiMock.createDrawing.mockResolvedValue({ ...drawing, id: "dw2", number: "AMB2-0002", title: "Helium panel" });
-    renderPage();
+    apiMock.listComponents.mockResolvedValue([]);
+    apiMock.createDrawing.mockResolvedValue(converted);
+    apiMock.listDrawings.mockResolvedValueOnce([drawing]).mockResolvedValue([drawing, converted]);
+    apiMock.deleteDiagram.mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const notify = vi.fn();
+    render(
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={[...systems, oxidizer]} selectedSystemId="s2" customSymbols={[]} parts={parts} user={user} canWrite notify={notify} />
+      </MemoryRouter>
+    );
     await screen.findByTestId("schematic-canvas");
 
-    fireEvent.click(screen.getByRole("button", { name: "Convert diagram…" }));
+    // A one-time hint names the unconverted diagrams; opening the convert form retires it.
+    const hint = await screen.findByRole("status", { name: "Unconverted legacy diagrams" });
+    expect(hint).toHaveTextContent("2 legacy diagrams in this project have not been converted into drawings.");
+    fireEvent.click(within(hint).getByRole("button", { name: "Convert diagram…" }));
+    expect(screen.queryByRole("status", { name: "Unconverted legacy diagrams" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("fsdp.drafting.legacyHint.p1")).toBe("dismissed");
+
+    // Every system's diagrams are offered, not just the selected system's.
+    const picker = screen.getByLabelText("Diagram") as HTMLSelectElement;
+    expect([...picker.querySelectorAll("optgroup")].map((group) => group.label)).toEqual(["Helium fill", "Oxidizer"]);
+    expect(picker.value).toBe("d1");
     fireEvent.click(screen.getByRole("button", { name: "Convert" }));
     await waitFor(() => expect(apiMock.createDrawing).toHaveBeenCalledTimes(1));
+    // Placed parts come from the legacy component table, not the graph.
+    expect(apiMock.listComponents).toHaveBeenCalledWith(legacyDiagram.id);
     const [projectId, body] = apiMock.createDrawing.mock.calls[0] as [
       string,
       { title: string; system_id: string | null; first_sheet: { document: { items: Array<{ id: string }> }; source_diagram_id: string } }
@@ -218,6 +256,51 @@ describe("DraftingPage", () => {
     expect(body.first_sheet.source_diagram_id).toBe("d1");
     expect(body.first_sheet.document.items.map((item) => item.id).sort()).toEqual(["e1", "s1", "v1"]);
     await waitFor(() => expect(apiMock.listDrawings).toHaveBeenCalledTimes(2));
+
+    // Converted diagrams are marked, and can be deleted to clean up.
+    fireEvent.click(screen.getByRole("button", { name: "Convert diagram…" }));
+    expect(screen.getByRole("option", { name: "Helium panel rev 3 (converted: AMB2-0002)" })).toBeInTheDocument();
+    expect((screen.getByLabelText("Diagram") as HTMLSelectElement).value).toBe("d2");
+    fireEvent.change(screen.getByLabelText("Diagram"), { target: { value: "d1" } });
+    expect(screen.getByText(/Already converted into AMB2-0002/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete legacy diagram" }));
+    expect(confirm).toHaveBeenCalledWith('Delete legacy diagram "Helium panel"? It was converted into AMB2-0002, which is kept.');
+    await waitFor(() => expect(apiMock.deleteDiagram).toHaveBeenCalledWith("d1"));
+    await waitFor(() => expect(within(screen.getByLabelText("Diagram")).queryByRole("option", { name: /Helium panel/ })).not.toBeInTheDocument());
+    expect(notify).toHaveBeenCalledWith("Deleted legacy diagram Helium panel.");
+    confirm.mockRestore();
+  });
+
+  it("opens a deep-linked sheet and selects the linked item", async () => {
+    const valve = { id: "hv", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 120, y: 80 }, rotation: 0, tag: "HV-7", fields: {} };
+    const sheet2: DrawingSheet = { ...sheet, id: "sh2", sheet_no: 2, document: { ...sheet.document, items: [valve] } };
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? sheet2 : sheet));
+    render(
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} parts={parts} user={user} canWrite notify={vi.fn()} target={{ projectId: "p1", drawingId: "dw1", sheetId: "sh2", itemId: "hv" }} />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "2" })).toHaveAttribute("aria-selected", "true"));
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="hv"]')).not.toBeNull());
+    expect(await screen.findByLabelText("Tag")).toHaveValue("HV-7");
+  });
+
+  it("shows the legacy diagram hint once per project", async () => {
+    apiMock.listProjectDiagrams.mockResolvedValue([summaryOf(legacyDiagram)]);
+    const first = renderPage();
+    const hint = await screen.findByRole("status", { name: "Unconverted legacy diagrams" });
+    expect(hint).toHaveTextContent("1 legacy diagram in this project has not been converted into drawings.");
+    fireEvent.click(within(hint).getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("status", { name: "Unconverted legacy diagrams" })).not.toBeInTheDocument();
+    first.unmount();
+
+    renderPage();
+    await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(apiMock.listProjectDiagrams).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("status", { name: "Unconverted legacy diagrams" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Convert diagram…" })).toBeEnabled();
   });
 
   it("exports the sheet through the server with the rendered SVG", async () => {
@@ -332,6 +415,79 @@ describe("DraftingPage", () => {
     expect(screen.getByText(/paired connector/)).toBeInTheDocument();
   });
 
+  it("sets the line class and assigns a part across a canvas multi-selection as one undo step each", async () => {
+    apiMock.listLineClasses.mockResolvedValue([
+      { id: "lc1", project_id: "p1", name: "A1A", material: "316L SS", rating: "3000 psig", wall: '.035"', sizes: ['1/4"'], insulation: "foam", description: null, notes: null, created_at: "", updated_at: "" }
+    ]);
+    const multiDoc = {
+      ...sheet.document,
+      items: [
+        { id: "hv1", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 60 }, rotation: 0, tag: "HV-1", fields: {} },
+        { id: "hv2", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 120, y: 60 }, rotation: 0, tag: "HV-2", fields: {} },
+        { id: "la", kind: "line", layer: "process", lineType: "process", lineNumber: "3101", points: [{ x: 50, y: 150 }, { x: 150, y: 150 }], fields: {} },
+        { id: "lb", kind: "line", layer: "process", lineType: "process", lineNumber: "3102", points: [{ x: 50, y: 200 }, { x: 150, y: 200 }], fields: {} }
+      ]
+    };
+    apiMock.getSheet.mockResolvedValue({ ...sheet, document: multiDoc });
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="la"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    await screen.findByRole("heading", { name: "4 items" });
+    expect(screen.getByText("2 symbol(s) or equipment and 2 line(s) selected.")).toBeInTheDocument();
+    const undo = screen.getByRole("button", { name: "Undo" });
+    expect(undo).toBeDisabled();
+
+    fireEvent.change(await screen.findByRole("combobox", { name: "Set line class" }), { target: { value: "A1A" } });
+    await waitFor(() => expect(canvas.textContent).toContain('316L SS x .035" WALL'));
+    expect(screen.getByText("Set line class A1A on 2 item(s).")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Assign part…" }));
+    const dialog = screen.getByRole("dialog", { name: "Assign part" });
+    expect(dialog).toHaveTextContent("One part for 2 items");
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-001/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign to 2" }));
+    await waitFor(() => expect(canvas.querySelectorAll(".part-badge")).toHaveLength(2));
+
+    // Two undo steps: the part assignment, then the line class of both lines.
+    fireEvent.click(undo);
+    await waitFor(() => expect(canvas.querySelectorAll(".part-badge")).toHaveLength(0));
+    expect(canvas.textContent).toContain('316L SS x .035" WALL');
+    fireEvent.click(undo);
+    await waitFor(() => expect(canvas.textContent).not.toContain('316L SS x .035" WALL'));
+    expect(undo).toBeDisabled();
+  });
+
+  it("writes a list edit on another sheet back to that sheet with its derived index and DRC", async () => {
+    const sheet2Doc = {
+      ...sheet.document,
+      items: [{ id: "hv9", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 60 }, rotation: 0, tag: "HV-9", fields: {} }]
+    };
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? { ...sheet, id: "sh2", sheet_no: 2, document: sheet2Doc } : sheet));
+    const notify = vi.fn();
+    renderPage(notify);
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "Lists" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
+    const drawer = screen.getByRole("region", { name: "Engineering lists" });
+    await waitFor(() => expect(drawer.textContent).toContain("HV-9"));
+    fireEvent.click(within(drawer).getByLabelText("Select row 1"));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Assign part…" }));
+    const dialog = screen.getByRole("dialog", { name: "Assign part" });
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-001/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign part" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+    const [savedId, body] = apiMock.updateSheet.mock.calls[0] as [string, { document: { items: Array<{ id: string; partId?: string }> }; index: { items: Array<{ item_id: string; part_id: string | null }> }; drc: { findings: unknown[] } }];
+    expect(savedId).toBe("sh2");
+    expect(body.document.items.find((entry) => entry.id === "hv9")?.partId).toBe("part-1");
+    expect(body.index.items.find((entry) => entry.item_id === "hv9")?.part_id).toBe("part-1");
+    expect(Array.isArray(body.drc.findings)).toBe(true);
+    // The drawer reads the stored sheet's new document; the open sheet stays clean.
+    await waitFor(() => expect(drawer.textContent).toContain("AMB2-001"));
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+  });
+
   it("shows live engineering lists in the drawer and locates rows on the sheet", async () => {
     const richSheet: DrawingSheet = {
       ...sheet,
@@ -372,9 +528,9 @@ describe("DraftingPage", () => {
     expect(drawer.textContent).toContain("3101");
     expect(drawer.textContent).toContain("PT-3222 (process)");
 
-    // Click-to-locate selects the row's item.
+    // The locate button on the tag cell selects the row's item on the sheet.
     fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
-    fireEvent.click(within(drawer).getAllByText("HV-3201")[0]);
+    fireEvent.click(within(drawer).getAllByRole("button", { name: "Locate HV-3201" })[0]);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Symbol" })).toBeInTheDocument());
     expect((screen.getByLabelText("Tag") as HTMLInputElement).value).toBe("HV-3201");
 
@@ -457,7 +613,7 @@ describe("DraftingPage", () => {
     ];
     render(
       <MemoryRouter>
-        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} diagrams={[]} selectedSystemId="s1" customSymbols={[]} parts={parts} requirements={requirements} user={user} canWrite notify={vi.fn()} />
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} parts={parts} requirements={requirements} user={user} canWrite notify={vi.fn()} />
       </MemoryRouter>
     );
     const canvas = await screen.findByTestId("schematic-canvas");
@@ -505,5 +661,158 @@ describe("DraftingPage", () => {
     expect(body.drc.findings.map((finding) => finding.key)).toContain("open_port:hv:in");
     expect(body.drc.findings.find((finding) => finding.key === "requirement:r1:hv")?.requirementId).toBe("r1");
     expect(body.drc.checks).toEqual([{ requirementId: "r1", itemId: "hv", subject: "PT-3222", zone: expect.any(String), status: "fail", message: "AMB2-003 material brass is not one of 316L" }]);
+  });
+
+  it("binds the editor to its sheet so nothing can save the old document into the sheet being opened", async () => {
+    const sheet2: DrawingSheet = { ...sheet, id: "sh2", sheet_no: 2, title: "Vent", document: { ...sheet.document, items: [] } };
+    const pendingSheet2: Array<(value: DrawingSheet) => void> = [];
+    apiMock.getSheet.mockImplementation((id: string) =>
+      id === "sh2" ? new Promise<DrawingSheet>((resolve) => pendingSheet2.push(resolve)) : Promise.resolve(sheet)
+    );
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("tab", { name: "2" }));
+    expect(confirm).toHaveBeenCalledWith("Discard unsaved drafting changes?");
+    // Sheet 2 is still loading: sheet 1's editor is no longer offered, so there is no Save to click.
+    expect(screen.getByRole("tab", { name: "2" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("schematic-canvas")).not.toBeInTheDocument();
+    expect(screen.getByText("Opening sheet…")).toBeInTheDocument();
+
+    pendingSheet2.forEach((resolve) => resolve(sheet2));
+    const reopened = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(reopened.querySelector('[data-id="pt"]')).toBeNull());
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+    expect(apiMock.updateSheet).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it("keeps the open sheet and its unsaved edits when custom symbol metadata changes", async () => {
+    const setRegistry = vi.spyOn(Editor.prototype, "setRegistry");
+    const widget: PidSymbolDef = { id: "cs1", name: "Widget", view_box: "0 0 20 20", svg: "<rect width='20' height='20'/>", ports: [], category: "custom", legend: "WIDGET", tag_prefix: "W" };
+    const page = (customSymbols: PidSymbolDef[]) => (
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={customSymbols} parts={parts} user={user} canWrite notify={vi.fn()} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page([widget]));
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    const sheetLoads = apiMock.getSheet.mock.calls.length;
+    // Saving symbol metadata refreshes the custom symbols, which rebuilds the registry.
+    rerender(page([{ ...widget, tag_prefix: "WX" }]));
+    await waitFor(() => {
+      const latest = setRegistry.mock.calls.at(-1)?.[0];
+      expect(latest?.resolve({ library: CUSTOM_LIBRARY, key: "cs1", version: 1 }).tagPrefix).toBe("WX");
+    });
+    // Applied to the open editor: the sheet was not reloaded and the edit is still unsaved.
+    expect(apiMock.getSheet).toHaveBeenCalledTimes(sheetLoads);
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    setRegistry.mockRestore();
+  });
+
+  it("draws a new custom symbol from the library and uploads it without editor metadata", async () => {
+    const refreshSymbols = vi.fn();
+    apiMock.createSymbol.mockImplementation(async (body: Omit<PidSymbolDef, "id">) => ({ id: "cs9", ...body }));
+    const notify = vi.fn();
+    render(
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} refreshSymbols={refreshSymbols} parts={parts} user={user} canWrite notify={notify} />
+      </MemoryRouter>
+    );
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+    const sheetLoads = apiMock.getSheet.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "New symbol" }));
+    const dialog = screen.getByRole("dialog", { name: "New symbol" });
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Inline heater" } });
+    const markup = within(dialog).getByLabelText(/SVG markup/);
+    fireEvent.change(markup, { target: { value: '<path inkscape:label="pipe" sodipodi:nodetypes="cc" style="stroke:#000;-inkscape-stroke:none" d="M2 20 H62"/>' } });
+    fireEvent.blur(markup);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save symbol" }));
+
+    await waitFor(() => expect(apiMock.createSymbol).toHaveBeenCalledTimes(1));
+    expect(apiMock.createSymbol).toHaveBeenCalledWith({
+      name: "Inline heater",
+      view_box: "0 0 64 40",
+      svg: '<path xmlns="http://www.w3.org/2000/svg" style="stroke:#000" d="M2 20 H62"/>',
+      ports: []
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(refreshSymbols).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("Saved symbol Inline heater.");
+    // The library refreshes through the registry; the open sheet keeps its unsaved edit.
+    expect(apiMock.getSheet).toHaveBeenCalledTimes(sheetLoads);
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("edits and deletes custom symbols from the library, for writers only", async () => {
+    const refreshSymbols = vi.fn();
+    const widget: PidSymbolDef = { id: "cs1", name: "Widget", view_box: "0 0 20 20", svg: '<rect width="20" height="20"/>', ports: [{ id: "p1", x: 0, y: 10, side: "left" }], category: "custom", legend: "WIDGET", tag_prefix: "W" };
+    apiMock.updateSymbol.mockImplementation(async (id: string, body: Partial<PidSymbolDef>) => ({ ...widget, ...body, id }));
+    apiMock.deleteSymbol.mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const page = (canWrite: boolean) => (
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[widget]} refreshSymbols={refreshSymbols} parts={parts} user={user} canWrite={canWrite} notify={vi.fn()} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page(true));
+    await screen.findByTestId("schematic-canvas");
+
+    fireEvent.click(screen.getByTitle("Widget (W)"));
+    fireEvent.click(screen.getByRole("button", { name: "Edit symbol…" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit symbol" });
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("Widget");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Widget 2" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Update symbol" }));
+    await waitFor(() => expect(apiMock.updateSymbol).toHaveBeenCalledTimes(1));
+    expect(apiMock.updateSymbol).toHaveBeenCalledWith("cs1", { name: "Widget 2", view_box: "0 0 20 20", svg: '<rect xmlns="http://www.w3.org/2000/svg" width="20" height="20"/>', ports: widget.ports });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete symbol" }));
+    expect(confirm).toHaveBeenCalledWith('Delete symbol "Widget"? Sheets that use it will show it as missing.');
+    await waitFor(() => expect(apiMock.deleteSymbol).toHaveBeenCalledWith("cs1"));
+    expect(refreshSymbols).toHaveBeenCalledTimes(2);
+
+    rerender(page(false));
+    expect(screen.queryByRole("button", { name: "New symbol" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit symbol…" })).not.toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it("ignores a drawing list that arrives after the project changed", async () => {
+    const otherDrawing: Drawing = { ...drawing, id: "dw2", project_id: "p2", number: "AMB2-9100", sheets: [{ id: "sh9", sheet_no: 1, title: null, source_diagram_id: null }] };
+    let resolveFirstProject!: (value: Drawing[]) => void;
+    apiMock.listDrawings.mockImplementation((projectId: string) =>
+      projectId === "p1" ? new Promise<Drawing[]>((resolve) => (resolveFirstProject = resolve)) : Promise.resolve([otherDrawing])
+    );
+    const page = (projectId: string) => (
+      <MemoryRouter>
+        <DraftingPage projectId={projectId} projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} parts={parts} user={user} canWrite notify={vi.fn()} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page("p1"));
+    rerender(page("p2"));
+    await waitFor(() => expect(screen.getByLabelText("Drawing")).toHaveValue("dw2"));
+
+    resolveFirstProject([drawing]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.getByLabelText("Drawing")).toHaveValue("dw2");
+    expect(screen.queryByRole("option", { name: /AMB2-9003/ })).not.toBeInTheDocument();
   });
 });

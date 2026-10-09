@@ -1,61 +1,6 @@
 from fastapi.testclient import TestClient
 
 
-def test_workflow_lists_saved_diagram_and_places_component_on_node(client: TestClient) -> None:
-    project = client.post("/projects", json={"name": "Demo"}).json()
-    system = client.post(
-        f"/projects/{project['id']}/systems",
-        json={"name": "Pressurization", "fluid": "GHe"},
-    ).json()
-    diagram = client.post(
-        f"/systems/{system['id']}/diagrams",
-        json={"name": "P&ID"},
-    ).json()
-
-    graph_payload = {
-        "graph": {
-            "nodes": [{"id": "valve-1", "position": {"x": 0, "y": 0}, "data": {"label": "Valve"}}],
-            "edges": [],
-        },
-        "nodes": [
-            {
-                "external_id": "valve-1",
-                "node_type": "component",
-                "label": "Valve",
-                "position": {"x": 0, "y": 0},
-                "properties": {},
-            }
-        ],
-        "edges": [],
-    }
-    updated_diagram = client.put(f"/diagrams/{diagram['id']}/graph", json=graph_payload).json()
-    diagrams = client.get(f"/systems/{system['id']}/diagrams").json()
-
-    part = client.post(
-        "/parts",
-        json={
-            "part_number": "VALVE-100",
-            "description": "Solenoid valve",
-            "part_type": "valve",
-        },
-    ).json()
-    component = client.post(
-        f"/diagrams/{diagram['id']}/components",
-        json={
-            "tag": "V-1",
-            "part_id": part["id"],
-            "properties": {"node_external_id": "valve-1"},
-        },
-    ).json()
-    bom = client.post(f"/diagrams/{diagram['id']}/bom").json()
-
-    assert updated_diagram["revision"] == 2
-    assert diagrams[0]["id"] == diagram["id"]
-    assert diagrams[0]["graph"]["nodes"][0]["id"] == "valve-1"
-    assert component["node_id"] is not None
-    assert bom["rows"][0]["part_number"] == "VALVE-100"
-
-
 def test_duplicate_validation_and_core_delete_flow(client: TestClient) -> None:
     project = client.post("/projects", json={"name": "Demo"}).json()
     duplicate_project = client.post("/projects", json={"name": "Demo"})

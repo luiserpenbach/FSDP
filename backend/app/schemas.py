@@ -1,6 +1,7 @@
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
+from xml.parsers import expat
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -384,44 +385,118 @@ class PartUsageRead(BaseModel):
     drawing_items: list[PartUsageDrawingItemRead] = []
 
 
-# Symbols are rendered via dangerouslySetInnerHTML. Block active content and
-# nesting vectors that the earlier script/onload checks missed (data: URIs in
-# <use>/<image>, SMIL <set attributeName="onload">, <style> imports, etc.).
-_SVG_BLOCKLIST = (
-    "<script",
-    "<foreignobject",
-    "<iframe",
-    "<style",
-    "<use",
-    "<image",
-    "<set",
-    "<animate",  # animate, animateTransform, animateMotion
-    "<a ",
-    "<a>",
-    "<a/",
-    "javascript:",
-    "data:",
-    "vbscript:",
-)
-_SVG_EVENT_ATTR = re.compile(r"\son\w+\s*=")
-_SVG_SMIL_EVENT_ATTR = re.compile(r"""attributename\s*=\s*['"]?\s*on""", re.IGNORECASE)
-# Only fragment hrefs (#id) are allowed; anything else is an external/data load.
-_SVG_EXTERNAL_HREF = re.compile(r"""(?:xlink:)?href\s*=\s*['"]?\s*(?!#)""", re.IGNORECASE)
+# Symbols are rendered via dangerouslySetInnerHTML, so the markup is checked
+# against an allowlist of inert SVG drawing elements and attributes; anything
+# else (scripts, embeds, HTML, SMIL, event handlers, external references) is
+# rejected. Names are compared lowercased because the HTML parser that renders
+# the markup is case-insensitive.
+_SVG_ALLOWED_ELEMENTS = frozenset(
+    {
+        "g", "path", "line", "polyline", "polygon", "rect", "circle", "ellipse",
+        "text", "tspan", "defs", "use", "title", "desc", "marker", "clippath",
+        "lineargradient", "radialgradient", "stop", "symbol",
+    }
+)  # fmt: skip
+# Presentation properties, allowed both as attributes and inside style="".
+_SVG_PRESENTATION_PROPERTIES = frozenset(
+    {
+        "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-opacity",
+        "stroke-linecap", "stroke-linejoin", "stroke-miterlimit", "stroke-dasharray",
+        "stroke-dashoffset", "opacity", "color", "display", "visibility", "vector-effect",
+        "clip-path", "clip-rule", "marker-start", "marker-mid", "marker-end", "stop-color",
+        "stop-opacity", "font-family", "font-size", "font-weight", "font-style",
+        "font-variant", "text-anchor", "dominant-baseline", "alignment-baseline",
+        "baseline-shift", "letter-spacing", "word-spacing", "text-decoration",
+        "paint-order", "shape-rendering", "text-rendering", "writing-mode",
+    }
+)  # fmt: skip
+_SVG_ALLOWED_ATTRIBUTES = _SVG_PRESENTATION_PROPERTIES | {
+    "id", "class", "style", "transform", "xml:space", "d", "x", "y", "x1", "y1", "x2",
+    "y2", "cx", "cy", "r", "rx", "ry", "fx", "fy", "fr", "width", "height", "points",
+    "pathlength", "dx", "dy", "rotate", "textlength", "lengthadjust", "viewbox",
+    "preserveaspectratio", "refx", "refy", "markerwidth", "markerheight", "markerunits",
+    "orient", "gradientunits", "gradienttransform", "spreadmethod", "offset",
+    "clippathunits", "href", "xlink:href",
+}  # fmt: skip
+_SVG_NAMESPACES = {
+    "xmlns": "http://www.w3.org/2000/svg",
+    "xmlns:xlink": "http://www.w3.org/1999/xlink",
+}
+_SVG_FRAGMENT_HREF = re.compile(r"#[\w.:-]+")
+_SVG_URL_REFERENCE = re.compile(r"url\(['\"]?([^)'\"]*)")
+_SVG_UNSAFE_VALUE = ("javascript:", "vbscript:", "data:", "expression(", "\\", "/*", "<", "@")
+
+
+def _check_svg_value(name: str, value: str) -> None:
+    compact = re.sub(r"\s+", "", value.lower())
+    if any(token in compact for token in _SVG_UNSAFE_VALUE):
+        raise ValueError(f"SVG attribute {name} has an unsafe value")
+    for target in _SVG_URL_REFERENCE.findall(compact):
+        if not _SVG_FRAGMENT_HREF.fullmatch(target):
+            raise ValueError(f"SVG attribute {name} may only reference #fragments")
+
+
+def _check_svg_attribute(element: str, raw_name: str, value: str) -> None:
+    name = raw_name.lower()
+    if name in _SVG_NAMESPACES:
+        if value.strip() != _SVG_NAMESPACES[name]:
+            raise ValueError(f"SVG namespace {raw_name} is not allowed")
+        return
+    if name not in _SVG_ALLOWED_ATTRIBUTES:
+        raise ValueError(f"SVG attribute {raw_name} on <{element}> is not allowed")
+    if name in ("href", "xlink:href"):
+        if not _SVG_FRAGMENT_HREF.fullmatch(value.strip()):
+            raise ValueError(f"SVG attribute {raw_name} may only reference a #fragment")
+        return
+    _check_svg_value(raw_name, value)
+    if name == "style":
+        for declaration in value.split(";"):
+            if not declaration.strip():
+                continue
+            prop, _, _ = declaration.partition(":")
+            if prop.strip().lower() not in _SVG_PRESENTATION_PROPERTIES:
+                raise ValueError(f"SVG style property {prop.strip()} is not allowed")
+
+
+def _reject_svg_construct(*_args: object) -> None:
+    raise ValueError("SVG markup must not contain comments, CDATA, or processing instructions")
 
 
 def clean_symbol_svg(value: str) -> str:
-    """Reject active content; the frontend sanitizes too, but the API is the trust boundary."""
+    """Accept only inert SVG drawing markup; the API is the trust boundary.
+
+    The value is an SVG fragment (the inner markup of a symbol). It must parse as
+    well-formed XML inside a wrapper root and use only allowlisted elements and
+    attributes. Comments, CDATA and processing instructions are rejected because
+    the HTML parser that renders the markup reads them differently than XML does.
+    """
     cleaned = value.strip()
     if not cleaned:
         raise ValueError("must not be blank")
-    lowered = cleaned.lower()
-    if (
-        any(token in lowered for token in _SVG_BLOCKLIST)
-        or _SVG_EVENT_ATTR.search(lowered)
-        or _SVG_SMIL_EVENT_ATTR.search(lowered)
-        or _SVG_EXTERNAL_HREF.search(lowered)
-    ):
-        raise ValueError("SVG markup must not contain scripts, embeds, or event handlers")
+    seen_wrapper = False
+
+    def start_element(name: str, attributes: dict[str, str]) -> None:
+        nonlocal seen_wrapper
+        if not seen_wrapper:
+            seen_wrapper = True  # the <svg> wrapper added below
+            return
+        element = name.lower()
+        if element not in _SVG_ALLOWED_ELEMENTS:
+            raise ValueError(f"SVG element <{name}> is not allowed")
+        for attribute, attribute_value in attributes.items():
+            _check_svg_attribute(name, attribute, attribute_value)
+
+    parser = expat.ParserCreate()
+    parser.StartElementHandler = start_element
+    parser.CommentHandler = _reject_svg_construct
+    parser.StartCdataSectionHandler = _reject_svg_construct
+    parser.ProcessingInstructionHandler = _reject_svg_construct
+    parser.StartDoctypeDeclHandler = _reject_svg_construct
+    try:
+        parser.Parse(f"<svg>{cleaned}</svg>", True)
+    except expat.ExpatError as error:
+        reason = expat.ErrorString(error.code)
+        raise ValueError(f"SVG markup is not well-formed: {reason}") from None
     return cleaned
 
 
@@ -601,53 +676,6 @@ class TagSchemeRead(BaseModel):
     scheme: dict[str, Any] | None
 
 
-class DiagramCreate(BaseModel):
-    name: str
-    diagram_type: str = "pid"
-
-    @field_validator("name")
-    @classmethod
-    def _required_text(cls, value: str) -> str:
-        return clean_required_text(value)
-
-
-class DiagramUpdate(BaseModel):
-    name: str | None = None
-    diagram_type: str | None = None
-
-    @field_validator("name")
-    @classmethod
-    def _required_text(cls, value: str | None) -> str | None:
-        return clean_optional_text(value)
-
-
-class GraphNodeIn(BaseModel):
-    external_id: str
-    node_type: str
-    label: str
-    position: dict[str, Any] = Field(default_factory=dict)
-    properties: dict[str, Any] = Field(default_factory=dict)
-
-
-class GraphEdgeIn(BaseModel):
-    external_id: str
-    source_node_id: str
-    target_node_id: str
-    fluid: str | None = None
-    pressure_bar: float | None = None
-    temperature_c: float | None = None
-    diameter_mm: float | None = None
-    material: str | None = None
-    flow_direction: str = "forward"
-    properties: dict[str, Any] = Field(default_factory=dict)
-
-
-class DiagramGraphUpdate(BaseModel):
-    graph: dict[str, Any] = Field(default_factory=dict)
-    nodes: list[GraphNodeIn] = Field(default_factory=list)
-    edges: list[GraphEdgeIn] = Field(default_factory=list)
-
-
 SCHEMATIC_SCHEMA_VERSION = 1
 
 
@@ -702,6 +730,20 @@ def _clean_frame_template(value: str | None) -> str | None:
     return value
 
 
+# Fields stamped by the release workflow from the authenticated user; clients
+# cannot write them (a non-null value is rejected rather than silently dropped).
+_STAMPED_REVISION_FIELDS = ("checked_by", "checked_date", "approved_by", "approved_date")
+
+
+def _reject_stamped(value: str | None) -> None:
+    if value is not None and str(value).strip():
+        raise ValueError(
+            "is stamped by the release workflow (POST /drawings/{id}/submit and /release) "
+            "and cannot be set directly"
+        )
+    return None
+
+
 class DrawingRevisionCreate(BaseModel):
     label: str = "-"
     description: str = "Initial issue"
@@ -717,6 +759,11 @@ class DrawingRevisionCreate(BaseModel):
     def _label(cls, value: str) -> str:
         return clean_required_text(value)
 
+    @field_validator(*_STAMPED_REVISION_FIELDS)
+    @classmethod
+    def _stamped(cls, value: str | None) -> None:
+        return _reject_stamped(value)
+
 
 class DrawingRevisionUpdate(BaseModel):
     label: str | None = None
@@ -728,6 +775,15 @@ class DrawingRevisionUpdate(BaseModel):
     approved_by: str | None = None
     approved_date: str | None = None
 
+    @field_validator(*_STAMPED_REVISION_FIELDS)
+    @classmethod
+    def _stamped(cls, value: str | None) -> None:
+        return _reject_stamped(value)
+
+
+DrawingStatus = Literal["draft", "in_review", "released"]
+DRAWING_STATUSES: tuple[str, ...] = ("draft", "in_review", "released")
+
 
 class DrawingRevisionRead(OrmModel):
     id: str
@@ -735,14 +791,40 @@ class DrawingRevisionRead(OrmModel):
     sequence: int
     label: str
     description: str
-    status: str
+    status: DrawingStatus
     drawn_by: str | None
     drawn_date: str | None
     checked_by: str | None
     checked_date: str | None
+    submitted_by: str | None = None
+    submitted_at: datetime | None = None
     approved_by: str | None
     approved_date: str | None
+    approved_at: datetime | None = None
     created_at: datetime
+
+
+class DrawingReviseIn(BaseModel):
+    """Optional label and description for the revision opened by POST /drawings/{id}/revise."""
+
+    label: str | None = None
+    description: str | None = None
+
+    @field_validator("label", "description")
+    @classmethod
+    def _text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+
+class RevisionSnapshotRead(BaseModel):
+    revision_id: str
+    drawing_id: str
+    label: str
+    sequence: int
+    status: DrawingStatus
+    approved_by: str | None
+    approved_at: datetime | None
+    snapshot: dict[str, Any]
 
 
 class DrawingSheetCreate(BaseModel):
@@ -836,6 +918,34 @@ class SheetIndexRead(BaseModel):
     lines: list[SheetLineRead]
 
 
+class ProjectSheetItemRead(BaseModel):
+    """A tagged item of a project's drawings: a trace-link target ("sheet_item")."""
+
+    id: str
+    sheet_id: str
+    item_id: str
+    kind: str
+    category: str | None
+    tag: str
+    label: str | None
+    symbol_name: str | None
+    zone: str | None
+    part_id: str | None
+    drawing_id: str
+    drawing_number: str
+    drawing_title: str
+    sheet_no: int
+
+
+class StaleSheetRead(BaseModel):
+    """A sheet whose stored index/DRC does not reflect its document or dependencies."""
+
+    sheet_id: str
+    sheet_no: int
+    drawing_id: str
+    drawing_number: str
+
+
 class ListColumnRead(BaseModel):
     key: str
     label: str
@@ -850,6 +960,8 @@ class ListRead(BaseModel):
     header: dict[str, Any]
     columns: list[ListColumnRead]
     rows: list[dict[str, Any]]
+    # Sheets whose index rows may not match their documents (re-save to refresh).
+    stale_sheets: list[StaleSheetRead] = []
 
 
 DRC_SEVERITIES = {"error", "warning", "info"}
@@ -944,6 +1056,7 @@ class DrcRequirementCheckRead(OrmModel):
 class SheetDrcRead(BaseModel):
     sheet_id: str
     sheet_no: int
+    index_stale: bool = False
     counts: dict[str, int]
     findings: list[DrcResultRead]
     waivers: list[DrcWaiverRead]
@@ -975,6 +1088,8 @@ class VerificationRowRead(BaseModel):
 class VerificationMatrixRead(BaseModel):
     project_id: str
     rows: list[VerificationRowRead]
+    # Sheets whose checks are out of date: re-save them before trusting the verdicts.
+    stale_sheets: list[StaleSheetRead] = []
 
 
 class DrawingSheetUpdate(BaseModel):
@@ -1000,6 +1115,8 @@ class DrawingSheetRead(OrmModel):
     title: str | None
     source_diagram_id: str | None
     document: dict[str, Any]
+    index_stale: bool
+    indexed_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -1009,6 +1126,8 @@ class DrawingSheetSummary(OrmModel):
     sheet_no: int
     title: str | None
     source_diagram_id: str | None
+    index_stale: bool
+    indexed_at: datetime | None
 
 
 class DrawingCreate(BaseModel):
@@ -1052,7 +1171,9 @@ class DrawingUpdate(BaseModel):
     size: str | None = None
     units: str | None = None
     discipline: str | None = None
-    status: str | None = None
+    # Accepted only when equal to the current status; transitions go through the
+    # submit / release / withdraw / revise actions.
+    status: DrawingStatus | None = None
     frame_template: str | None = None
     fields: dict[str, Any] | None = None
     notes: list[str] | None = None
@@ -1082,12 +1203,13 @@ class DrawingRead(OrmModel):
     size: str
     units: str
     discipline: str
-    status: str
+    status: DrawingStatus
     frame_template: str
     fields: dict[str, Any]
     notes: list[str]
     sheets: list[DrawingSheetSummary]
     revisions: list[DrawingRevisionRead]
+    current_revision: DrawingRevisionRead | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1137,46 +1259,33 @@ class SheetExportIn(BaseModel):
         return value
 
 
-class DiagramRead(OrmModel):
+class DiagramSummaryRead(OrmModel):
+    """A legacy diagram without its graph, for listings."""
+
     id: str
     system_id: str
     name: str
     diagram_type: str
     revision: int
-    graph: dict[str, Any]
     created_at: datetime
     updated_at: datetime
 
 
-class ComponentInstanceCreate(BaseModel):
-    node_id: str | None = None
-    part_id: str | None = None
-    tag: str
-    quantity: int = Field(default=1, ge=1)
-    properties: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("tag")
-    @classmethod
-    def _required_text(cls, value: str) -> str:
-        return clean_required_text(value)
+class DiagramRead(DiagramSummaryRead):
+    graph: dict[str, Any]
 
 
-class ComponentInstanceUpdate(BaseModel):
-    node_id: str | None = None
-    part_id: str | None = None
-    tag: str | None = None
-    quantity: int | None = Field(default=None, ge=1)
-    properties: dict[str, Any] | None = None
+class ComponentInstanceRead(OrmModel):
+    """A part placed on a legacy diagram (read-only history)."""
 
-    @field_validator("tag")
-    @classmethod
-    def _required_text(cls, value: str | None) -> str | None:
-        return clean_optional_text(value)
-
-
-class ComponentInstanceRead(ComponentInstanceCreate, OrmModel):
     id: str
     diagram_id: str
+    node_id: str | None = None
+    node_external_id: str | None = None
+    part_id: str | None = None
+    tag: str
+    quantity: int
+    properties: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -1285,8 +1394,17 @@ class BomSnapshotRead(OrmModel):
     revision: int
     status: str
     rows: list[dict[str, Any]]
+    drawing_revision: str | None = None
+    stale_sheets: list[dict[str, Any]] = []
+    released_by: str | None = None
+    released_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("stale_sheets", mode="before")
+    @classmethod
+    def _stale(cls, value: list | None) -> list:
+        return value or []
 
 
 class ProjectBomRead(BomSnapshotRead):
@@ -1341,9 +1459,51 @@ class BomDiffRead(BaseModel):
     changed: list[BomQuantityChange]
 
 
+class ImpactSheetItemRead(BaseModel):
+    """A tagged item on a drawing sheet touched by the change."""
+
+    id: str
+    sheet_id: str
+    item_id: str
+    tag: str | None
+    zone: str | None
+    part_id: str | None
+    drawing_id: str
+    drawing_number: str
+    sheet_no: int
+
+
+class ImpactDrawingRead(BaseModel):
+    id: str
+    project_id: str
+    number: str
+    title: str
+    status: str
+    revision: str | None
+    sheets: list[int]
+
+
+class ImpactRequirementRead(BaseModel):
+    id: str
+    project_id: str
+    key: str
+    title: str
+    status: str | None
+
+
+class ImpactPartRead(BaseModel):
+    id: str
+    part_number: str
+    description: str
+
+
 class ImpactRead(BaseModel):
     object_type: str
     object_id: str
     direct_links: list[TraceLinkRead]
     affected_bom_snapshots: list[BomSnapshotRead]
     affected_components: list[ComponentInstanceRead]
+    affected_drawings: list[ImpactDrawingRead] = []
+    affected_sheet_items: list[ImpactSheetItemRead] = []
+    affected_requirements: list[ImpactRequirementRead] = []
+    affected_parts: list[ImpactPartRead] = []

@@ -7,6 +7,7 @@ import type {
   CatalogDocument,
   CatalogSettings,
   Diagram,
+  DiagramSummary,
   Drawing,
   DrawingRevision,
   DrawingSheet,
@@ -23,6 +24,7 @@ import type {
   PidSymbolDef,
   Project,
   ProjectBom,
+  ProjectSheetItem,
   Requirement,
   SchematicRead,
   TagSchemeRead,
@@ -114,22 +116,13 @@ export const api = {
   ) => request<FluidSystem>(`/systems/${systemId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteSystem: (systemId: string) =>
     requestNoContent(`/systems/${systemId}`, { method: "DELETE" }),
+  // Legacy diagrams are read-only: they are converted into drawings on the Drafting page.
   listDiagrams: (systemId: string) => request<Diagram[]>(`/systems/${systemId}/diagrams`),
-  createDiagram: (systemId: string, body: { name: string; diagram_type?: string }) =>
-    request<Diagram>(`/systems/${systemId}/diagrams`, { method: "POST", body: JSON.stringify(body) }),
+  listProjectDiagrams: (projectId: string) => request<DiagramSummary[]>(`/projects/${projectId}/diagrams`),
   getDiagram: (diagramId: string) => request<Diagram>(`/diagrams/${diagramId}`),
-  updateDiagram: (diagramId: string, body: { name?: string; diagram_type?: string }) =>
-    request<Diagram>(`/diagrams/${diagramId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteDiagram: (diagramId: string) =>
     requestNoContent(`/diagrams/${diagramId}`, { method: "DELETE" }),
-  updateDiagramGraph: (diagramId: string, body: unknown) =>
-    request<Diagram>(`/diagrams/${diagramId}/graph`, { method: "PUT", body: JSON.stringify(body) }),
   getSchematic: (diagramId: string) => request<SchematicRead>(`/diagrams/${diagramId}/schematic`),
-  saveSchematic: (diagramId: string, document: unknown) =>
-    request<SchematicRead>(`/diagrams/${diagramId}/schematic`, {
-      method: "PUT",
-      body: JSON.stringify({ document })
-    }),
   listDrawings: (projectId: string) => request<Drawing[]>(`/projects/${projectId}/drawings`),
   createDrawing: (
     projectId: string,
@@ -176,6 +169,8 @@ export const api = {
   getVerificationMatrix: (projectId: string) => request<VerificationMatrix>(`/projects/${projectId}/verification-matrix`),
   getDrawingList: (drawingId: string, kind: string) => request<ListRead>(`/drawings/${drawingId}/lists/${kind}`),
   getProjectList: (projectId: string, kind: string) => request<ListRead>(`/projects/${projectId}/lists/${kind}`),
+  /** Tagged items on the project's saved sheets (trace-link targets). */
+  listProjectSheetItems: (projectId: string) => request<ProjectSheetItem[]>(`/projects/${projectId}/sheet-items`),
   downloadList: async (scope: "drawing" | "project", id: string, kind: string, format: "csv" | "xlsx") => {
     const base = scope === "drawing" ? `/drawings/${id}` : `/projects/${id}`;
     const response = await rawRequest(`${base}/lists/${kind}?format=${format}`);
@@ -268,29 +263,9 @@ export const api = {
   },
   deletePartDocument: (partId: string, documentId: string) =>
     requestNoContent(`/parts/${partId}/documents/${documentId}`, { method: "DELETE" }),
+  /** Legacy component instances (read-only; shown for old trace links). */
   listComponents: (diagramId: string) =>
     request<ComponentInstance[]>(`/diagrams/${diagramId}/components`),
-  createComponent: (
-    diagramId: string,
-    body: {
-      tag: string;
-      part_id?: string;
-      node_id?: string;
-      quantity?: number;
-      properties?: Record<string, unknown>;
-    }
-  ) =>
-    request<ComponentInstance>(`/diagrams/${diagramId}/components`, {
-      method: "POST",
-      body: JSON.stringify(body)
-    }),
-  updateComponent: (componentId: string, body: Partial<ComponentInstance>) =>
-    request<ComponentInstance>(`/components/${componentId}`, {
-      method: "PUT",
-      body: JSON.stringify(body)
-    }),
-  deleteComponent: (componentId: string) =>
-    requestNoContent(`/components/${componentId}`, { method: "DELETE" }),
   listRequirements: (projectId: string) => request<Requirement[]>(`/projects/${projectId}/requirements`),
   createRequirement: (body: Omit<Requirement, "id">) =>
     request<Requirement>("/requirements", { method: "POST", body: JSON.stringify(body) }),
@@ -307,15 +282,9 @@ export const api = {
     requestNoContent(`/trace-links/${linkId}`, { method: "DELETE" }),
   listTraceLinks: (objectType: string, objectId: string) =>
     request<TraceLink[]>(`/objects/${objectType}/${objectId}/trace`),
-  generateBom: (diagramId: string) =>
-    request<BomSnapshot>(`/diagrams/${diagramId}/bom`, { method: "POST" }),
+  /** Legacy diagram BoM snapshots: read-only history. */
   listDiagramBoms: (diagramId: string) => request<BomSnapshot[]>(`/diagrams/${diagramId}/bom`),
   listProjectBoms: (projectId: string) => request<ProjectBom[]>(`/projects/${projectId}/bom`),
-  setBomStatus: (snapshotId: string, status: string) =>
-    request<BomSnapshot>(`/bom/${snapshotId}/status`, {
-      method: "PUT",
-      body: JSON.stringify({ status })
-    }),
   getBomReadiness: (snapshotId: string) => request<BomReadiness>(`/bom/${snapshotId}/readiness`),
   getBomDiff: (snapshotId: string, againstId: string) =>
     request<BomDiff>(`/bom/${snapshotId}/diff?against_id=${againstId}`),
@@ -332,4 +301,242 @@ export const api = {
 
 export function bomCsvUrl(snapshotId: string): string {
   return `${API_BASE_URL}/bom/${snapshotId}/csv`;
+}
+
+// --- Release workflow, BoM export, and revision snapshots (Phase B) ---
+
+type DrawingRead = import("./types").DrawingRead;
+type RevisionSnapshot = import("./types").RevisionSnapshot;
+type ReleaseBlocker = import("./types").ReleaseBlocker;
+type BomReadinessIssue = import("./types").BomReadinessIssue;
+
+/**
+ * Error from a workflow call. A refused drawing release carries `reasons` (stale
+ * sheets, open DRC errors) and a refused BoM release carries `issues` (blocking
+ * readiness issues); plain-string details such as "Drawing X is released; start a
+ * new revision to change it." arrive as `message` with empty lists.
+ */
+export class WorkflowConflictError extends Error {
+  readonly status: number;
+  readonly reasons: ReleaseBlocker[];
+  readonly issues: BomReadinessIssue[];
+
+  constructor(status: number, message: string, reasons: ReleaseBlocker[] = [], issues: BomReadinessIssue[] = []) {
+    super(message);
+    this.name = "WorkflowConflictError";
+    this.status = status;
+    this.reasons = reasons;
+    this.issues = issues;
+  }
+}
+
+async function workflowRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    ...init
+  });
+  if (response.ok) return response.json() as Promise<T>;
+  if (response.status === 401) unauthorizedHandler?.();
+  const text = await response.text();
+  let detail: unknown = undefined;
+  try {
+    detail = (JSON.parse(text) as { detail?: unknown }).detail;
+  } catch {
+    // Not JSON; fall through to the raw text.
+  }
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const structured = detail as { message?: string; reasons?: ReleaseBlocker[]; issues?: BomReadinessIssue[] };
+    throw new WorkflowConflictError(
+      response.status,
+      structured.message ?? `Request failed (${response.status})`,
+      structured.reasons ?? [],
+      structured.issues ?? []
+    );
+  }
+  if (typeof detail === "string") throw new WorkflowConflictError(response.status, detail);
+  if (Array.isArray(detail)) {
+    const messages = detail.map((item) => (item as { msg?: string }).msg ?? String(item));
+    throw new WorkflowConflictError(response.status, messages.join("; "));
+  }
+  throw new WorkflowConflictError(response.status, text || `Request failed (${response.status})`);
+}
+
+/** Submit the current revision for review (draft -> in_review); stamps submitted_by. */
+export function submitDrawing(drawingId: string): Promise<DrawingRead> {
+  return workflowRequest<DrawingRead>(`/drawings/${drawingId}/submit`, { method: "POST" });
+}
+
+/** Return a drawing under review to draft (in_review -> draft). */
+export function withdrawDrawing(drawingId: string): Promise<DrawingRead> {
+  return workflowRequest<DrawingRead>(`/drawings/${drawingId}/withdraw`, { method: "POST" });
+}
+
+/**
+ * Release the current revision (draft or in_review -> released) and lock the drawing.
+ * Rejects with WorkflowConflictError whose `reasons` list stale sheets and open DRC errors.
+ */
+export function releaseDrawing(drawingId: string): Promise<DrawingRead> {
+  return workflowRequest<DrawingRead>(`/drawings/${drawingId}/release`, { method: "POST" });
+}
+
+/** Open the next revision of a released drawing (released -> draft); the label defaults to the next letter. */
+export function reviseDrawing(drawingId: string, body?: { label?: string; description?: string }): Promise<DrawingRead> {
+  return workflowRequest<DrawingRead>(`/drawings/${drawingId}/revise`, {
+    method: "POST",
+    body: body ? JSON.stringify(body) : undefined
+  });
+}
+
+/** The immutable sheet snapshot stored when a revision was released (404 before release). */
+export function getRevisionSnapshot(revisionId: string): Promise<RevisionSnapshot> {
+  return workflowRequest<RevisionSnapshot>(`/revisions/${revisionId}/snapshot`);
+}
+
+/** Set a BoM snapshot's status; a refused release rejects with WorkflowConflictError (`issues`). */
+export function setBomStatusChecked(snapshotId: string, status: "draft" | "released"): Promise<BomSnapshot> {
+  return workflowRequest<BomSnapshot>(`/bom/${snapshotId}/status`, {
+    method: "PUT",
+    body: JSON.stringify({ status })
+  });
+}
+
+export function bomXlsxUrl(snapshotId: string): string {
+  return `${API_BASE_URL}/bom/${snapshotId}/xlsx`;
+}
+
+// ---------------------------------------------------------------- bulk import / bulk edit
+
+type ImportReport = import("./types").ImportReport;
+type ImportRowsBody = import("./types").ImportRowsBody;
+type ImportOptions = import("./types").ImportOptions;
+type PartBulkChanges = import("./types").PartBulkChanges;
+type RequirementBulkChanges = import("./types").RequirementBulkChanges;
+type BulkUpdateResult<T> = import("./types").BulkUpdateResult<T>;
+type BulkDeleteResult = import("./types").BulkDeleteResult;
+
+function importQuery(options: ImportOptions = {}): string {
+  return new URLSearchParams({
+    dry_run: String(options.dryRun ?? true),
+    mode: options.mode ?? "create_only"
+  }).toString();
+}
+
+/**
+ * POST an import. A refused commit (some rows have errors) answers 422 with the
+ * full report; that report is resolved (with `committed: false`) rather than
+ * thrown, so callers can show the per-row errors. Other failures throw.
+ */
+async function importRequest(path: string, source: File | ImportRowsBody, options?: ImportOptions): Promise<ImportReport> {
+  let init: RequestInit;
+  if (source instanceof File) {
+    const form = new FormData();
+    form.append("file", source);
+    init = { method: "POST", credentials: "include", body: form };
+  } else {
+    init = {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(source)
+    };
+  }
+  const response = await fetch(`${API_BASE_URL}${path}?${importQuery(options)}`, init);
+  if (response.ok) return response.json() as Promise<ImportReport>;
+  if (response.status === 401) unauthorizedHandler?.();
+  if (response.status === 422) {
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text) as Partial<ImportReport>;
+      if (Array.isArray(parsed.rows) && parsed.summary) return parsed as ImportReport;
+    } catch {
+      // Not a report; fall through to the generic error.
+    }
+    throw await toApiError(new Response(text, { status: 422 }));
+  }
+  throw await toApiError(response);
+}
+
+async function downloadTemplate(path: string, format: "csv" | "xlsx", fallback: string) {
+  const response = await rawRequest(`${path}?format=${format}`);
+  const match = /filename="([^"]+)"/.exec(response.headers.get("content-disposition") ?? "");
+  return { blob: await response.blob(), filename: match?.[1] ?? `${fallback}.${format}` };
+}
+
+/** Import catalog parts from a .csv/.xlsx file or pasted rows. Defaults: dry run, create_only. */
+export function importParts(source: File | ImportRowsBody, options?: ImportOptions): Promise<ImportReport> {
+  return importRequest("/parts/import", source, options);
+}
+
+/** Import requirements into a project from a .csv/.xlsx file or pasted rows. Defaults: dry run, create_only. */
+export function importRequirements(
+  projectId: string,
+  source: File | ImportRowsBody,
+  options?: ImportOptions
+): Promise<ImportReport> {
+  return importRequest(`/projects/${projectId}/requirements/import`, source, options);
+}
+
+/** Header row + example row with the canonical part import columns; resolves to the blob and filename. */
+export function downloadPartsImportTemplate(format: "csv" | "xlsx" = "xlsx") {
+  return downloadTemplate("/parts/import-template", format, "parts-import-template");
+}
+
+/** Header row + example row with the canonical requirement import columns. */
+export function downloadRequirementsImportTemplate(projectId: string, format: "csv" | "xlsx" = "xlsx") {
+  return downloadTemplate(
+    `/projects/${projectId}/requirements/import-template`,
+    format,
+    "requirements-import-template"
+  );
+}
+
+/** The line class CSV import, fed from an uploaded .csv or .xlsx file. */
+export async function importLineClassesFile(
+  projectId: string,
+  file: File,
+  replace = false
+): Promise<{ created: number; updated: number; errors: string[] }> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_BASE_URL}/projects/${projectId}/line-classes/import-file?replace=${replace}`, {
+    method: "POST",
+    credentials: "include",
+    body: form
+  });
+  if (!response.ok) {
+    if (response.status === 401) unauthorizedHandler?.();
+    throw await toApiError(response);
+  }
+  return response.json() as Promise<{ created: number; updated: number; errors: string[] }>;
+}
+
+/** Set the same values on many parts (all or none; rejects with 404 if any id is unknown). */
+export function bulkUpdateParts(ids: string[], changes: PartBulkChanges): Promise<BulkUpdateResult<Part>> {
+  return request<BulkUpdateResult<Part>>("/parts/bulk", { method: "PATCH", body: JSON.stringify({ ids, changes }) });
+}
+
+/** Set the same values on many requirements of one project (all or none). */
+export function bulkUpdateRequirements(
+  projectId: string,
+  ids: string[],
+  changes: RequirementBulkChanges
+): Promise<BulkUpdateResult<Requirement>> {
+  return request<BulkUpdateResult<Requirement>>(`/projects/${projectId}/requirements/bulk`, {
+    method: "PATCH",
+    body: JSON.stringify({ ids, changes })
+  });
+}
+
+/** Delete the parts that can be deleted; refused ones (in use, unknown) come back with a reason. */
+export function bulkDeleteParts(ids: string[]): Promise<BulkDeleteResult> {
+  return request<BulkDeleteResult>("/parts/bulk-delete", { method: "POST", body: JSON.stringify({ ids }) });
+}
+
+/** Delete requirements of one project; ids outside the project come back refused. */
+export function bulkDeleteRequirements(projectId: string, ids: string[]): Promise<BulkDeleteResult> {
+  return request<BulkDeleteResult>(`/projects/${projectId}/requirements/bulk-delete`, {
+    method: "POST",
+    body: JSON.stringify({ ids })
+  });
 }

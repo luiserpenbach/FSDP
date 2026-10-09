@@ -36,11 +36,3 @@ export function PlaceholderCard({ title, body }: { title: string; body: string }
     </section>
   );
 }
-
-export function PlaceholderPage({ title, body }: { title: string; body: string }) {
-  return (
-    <PageLayout title={title} description="Planned workspace">
-      <PlaceholderCard title={title} body={body} />
-    </PageLayout>
-  );
-}

@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer, selectinload
 
 from app.core.security import require_admin, require_writer
 from app.db import get_db
@@ -17,8 +17,6 @@ from app.models import (
     ChangeEvent,
     ComponentInstance,
     Diagram,
-    DiagramEdge,
-    DiagramNode,
     Drawing,
     DrawingSheet,
     FluidSystem,
@@ -40,13 +38,9 @@ from app.schemas import (
     CatalogSettingsRead,
     CatalogSettingsUpdate,
     ChangeEventRead,
-    ComponentInstanceCreate,
     ComponentInstanceRead,
-    ComponentInstanceUpdate,
-    DiagramCreate,
-    DiagramGraphUpdate,
     DiagramRead,
-    DiagramUpdate,
+    DiagramSummaryRead,
     FluidSystemCreate,
     FluidSystemRead,
     FluidSystemUpdate,
@@ -69,12 +63,10 @@ from app.schemas import (
     RequirementCreate,
     RequirementRead,
     RequirementUpdate,
-    SchematicDocumentIn,
     SchematicRead,
     TraceLinkCreate,
     TraceLinkRead,
 )
-from app.services.bom import generate_bom_snapshot
 from app.services.catalog import (
     DOCUMENT_KINDS,
     MAX_DOCUMENT_BYTES,
@@ -87,9 +79,16 @@ from app.services.catalog import (
     sanitize_upload_filename,
 )
 from app.services.change_impact import get_change_impact
+from app.services.lists import rows_to_xlsx, spreadsheet_safe
+from app.services.sheet_index import (
+    mark_project_sheets_stale,
+    mark_sheets_stale_for_part,
+    stale_sheets_note,
+)
 from app.services.traceability import (
     delete_trace_links_for,
     delete_trace_links_for_many,
+    drawing_trace_endpoints,
     get_trace_links,
 )
 
@@ -130,23 +129,6 @@ def apply_updates(item, payload) -> None:
             setattr(item, field, value)
 
 
-def ensure_node_unbound(
-    db: Session,
-    node_id: str,
-    *,
-    exclude_component_id: str | None = None,
-) -> None:
-    """Reject binding a second component to the same diagram node."""
-    query = select(ComponentInstance).where(ComponentInstance.node_id == node_id)
-    if exclude_component_id is not None:
-        query = query.where(ComponentInstance.id != exclude_component_id)
-    if db.scalar(query) is not None:
-        raise HTTPException(
-            status_code=409,
-            detail="Diagram node already has a component bound",
-        )
-
-
 def normalized_name(name: str) -> str:
     return name.strip().lower()
 
@@ -173,6 +155,8 @@ def _project_trace_endpoints(db: Session, project_id: str) -> list[tuple[str, st
         endpoints.extend(_system_trace_endpoints(db, system.id))
     for requirement in db.scalars(select(Requirement).where(Requirement.project_id == project_id)):
         endpoints.append(("requirement", requirement.id))
+    drawing_ids = db.scalars(select(Drawing.id).where(Drawing.project_id == project_id))
+    endpoints.extend(drawing_trace_endpoints(db, drawing_ids))
     return endpoints
 
 
@@ -352,32 +336,9 @@ def delete_system(
     return Response(status_code=204)
 
 
-@router.post("/systems/{system_id}/diagrams", response_model=DiagramRead, status_code=201)
-def create_diagram(
-    system_id: str,
-    payload: DiagramCreate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> Diagram:
-    require_model(db, FluidSystem, system_id)
-    existing = db.scalar(
-        select(Diagram).where(
-            Diagram.system_id == system_id,
-            normalized_column(Diagram.name) == normalized_name(payload.name),
-        )
-    )
-    if existing:
-        raise HTTPException(status_code=409, detail="Diagram name already exists in system")
-
-    diagram = Diagram(system_id=system_id, graph={"nodes": [], "edges": []}, **payload.model_dump())
-    db.add(diagram)
-    db.flush()
-    record_change(
-        db, "diagram", diagram.id, "created", f"Created diagram {diagram.name}", actor=user.email
-    )
-    db.commit()
-    db.refresh(diagram)
-    return diagram
+# Legacy diagrams (the retired React Flow editor) are import-only: they are listed and
+# read so Drafting can convert them into drawings, and deleted once converted. Their
+# components and diagram BoM snapshots stay readable as history.
 
 
 @router.get("/systems/{system_id}/diagrams", response_model=list[DiagramRead])
@@ -386,37 +347,24 @@ def list_diagrams(system_id: str, db: Session = Depends(get_db)) -> list[Diagram
     return list(db.scalars(select(Diagram).where(Diagram.system_id == system_id)))
 
 
+@router.get("/projects/{project_id}/diagrams", response_model=list[DiagramSummaryRead])
+def list_project_diagrams(project_id: str, db: Session = Depends(get_db)) -> list[Diagram]:
+    """Legacy diagrams of every system in the project (conversion sources), by system."""
+    require_model(db, Project, project_id)
+    return list(
+        db.scalars(
+            select(Diagram)
+            .join(FluidSystem, Diagram.system_id == FluidSystem.id)
+            .where(FluidSystem.project_id == project_id)
+            .options(defer(Diagram.graph), defer(Diagram.schematic))
+            .order_by(func.lower(FluidSystem.name), func.lower(Diagram.name))
+        )
+    )
+
+
 @router.get("/diagrams/{diagram_id}", response_model=DiagramRead)
 def get_diagram(diagram_id: str, db: Session = Depends(get_db)) -> Diagram:
     return require_model(db, Diagram, diagram_id)
-
-
-@router.put("/diagrams/{diagram_id}", response_model=DiagramRead)
-def update_diagram(
-    diagram_id: str,
-    payload: DiagramUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> Diagram:
-    diagram = require_model(db, Diagram, diagram_id)
-    if payload.name is not None:
-        existing = db.scalar(
-            select(Diagram).where(
-                Diagram.system_id == diagram.system_id,
-                normalized_column(Diagram.name) == normalized_name(payload.name),
-                Diagram.id != diagram_id,
-            )
-        )
-        if existing:
-            raise HTTPException(status_code=409, detail="Diagram name already exists in system")
-
-    apply_updates(diagram, payload)
-    record_change(
-        db, "diagram", diagram.id, "updated", f"Updated diagram {diagram.name}", actor=user.email
-    )
-    db.commit()
-    db.refresh(diagram)
-    return diagram
 
 
 @router.delete("/diagrams/{diagram_id}", status_code=204)
@@ -435,113 +383,9 @@ def delete_diagram(
     return Response(status_code=204)
 
 
-@router.put("/diagrams/{diagram_id}/graph", response_model=DiagramRead)
-def update_diagram_graph(
-    diagram_id: str,
-    payload: DiagramGraphUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> Diagram:
-    diagram = require_model(db, Diagram, diagram_id)
-
-    node_ids = [node.external_id for node in payload.nodes]
-    if len(node_ids) != len(set(node_ids)):
-        raise HTTPException(status_code=422, detail="Diagram nodes must have unique ids")
-    edge_ids = [edge.external_id for edge in payload.edges]
-    if len(edge_ids) != len(set(edge_ids)):
-        raise HTTPException(status_code=422, detail="Diagram lines must have unique ids")
-
-    # Upsert by external_id so persisted node rows (and the component instances
-    # bound to them) survive graph saves; only rows removed from the canvas go away.
-    existing_nodes = {
-        node.external_id: node
-        for node in db.scalars(select(DiagramNode).where(DiagramNode.diagram_id == diagram_id))
-    }
-    for node_payload in payload.nodes:
-        data = node_payload.model_dump()
-        existing = existing_nodes.pop(node_payload.external_id, None)
-        if existing is None:
-            db.add(DiagramNode(diagram_id=diagram_id, **data))
-        else:
-            for field, value in data.items():
-                setattr(existing, field, value)
-    for removed_node in existing_nodes.values():
-        db.delete(removed_node)
-
-    existing_edges = {
-        edge.external_id: edge
-        for edge in db.scalars(select(DiagramEdge).where(DiagramEdge.diagram_id == diagram_id))
-    }
-    for edge_payload in payload.edges:
-        data = edge_payload.model_dump()
-        existing = existing_edges.pop(edge_payload.external_id, None)
-        if existing is None:
-            db.add(DiagramEdge(diagram_id=diagram_id, **data))
-        else:
-            for field, value in data.items():
-                setattr(existing, field, value)
-    for removed_edge in existing_edges.values():
-        db.delete(removed_edge)
-
-    diagram.graph = payload.graph
-    diagram.revision += 1
-    db.flush()
-
-    # Re-bind components that lost their node link (e.g. data severed by the
-    # previous delete-and-recreate save behavior) when the node still exists.
-    # Only one component may own a given node (uq_component_node).
-    nodes_by_external_id = {
-        node.external_id: node
-        for node in db.scalars(select(DiagramNode).where(DiagramNode.diagram_id == diagram_id))
-    }
-    components = list(
-        db.scalars(select(ComponentInstance).where(ComponentInstance.diagram_id == diagram_id))
-    )
-    occupied_node_ids = {component.node_id for component in components if component.node_id}
-    for component in components:
-        if component.node_id is not None:
-            continue
-        external_id = (component.properties or {}).get("node_external_id")
-        node = nodes_by_external_id.get(external_id) if external_id else None
-        if node is not None and node.id not in occupied_node_ids:
-            component.node_id = node.id
-            occupied_node_ids.add(node.id)
-
-    record_change(
-        db, "diagram", diagram.id, "updated", f"Updated graph for {diagram.name}", actor=user.email
-    )
-    db.commit()
-    db.refresh(diagram)
-    return diagram
-
-
 @router.get("/diagrams/{diagram_id}/schematic", response_model=SchematicRead)
 def get_diagram_schematic(diagram_id: str, db: Session = Depends(get_db)) -> dict:
     diagram = require_model(db, Diagram, diagram_id)
-    return {"diagram_id": diagram.id, "revision": diagram.revision, "document": diagram.schematic}
-
-
-@router.put("/diagrams/{diagram_id}/schematic", response_model=SchematicRead)
-def update_diagram_schematic(
-    diagram_id: str,
-    payload: SchematicDocumentIn,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> dict:
-    diagram = require_model(db, Diagram, diagram_id)
-    diagram.schematic = payload.document
-    diagram.revision += 1
-    item_count = len(payload.document.get("items", []))
-    record_change(
-        db,
-        "diagram",
-        diagram.id,
-        "updated",
-        f"Saved schematic for {diagram.name} ({item_count} items)",
-        actor=user.email,
-    )
-    db.commit()
-    db.refresh(diagram)
     return {"diagram_id": diagram.id, "revision": diagram.revision, "document": diagram.schematic}
 
 
@@ -706,9 +550,13 @@ def update_part(
         if existing:
             raise HTTPException(status_code=409, detail="Part name already exists")
 
+    before = PartRead.model_validate(part).model_dump(exclude={"updated_at"})
     apply_updates(part, payload)
     if payload.part_type:
         remember_part_type(db, payload.part_type)
+    if PartRead.model_validate(part).model_dump(exclude={"updated_at"}) != before:
+        # Ratings, material, and lifecycle feed the drawing DRC computed in the browser.
+        mark_sheets_stale_for_part(db, part.id)
     record_change(
         db, "part", part.id, "updated", f"Updated part {part.part_number}", actor=user.email
     )
@@ -833,6 +681,7 @@ def obsolete_part(
     part = require_model(db, Part, part_id)
     part.lifecycle_status = "obsolete"
     part.preferred = False
+    mark_sheets_stale_for_part(db, part.id)
     record_change(
         db, "part", part.id, "updated", f"Marked part {part.part_number} obsolete", actor=user.email
     )
@@ -1041,139 +890,16 @@ def delete_part_document(
     return Response(status_code=204)
 
 
-@router.post(
-    "/diagrams/{diagram_id}/components", response_model=ComponentInstanceRead, status_code=201
-)
-def create_component(
-    diagram_id: str,
-    payload: ComponentInstanceCreate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> ComponentInstance:
-    require_model(db, Diagram, diagram_id)
-    if payload.part_id:
-        placed = require_model(db, Part, payload.part_id)
-        if placed.lifecycle_status == "obsolete":
-            raise HTTPException(
-                status_code=409,
-                detail=f"Part {placed.part_number} is obsolete and cannot be placed.",
-            )
-    existing_tag = db.scalar(
-        select(ComponentInstance).where(
-            ComponentInstance.diagram_id == diagram_id,
-            ComponentInstance.tag == payload.tag,
-        )
-    )
-    if existing_tag:
-        raise HTTPException(status_code=409, detail="Component tag already exists on this diagram")
-    data = payload.model_dump()
-    node_external_id = data.get("properties", {}).get("node_external_id")
-    if node_external_id and not data.get("node_id"):
-        node = db.scalar(
-            select(DiagramNode).where(
-                DiagramNode.diagram_id == diagram_id,
-                DiagramNode.external_id == node_external_id,
-            )
-        )
-        if node is None:
-            raise HTTPException(status_code=400, detail="Selected diagram node does not exist")
-        data["node_id"] = node.id
-    if data.get("node_id"):
-        node = require_model(db, DiagramNode, data["node_id"])
-        if node.diagram_id != diagram_id:
-            raise HTTPException(status_code=400, detail="Component node must belong to diagram")
-        ensure_node_unbound(db, data["node_id"])
-
-    component = ComponentInstance(diagram_id=diagram_id, **data)
-    db.add(component)
-    db.flush()
-    record_change(
-        db,
-        "component",
-        component.id,
-        "created",
-        f"Placed component {component.tag}",
-        actor=user.email,
-    )
-    db.commit()
-    db.refresh(component)
-    return component
-
-
 @router.get("/diagrams/{diagram_id}/components", response_model=list[ComponentInstanceRead])
 def list_components(diagram_id: str, db: Session = Depends(get_db)) -> list[ComponentInstance]:
     require_model(db, Diagram, diagram_id)
     return list(
-        db.scalars(select(ComponentInstance).where(ComponentInstance.diagram_id == diagram_id))
-    )
-
-
-@router.put("/components/{component_id}", response_model=ComponentInstanceRead)
-def update_component(
-    component_id: str,
-    payload: ComponentInstanceUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> ComponentInstance:
-    component = require_model(db, ComponentInstance, component_id)
-    if payload.part_id:
-        placed = require_model(db, Part, payload.part_id)
-        if placed.lifecycle_status == "obsolete":
-            raise HTTPException(
-                status_code=409,
-                detail=f"Part {placed.part_number} is obsolete and cannot be placed.",
-            )
-    if payload.tag is not None:
-        existing_tag = db.scalar(
-            select(ComponentInstance).where(
-                ComponentInstance.diagram_id == component.diagram_id,
-                ComponentInstance.tag == payload.tag,
-                ComponentInstance.id != component_id,
-            )
+        db.scalars(
+            select(ComponentInstance)
+            .where(ComponentInstance.diagram_id == diagram_id)
+            .options(selectinload(ComponentInstance.node))
         )
-        if existing_tag:
-            raise HTTPException(
-                status_code=409, detail="Component tag already exists on this diagram"
-            )
-    if payload.node_id:
-        node = require_model(db, DiagramNode, payload.node_id)
-        if node.diagram_id != component.diagram_id:
-            raise HTTPException(status_code=400, detail="Component node must belong to diagram")
-        ensure_node_unbound(db, payload.node_id, exclude_component_id=component_id)
-
-    apply_updates(component, payload)
-    record_change(
-        db,
-        "component",
-        component.id,
-        "updated",
-        f"Updated component {component.tag}",
-        actor=user.email,
     )
-    db.commit()
-    db.refresh(component)
-    return component
-
-
-@router.delete("/components/{component_id}", status_code=204)
-def delete_component(
-    component_id: str,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> Response:
-    component = require_model(db, ComponentInstance, component_id)
-    delete_trace_links_for(db, "component", component.id)
-    record_change(
-        db,
-        "component",
-        component.id,
-        "deleted",
-        f"Deleted component {component.tag}",
-        actor=user.email,
-    )
-    db.delete(component)
-    db.commit()
-    return Response(status_code=204)
 
 
 @router.post("/requirements", response_model=RequirementRead, status_code=201)
@@ -1195,6 +921,9 @@ def create_requirement(
     requirement = Requirement(**payload.model_dump())
     db.add(requirement)
     db.flush()
+    if requirement.constraint is not None:
+        # Requirement checks run inside the drawing DRC in the browser.
+        mark_project_sheets_stale(db, requirement.project_id)
     record_change(
         db,
         "requirement",
@@ -1233,7 +962,10 @@ def update_requirement(
         if existing:
             raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
+    had_constraint = requirement.constraint is not None
     apply_updates(requirement, payload)
+    if had_constraint or requirement.constraint is not None:
+        mark_project_sheets_stale(db, requirement.project_id)
     record_change(
         db,
         "requirement",
@@ -1255,6 +987,8 @@ def delete_requirement(
 ) -> Response:
     requirement = require_model(db, Requirement, requirement_id)
     delete_trace_links_for(db, "requirement", requirement.id)
+    if requirement.constraint is not None:
+        mark_project_sheets_stale(db, requirement.project_id)
     record_change(
         db,
         "requirement",
@@ -1271,14 +1005,26 @@ def delete_requirement(
 TRACE_OBJECT_MODELS: dict[str, type] = {
     "project": Project,
     "fluid_system": FluidSystem,
-    "diagram": Diagram,
     "drawing": Drawing,
     "sheet_item": SheetItem,
     "sheet_line": SheetLine,
     "part": Part,
-    "component": ComponentInstance,
     "requirement": Requirement,
 }
+
+# Legacy diagram objects: existing links to them still read and delete; new ones are refused.
+LEGACY_TRACE_TYPES = frozenset({"diagram", "component"})
+
+
+def _trace_object_project_id(obj: object) -> str | None:
+    """Project a trace endpoint belongs to; None for catalog parts, which are shared."""
+    if isinstance(obj, Project):
+        return obj.id
+    if isinstance(obj, FluidSystem | Drawing | Requirement):
+        return obj.project_id
+    if isinstance(obj, SheetItem | SheetLine):
+        return obj.sheet.drawing.project_id
+    return None
 
 
 @router.post("/trace-links", response_model=TraceLinkRead, status_code=201)
@@ -1287,6 +1033,16 @@ def create_trace_link(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> TraceLink:
+    for type_name in (payload.source_type, payload.target_type):
+        if type_name in LEGACY_TRACE_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Legacy {type_name}s are read-only; trace to drawings and their items "
+                    "(drawing, sheet_item) instead."
+                ),
+            )
+    project_ids: list[str | None] = []
     for kind, type_name, object_id in (
         ("source", payload.source_type, payload.source_id),
         ("target", payload.target_type, payload.target_id),
@@ -1300,7 +1056,11 @@ def create_trace_link(
                     + ", ".join(sorted(TRACE_OBJECT_MODELS))
                 ),
             )
-        require_model(db, model, object_id)
+        project_ids.append(_trace_object_project_id(require_model(db, model, object_id)))
+    if None not in project_ids and project_ids[0] != project_ids[1]:
+        raise HTTPException(
+            status_code=400, detail="Trace link endpoints belong to different projects"
+        )
 
     existing = db.scalar(
         select(TraceLink).where(
@@ -1357,27 +1117,6 @@ def object_trace(
     return get_trace_links(db, object_type, object_id)
 
 
-@router.post("/diagrams/{diagram_id}/bom", response_model=BomSnapshotRead, status_code=201)
-def create_bom(
-    diagram_id: str,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-):
-    diagram = require_model(db, Diagram, diagram_id)
-    snapshot = generate_bom_snapshot(db, diagram)
-    record_change(
-        db,
-        "bom_snapshot",
-        snapshot.id,
-        "created",
-        f"Generated BoM for {diagram.name}",
-        actor=user.email,
-    )
-    db.commit()
-    db.refresh(snapshot)
-    return snapshot
-
-
 @router.get("/diagrams/{diagram_id}/bom", response_model=list[BomSnapshotRead])
 def list_diagram_bom_snapshots(diagram_id: str, db: Session = Depends(get_db)) -> list[BomSnapshot]:
     require_model(db, Diagram, diagram_id)
@@ -1411,32 +1150,24 @@ def list_project_bom_snapshots(project_id: str, db: Session = Depends(get_db)) -
     )
 
 
-@router.put("/bom/{snapshot_id}/status", response_model=BomSnapshotRead)
-def update_bom_status(
-    snapshot_id: str,
-    payload: BomStatusUpdate,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_writer),
-) -> BomSnapshot:
-    snapshot = require_model(db, BomSnapshot, snapshot_id)
-    snapshot.status = payload.status
-    record_change(
-        db,
-        "bom_snapshot",
-        snapshot.id,
-        "updated",
-        f"BoM revision {snapshot.revision} status set to {payload.status}",
-        actor=user.email,
+def _bom_readiness(db: Session, snapshot: BomSnapshot) -> dict:
+    part_ids = {row["part_id"] for row in snapshot.rows if row.get("part_id")}
+    parts = (
+        {part.id: part for part in db.scalars(select(Part).where(Part.id.in_(part_ids)))}
+        if part_ids
+        else {}
     )
-    db.commit()
-    db.refresh(snapshot)
-    return snapshot
-
-
-@router.get("/bom/{snapshot_id}/readiness", response_model=BomReadinessRead)
-def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
-    snapshot = require_model(db, BomSnapshot, snapshot_id)
     issues = []
+    if snapshot.stale_sheets:
+        issues.append(
+            {
+                "part_number": None,
+                "component_tags": [],
+                "warnings": [stale_sheets_note(snapshot.stale_sheets)],
+                "code": "stale_index",
+                "severity": "blocking",
+            }
+        )
     for row in snapshot.rows:
         warnings: list[str] = []
         code = "part_incomplete"
@@ -1450,7 +1181,7 @@ def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
                 warnings.append("Line has no line class or spec.")
                 code = "line_no_class"
         else:
-            part = db.get(Part, row.get("part_id")) if row.get("part_id") else None
+            part = parts.get(row.get("part_id")) if row.get("part_id") else None
             if part is None:
                 warnings.append("No catalog part is linked to this BoM row.")
                 code = "no_part"
@@ -1482,9 +1213,82 @@ def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
     }
 
 
+@router.put("/bom/{snapshot_id}/status", response_model=BomSnapshotRead)
+def update_bom_status(
+    snapshot_id: str,
+    payload: BomStatusUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> BomSnapshot:
+    """Release a BoM snapshot. Released snapshots are immutable baselines.
+
+    Release is refused (409) while readiness has blocking issues; `detail.issues`
+    lists them. A released snapshot cannot return to draft: generate a new one.
+    """
+    snapshot = require_model(db, BomSnapshot, snapshot_id)
+    if snapshot.diagram_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Legacy diagram BoMs are read-only history; convert the diagram into a "
+                "drawing and release the drawing's BoM."
+            ),
+        )
+    if payload.status == snapshot.status:
+        return snapshot
+    if snapshot.status == "released":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"BoM revision {snapshot.revision} is released and immutable; "
+                "generate a new BoM revision instead."
+            ),
+        )
+    if payload.status == "released":
+        readiness = _bom_readiness(db, snapshot)
+        blocking = [issue for issue in readiness["issues"] if issue["severity"] == "blocking"]
+        if blocking:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        f"BoM revision {snapshot.revision} has {len(blocking)} blocking "
+                        "issue(s) and cannot be released."
+                    ),
+                    "issues": blocking,
+                },
+            )
+        snapshot.released_by = user.email
+        snapshot.released_at = datetime.now(UTC)
+    snapshot.status = payload.status
+    record_change(
+        db,
+        "bom_snapshot",
+        snapshot.id,
+        "updated",
+        f"BoM revision {snapshot.revision} status set to {payload.status}",
+        actor=user.email,
+    )
+    db.commit()
+    db.refresh(snapshot)
+    return snapshot
+
+
+@router.get("/bom/{snapshot_id}/readiness", response_model=BomReadinessRead)
+def bom_readiness(snapshot_id: str, db: Session = Depends(get_db)) -> dict:
+    return _bom_readiness(db, require_model(db, BomSnapshot, snapshot_id))
+
+
 def _bom_row_key(row: dict) -> str:
+    """Identity of a BoM row across snapshots, mirroring how services/bom.py rolls rows up."""
     if row.get("part_id"):
         return f"part:{row['part_id']}"
+    if row.get("kind") == "bulk":
+        # Tube rows roll up per (class or spec, size), fittings and tees per size; the
+        # description and unit name all of that. Line refs are shared across these rows.
+        return f"bulk:{row.get('unit')}|{row.get('description')}"
+    if row.get("symbol_key"):
+        return f"symbol:{row['symbol_key']}"
     tags = row.get("component_tags") or []
     return f"tag:{tags[0] if tags else row.get('description', '?')}"
 
@@ -1493,9 +1297,11 @@ def _bom_row_key(row: dict) -> str:
 def bom_diff(snapshot_id: str, against_id: str, db: Session = Depends(get_db)) -> dict:
     current = require_model(db, BomSnapshot, snapshot_id)
     baseline = require_model(db, BomSnapshot, against_id)
-    if current.diagram_id != baseline.diagram_id:
+    # Drawing snapshots have no diagram_id, so both sources must match.
+    if (current.diagram_id, current.drawing_id) != (baseline.diagram_id, baseline.drawing_id):
         raise HTTPException(
-            status_code=400, detail="BoM snapshots must belong to the same diagram to compare"
+            status_code=400,
+            detail="BoM snapshots must belong to the same diagram or drawing to compare",
         )
 
     current_rows = {_bom_row_key(row): row for row in current.rows}
@@ -1542,11 +1348,78 @@ BOM_CSV_FIELDS = [
 ]
 
 
-def csv_safe(value):
-    # Guard spreadsheet formula injection when the CSV is opened in Excel.
-    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
-        return f"'{value}"
-    return value
+BOM_COLUMN_LABELS = {
+    "part_number": "Part number",
+    "revision": "Part rev",
+    "description": "Description",
+    "manufacturer": "Manufacturer",
+    "material": "Material",
+    "pressure_rating_bar": "Pressure rating (bar)",
+    "mass_kg": "Mass (kg)",
+    "cv": "Cv",
+    "quantity": "Quantity",
+    "qualification_status": "Qualification",
+    "certification_status": "Certification",
+    "component_tags": "Tags",
+    "kind": "Kind",
+    "unit": "Unit",
+    "spare_quantity": "Spares",
+    "dnp_tags": "DNP tags",
+    "sheets": "Sheets",
+}
+
+
+def _bom_export_rows(snapshot: BomSnapshot) -> list[dict]:
+    rows = []
+    for row in snapshot.rows:
+        record = {key: row.get(key) for key in BOM_CSV_FIELDS}
+        for key in ("component_tags", "dnp_tags", "sheets"):
+            if isinstance(record.get(key), list):
+                record[key] = "; ".join(str(entry) for entry in record[key])
+        rows.append(record)
+    return rows
+
+
+def _bom_filename(snapshot: BomSnapshot, extension: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram_name).strip("-.").lower() or "bom"
+    return f"bom-{slug}-rev{snapshot.revision}.{extension}"
+
+
+def _bom_header(db: Session, snapshot: BomSnapshot) -> dict:
+    """Header block of a BoM export: what it was generated from and its release state."""
+    header: dict = {"list": "Bill of materials"}
+    if snapshot.drawing is not None:
+        drawing = snapshot.drawing
+        project = db.get(Project, drawing.project_id)
+        header.update(
+            {
+                "project": project.name if project else "",
+                "drawing_number": drawing.number,
+                "drawing_title": drawing.title.replace("\n", " "),
+                "drawing_revision": snapshot.drawing_revision or "-",
+            }
+        )
+    elif snapshot.diagram is not None:
+        header.update(
+            {
+                "project": snapshot.diagram.system.project.name,
+                "diagram": snapshot.diagram.name,
+            }
+        )
+    header.update(
+        {
+            "bom_revision": snapshot.revision,
+            "status": snapshot.status,
+            "generated": snapshot.created_at.strftime("%Y-%m-%d %H:%M UTC")
+            if snapshot.created_at
+            else "",
+        }
+    )
+    if snapshot.released_by:
+        header["released_by"] = snapshot.released_by
+    if snapshot.stale_sheets:
+        header["warning"] = stale_sheets_note(snapshot.stale_sheets)
+    return header
 
 
 @router.get("/bom/{snapshot_id}/csv")
@@ -1555,18 +1428,24 @@ def export_bom_csv(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=BOM_CSV_FIELDS)
     writer.writeheader()
-    for row in snapshot.rows:
-        record = {key: row.get(key) for key in BOM_CSV_FIELDS}
-        for key in ("component_tags", "dnp_tags", "sheets"):
-            if isinstance(record.get(key), list):
-                record[key] = "; ".join(str(entry) for entry in record[key])
-        writer.writerow({key: csv_safe(value) for key, value in record.items()})
-
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", snapshot.diagram_name).strip("-.").lower() or "bom"
-    filename = f"bom-{slug}-rev{snapshot.revision}.csv"
+    for record in _bom_export_rows(snapshot):
+        writer.writerow({key: spreadsheet_safe(value) for key, value in record.items()})
     return Response(
         buffer.getvalue(),
         media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{_bom_filename(snapshot, "csv")}"'},
+    )
+
+
+@router.get("/bom/{snapshot_id}/xlsx")
+def export_bom_xlsx(snapshot_id: str, db: Session = Depends(get_db)) -> Response:
+    """BoM snapshot as a workbook with a header block (project, source, revision, status)."""
+    snapshot = require_model(db, BomSnapshot, snapshot_id)
+    columns = [(key, BOM_COLUMN_LABELS[key]) for key in BOM_CSV_FIELDS]
+    filename = _bom_filename(snapshot, "xlsx")
+    return Response(
+        rows_to_xlsx(_bom_header(db, snapshot), columns, _bom_export_rows(snapshot)),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 

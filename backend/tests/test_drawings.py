@@ -4,6 +4,9 @@ import re
 import zlib
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
+
+from tests.legacy import add_legacy_diagram
 
 SVG = (
     '<?xml version="1.0" encoding="UTF-8"?>'
@@ -65,7 +68,7 @@ def test_create_drawing_with_generated_number_first_sheet_and_revision(client: T
         **drawing["revisions"][0],
         "sequence": 1,
         "label": "-",
-        "status": "working",
+        "status": "draft",
         "drawn_by": "Test Engineer",
     }
 
@@ -127,14 +130,23 @@ def test_drawing_update_sheets_and_revisions(client: TestClient) -> None:
     numbers = [sheet["sheet_no"] for sheet in sheets]
     assert numbers == [1, 2]
 
-    revision = client.post(
+    # Approvals are stamped by the release workflow, never typed in.
+    stamped = client.post(
         f"/drawings/{drawing_id}/revisions",
         json={"label": "A", "description": "Added vent", "checked_by": "R. Eng"},
+    )
+    assert stamped.status_code == 422
+    revision = client.post(
+        f"/drawings/{drawing_id}/revisions",
+        json={"label": "A", "description": "Added vent", "checked_by": None},
     )
     assert revision.status_code == 201, revision.text
     assert revision.json()["sequence"] == 2
     edited = client.put(f"/revisions/{revision.json()['id']}", json={"approved_by": "Chief"})
-    assert edited.json()["approved_by"] == "Chief"
+    assert edited.status_code == 422
+    edited = client.put(f"/revisions/{revision.json()['id']}", json={"description": "Vent"})
+    assert edited.json()["description"] == "Vent"
+    assert edited.json()["approved_by"] is None
     labels = [rev["label"] for rev in client.get(f"/drawings/{drawing_id}").json()["revisions"]]
     assert labels == ["-", "A"]
 
@@ -148,18 +160,20 @@ def test_drawing_update_sheets_and_revisions(client: TestClient) -> None:
     assert client.get(f"/drawings/{drawing_id}").status_code == 404
 
 
-def test_convert_diagram_into_first_sheet(client: TestClient) -> None:
+def test_convert_diagram_into_first_sheet(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
     project_id = _project(client)
     system = client.post(f"/projects/{project_id}/systems", json={"name": "GHe"}).json()
-    diagram = client.post(f"/systems/{system['id']}/diagrams", json={"name": "Legacy"}).json()
+    bare = add_legacy_diagram(session_factory, system["id"], "Bare")
+    diagram = {"id": add_legacy_diagram(session_factory, system["id"], schematic=_document()).id}
 
     missing = client.post(
         f"/projects/{project_id}/drawings",
-        json={"title": "From diagram", "first_sheet": {"source_diagram_id": diagram["id"]}},
+        json={"title": "From diagram", "first_sheet": {"source_diagram_id": bare.id}},
     )
     assert missing.status_code == 422
 
-    client.put(f"/diagrams/{diagram['id']}/schematic", json={"document": _document()})
     created = client.post(
         f"/projects/{project_id}/drawings",
         json={
@@ -213,3 +227,24 @@ def test_sheet_export_pdf_png_and_svg(client: TestClient) -> None:
     assert scripted.status_code == 422
     not_svg = client.post(f"/sheets/{sheet_id}/export", json={"svg": "hello", "format": "pdf"})
     assert not_svg.status_code == 422
+
+
+def test_deleting_first_sheet_renumbers_remaining_sheets(client: TestClient) -> None:
+    """Renumbering must not collide on uq_drawing_sheet_no, whatever the row order (H7)."""
+    project_id = _project(client)
+    for attempt in range(20):
+        drawing = client.post(
+            f"/projects/{project_id}/drawings", json={"title": f"Renumber {attempt}"}
+        ).json()
+        drawing_id = drawing["id"]
+        first_id = drawing["sheets"][0]["id"]
+        second_id = client.post(f"/drawings/{drawing_id}/sheets", json={}).json()["id"]
+        third_id = client.post(f"/drawings/{drawing_id}/sheets", json={}).json()["id"]
+
+        removed = client.delete(f"/sheets/{first_id}")
+        assert removed.status_code == 204, removed.text
+        sheets = client.get(f"/drawings/{drawing_id}").json()["sheets"]
+        assert [(sheet["id"], sheet["sheet_no"]) for sheet in sheets] == [
+            (second_id, 1),
+            (third_id, 2),
+        ]

@@ -349,7 +349,8 @@ def test_bulk_rows_without_size_or_class_are_warnings(client: TestClient) -> Non
                     },
                     {"line_id": "b", "line_type": "process", "size": '1/2"', "length_m": 2.0},
                 ],
-            }
+            },
+            "drc": {"findings": [], "checks": []},
         },
     )
     snapshot = client.post(f"/drawings/{drawing['id']}/bom").json()
@@ -390,3 +391,88 @@ def test_part_usage_and_delete_guard_include_drawings(client: TestClient) -> Non
     assert client.delete(f"/drawings/{drawing['id']}").status_code == 204
     assert client.get(f"/parts/{part['id']}/usage").json()["drawing_items"] == []
     assert client.delete(f"/parts/{part['id']}").status_code == 204
+
+
+def test_xlsx_list_export_writes_formula_like_cells_as_text(client: TestClient) -> None:
+    """XLSX gets the same formula-injection guard as CSV (M3)."""
+    project_id = _project(client)
+    drawing = _drawing(client, project_id)
+    payload = '=HYPERLINK("https://evil.example","click")'
+    index = {
+        "items": [
+            {
+                "item_id": "hv",
+                "kind": "symbol",
+                "category": "valve",
+                "tag": payload,
+                "zone": "D-4",
+                "fields": {"service": "+1+1", "size": "-2", "line_number": "@SUM(A1)"},
+            }
+        ],
+        "lines": [],
+    }
+    client.put(f"/sheets/{drawing['sheets'][0]['id']}", json={"index": index})
+
+    response = client.get(f"/drawings/{drawing['id']}/lists/valve?format=xlsx")
+    assert response.status_code == 200
+    sheet = load_workbook(io.BytesIO(response.content)).active
+    cells = {cell.value: cell for row in sheet.iter_rows() for cell in row if cell.value}
+    assert payload not in cells
+    for value in (payload, "+1+1", "-2", "@SUM(A1)"):
+        cell = cells[f"'{value}"]
+        assert cell.data_type == "s"
+    assert all(cell.data_type != "f" for cell in cells.values())
+    # Numbers stay numeric.
+    assert cells[1].data_type == "n"
+
+    csv_text = client.get(f"/drawings/{drawing['id']}/lists/valve?format=csv").text
+    csv_rows = list(csv.reader(io.StringIO(csv_text)))
+    assert f"'{payload}" in [cell for row in csv_rows for cell in row]
+
+
+def _tube_index(length_m: float) -> dict:
+    line = {
+        "line_id": "l1",
+        "line_number": "3101",
+        "line_type": "process",
+        "size": '1/4"',
+        "line_class": "HE-1",
+        "length_m": length_m,
+        "connection_count": 2,
+    }
+    return {"items": [], "lines": [line]}
+
+
+def test_bom_diff_keys_bulk_rows_by_kind_and_compares_same_drawing_only(
+    client: TestClient,
+) -> None:
+    """Tube and fitting rows of one line must not collide; sources must match (H8)."""
+    project_id = _project(client)
+    drawing = _drawing(client, project_id)
+    sheet_id = drawing["sheets"][0]["id"]
+    client.put(f"/sheets/{sheet_id}", json={"index": _tube_index(2.0)})
+    first = client.post(f"/drawings/{drawing['id']}/bom").json()
+    client.put(f"/sheets/{sheet_id}", json={"index": _tube_index(10.0)})
+    second = client.post(f"/drawings/{drawing['id']}/bom").json()
+
+    diff = client.get(f"/bom/{second['id']}/diff", params={"against_id": first["id"]})
+    assert diff.status_code == 200, diff.text
+    body = diff.json()
+    assert body["added"] == [] and body["removed"] == []
+    assert [
+        (change["description"], change["from_quantity"], change["to_quantity"])
+        for change in body["changed"]
+    ] == [('Tube 1/4" HE-1', 2.0, 10.0)]
+
+    other_project = client.post(
+        "/projects", json={"name": "Other", "part_name_prefix": "OTH"}
+    ).json()["id"]
+    other_drawing = _drawing(client, other_project)
+    other_sheet = other_drawing["sheets"][0]["id"]
+    client.put(f"/sheets/{other_sheet}", json={"index": _tube_index(2.0)})
+    other = client.post(f"/drawings/{other_drawing['id']}/bom").json()
+    cross = client.get(f"/bom/{other['id']}/diff", params={"against_id": first["id"]})
+    assert cross.status_code == 400
+    same_project = client.post(f"/drawings/{_drawing(client, project_id)['id']}/bom").json()
+    cross = client.get(f"/bom/{same_project['id']}/diff", params={"against_id": first["id"]})
+    assert cross.status_code == 400

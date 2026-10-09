@@ -2,45 +2,54 @@
  * Drafting: the paper-space P&ID editor built on the schematic engine.
  *
  * Works on controlled drawings (number, title, size, revisions) made of
- * sheets; each sheet holds a schematic document. Legacy diagrams can be
- * converted into a new drawing. Export renders the sheet with the shared
+ * sheets; each sheet holds a schematic document. Diagrams from the retired
+ * legacy editor are import-only: any of the project's can be converted into
+ * a new drawing. Export renders the sheet with the shared
  * renderer and lets the server turn the SVG into PDF or PNG.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { api } from "../api";
+import { Link, useSearchParams } from "react-router-dom";
+import { api, releaseDrawing, reviseDrawing, submitDrawing, withdrawDrawing, WorkflowConflictError } from "../api";
 import { AssignPartModal } from "../components/schematic/AssignPartModal";
 import { DrcPanel, useDrc, type DrcInputs } from "../components/schematic/DrcPanel";
+import { IndexStatusNote, RevisionSnapshotModal, RevisionTable, WorkflowPanel, drawingStatusOf } from "../components/schematic/DrawingWorkflow";
 import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
+import { SelectionBulkEdit } from "../components/schematic/SelectionBulkEdit";
+import { commitSheetEdits, type SheetEditResult, type SheetFieldEdit } from "../components/schematic/sheetEdits";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
+import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
+import { useStaleReindex, type ReindexOutcome } from "../components/schematic/useStaleReindex";
 import { convertLegacyGraph } from "../engine/convert";
-import { Editor, type AlignMode, type ToolId } from "../engine/editor";
+import { deriveSheetData } from "../engine/derived";
+import { Editor, READ_ONLY_TOOLS, type AlignMode, type ToolId } from "../engine/editor";
 import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
 import { polylineLength } from "../engine/geometry";
 import { runDrc, type DrcResult, type DrcWaiver, type RequirementRef } from "../engine/drc";
 import { renderFindingsSheet } from "../engine/drcSheet";
-import { buildSheetIndex, lineLengthM } from "../engine/index";
+import { lineLengthM } from "../engine/index";
 import type { ListKind } from "../engine/lists";
 import { partBadge, partWarnings } from "../engine/parts";
-import { SymbolRegistry } from "../engine/library";
+import { CUSTOM_LIBRARY, SymbolRegistry } from "../engine/library";
 import { LINE_TYPE_LABELS, renderDocumentSvg, type PartBadge } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
-import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, validateTag, type TagScheme } from "../engine/tags";
+import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, tagsOf, validateTag, type TagScheme } from "../engine/tags";
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
-import type { BomReadiness, BomSnapshot, Diagram, Drawing, DrawingRevision, FluidSystem, LineClass, Part, PidSymbolDef, Requirement, User } from "../types";
+import type { BomReadiness, BomSnapshot, DiagramSummary, Drawing, DrawingRead, DrawingRevision, DrawingSheet, FluidSystem, LineClass, Part, PidSymbolDef, ReleaseBlocker, ReleaseSnapshotSheet, Requirement, RevisionSnapshot, User } from "../types";
+import { useUnsavedChanges } from "../unsavedChanges";
+import { useWorkspace } from "../workspace/WorkspaceContext";
+import { parseDraftingTarget, type DraftingTarget } from "./draftingLinks";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
   projectId: string;
   projectName: string;
   systems: FluidSystem[];
-  /** Diagrams of the currently selected system (conversion sources). */
-  diagrams: Diagram[];
+  /** Default system of a new drawing. */
   selectedSystemId: string;
   customSymbols: PidSymbolDef[];
   /** Reload custom symbols after their library metadata changes. */
@@ -52,6 +61,8 @@ type Props = {
   user: User;
   canWrite: boolean;
   notify: (message: string, error?: boolean) => void;
+  /** Drawing, sheet, and item to open once the project's drawings load (a deep link). */
+  target?: DraftingTarget | null;
 };
 
 const TOOLS: Array<{ id: ToolId; label: string; key: string }> = [
@@ -76,6 +87,22 @@ function downloadBlob(filename: string, blob: Blob) {
 
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+function readStoredFlag(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredFlag(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* storage unavailable */
+  }
 }
 
 function stringField(fields: Record<string, unknown> | undefined, key: string): string | undefined {
@@ -211,6 +238,7 @@ function DrawingCanvas({
   sheetNo,
   otherSheets,
   parts,
+  readOnly,
   canvasRef,
   onCursor,
   onViewport
@@ -224,6 +252,7 @@ function DrawingCanvas({
   sheetNo: number;
   otherSheets: SheetDoc[];
   parts: Part[];
+  readOnly: boolean;
   canvasRef: React.RefObject<SchematicCanvasHandle | null>;
   onCursor: (point: Point | null) => void;
   onViewport: (viewport: Viewport) => void;
@@ -245,19 +274,29 @@ function DrawingCanvas({
     () => (baseContext ? withLegends(baseContext, doc, registry, scheme, flags, connectorTargets) : undefined),
     [baseContext, doc, registry, scheme, flags, connectorTargets]
   );
-  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} onCursor={onCursor} onViewport={onViewport} />;
+  return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} readOnly={readOnly} onCursor={onCursor} onViewport={onViewport} />;
 }
 
-export function DraftingPage({ projectId, projectName, systems, diagrams, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify }: Props) {
+export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify, target = null }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
-  const [editor, setEditor] = useState<Editor | null>(null);
+  // The editor is bound to the sheet it was loaded from. `sheetId` moves first
+  // on a switch; until the new sheet loads there is no editor, so Save, the BoM,
+  // and exports can never pair the old document with the new sheet id.
+  const [session, setSession] = useState<{ editor: Editor; sheetId: string } | null>(null);
+  const sessionEditor = session?.editor ?? null;
+  const editor = session && session.sheetId === sheetId ? session.editor : null;
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const [showDrawingPanel, setShowDrawingPanel] = useState(false);
   const [creating, setCreating] = useState<null | { mode: "new" | "convert" }>(null);
+  // Legacy diagrams of the project (conversion sources) and whether their hint was dismissed.
+  const [legacyDiagrams, setLegacyDiagrams] = useState<DiagramSummary[]>([]);
+  const [legacyHintDismissed, setLegacyHintDismissed] = useState<Record<string, boolean>>({});
+  // Custom symbol open in the symbol editor (null symbol = a new one).
+  const [symbolEditor, setSymbolEditor] = useState<null | { symbol: PidSymbolDef | null }>(null);
   const [cursor, setCursor] = useState<Point | null>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const [tagScheme, setTagScheme] = useState<TagScheme>(DEFAULT_TAG_SCHEME);
@@ -271,6 +310,13 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const [listsBusy, setListsBusy] = useState(false);
   const [waivers, setWaivers] = useState<DrcWaiver[]>([]);
   const [exportFindings, setExportFindings] = useState(false);
+  const [tagSchemeReady, setTagSchemeReady] = useState(false);
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  /** Reasons the last release attempt was refused. */
+  const [blockers, setBlockers] = useState<ReleaseBlocker[]>([]);
+  const [snapshotRevision, setSnapshotRevision] = useState<DrawingRevision | null>(null);
+  /** Sheet whose design rule check to bring into view once it is open. */
+  const [focusDrcSheet, setFocusDrcSheet] = useState<string | null>(null);
   const [libraryWidth, setLibraryWidth] = useStoredWidth("fsdp.draftingLibraryWidth", 248, 200, 420);
   const [sideWidth, setSideWidth] = useStoredWidth("fsdp.draftingSideWidth", 340, 280, 560);
   const pendingLocate = useRef<LocateTarget | null>(null);
@@ -288,15 +334,65 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   const flags = useMemo(() => legendFlags(drawings.find((entry) => entry.id === drawingId) ?? null), [drawings, drawingId]);
   const drawing = drawings.find((entry) => entry.id === drawingId) ?? null;
   const sheetSummary = drawing?.sheets.find((entry) => entry.id === sheetId) ?? null;
+  const status = drawingStatusOf(drawing?.status);
+  // Released drawings are locked: edits go into a new revision. Viewers never edit.
+  const locked = status === "released";
+  const canEdit = canWrite && !locked;
+  const staleSheets = useMemo(() => drawing?.sheets.filter((entry) => entry.index_stale) ?? [], [drawing]);
   const systemName = systems.find((system) => system.id === drawing?.system_id)?.name;
+  // Drawing number each legacy diagram was converted into (by source_diagram_id of a sheet).
+  const convertedInto = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of drawings) {
+      for (const sheet of entry.sheets) if (sheet.source_diagram_id && !map.has(sheet.source_diagram_id)) map.set(sheet.source_diagram_id, entry.number);
+    }
+    return map;
+  }, [drawings]);
+  const unconvertedDiagrams = legacyDiagrams.filter((diagram) => !convertedInto.has(diagram.id));
+  const legacyHintKey = `fsdp.drafting.legacyHint.${projectId}`;
+  const showLegacyHint = canWrite && unconvertedDiagrams.length > 0 && !legacyHintDismissed[projectId] && readStoredFlag(legacyHintKey) !== "dismissed";
 
+  const projectIdRef = useRef(projectId);
+  useEffect(() => {
+    projectIdRef.current = projectId;
+  }, [projectId]);
+
+  // Latest values for async work (sheet loads, background re-indexing).
+  const canEditRef = useRef(canEdit);
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    canEditRef.current = canEdit;
+    sessionRef.current = session;
+  }, [canEdit, session]);
+  /** Bumped when a sheet is saved: a background re-index that read it earlier stands down. */
+  const sheetTouches = useRef(new Map<string, number>());
+  const touchSheet = useCallback((id: string) => {
+    sheetTouches.current.set(id, (sheetTouches.current.get(id) ?? 0) + 1);
+  }, []);
+
+  /** Record that the server holds a fresh index for a sheet (after a save or a re-index). */
+  const markSheetIndexed = useCallback((targetDrawingId: string, targetSheetId: string, drcErrors?: number) => {
+    const indexedAt = new Date().toISOString();
+    setDrawings((current) =>
+      current.map((entry) =>
+        entry.id === targetDrawingId && entry.sheets.some((sheetEntry) => sheetEntry.id === targetSheetId && sheetEntry.index_stale)
+          ? { ...entry, sheets: entry.sheets.map((sheetEntry) => (sheetEntry.id === targetSheetId ? { ...sheetEntry, index_stale: false, indexed_at: indexedAt } : sheetEntry)) }
+          : entry
+      )
+    );
+    // The sheet is no longer stale, and a clean DRC clears its error blocker too.
+    setBlockers((current) => current.filter((blocker) => blocker.sheet_id !== targetSheetId || (blocker.code === "drc_errors" && drcErrors !== 0)));
+  }, []);
+
+  /** Reload the drawing list; resolves null (and changes nothing) if the project changed meanwhile. */
   const refreshDrawings = useCallback(
-    async (selectId?: string) => {
+    async (selectId?: string): Promise<Drawing[] | null> => {
       if (!projectId) {
         setDrawings([]);
         return [];
       }
       const list = await api.listDrawings(projectId);
+      if (projectIdRef.current !== projectId) return null;
       setDrawings(list);
       if (selectId) setDrawingId(selectId);
       return list;
@@ -309,14 +405,14 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     let cancelled = false;
     setDrawingId("");
     setSheetId("");
-    setEditor(null);
+    setSession(null);
     if (!projectId) {
       setDrawings([]);
       return;
     }
     refreshDrawings()
       .then((list) => {
-        if (cancelled) return;
+        if (cancelled || !list) return;
         const remembered = localStorage.getItem(`fsdp.drafting.drawing.${projectId}`);
         const pick = list.find((entry) => entry.id === remembered) ?? list[0];
         setDrawingId(pick?.id ?? "");
@@ -330,13 +426,34 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
+  // Legacy diagrams of every system in the project; conversion turns them into drawings.
+  useEffect(() => {
+    let cancelled = false;
+    setLegacyDiagrams([]);
+    if (!projectId) return;
+    api
+      .listProjectDiagrams(projectId)
+      .then((list) => {
+        if (!cancelled) setLegacyDiagrams(list);
+      })
+      .catch(() => {
+        if (!cancelled) setLegacyDiagrams([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
   // Project tag scheme (defaults when none is stored).
   useEffect(() => {
     let cancelled = false;
     if (!projectId) {
       setTagScheme(DEFAULT_TAG_SCHEME);
+      setTagSchemeReady(true);
       return;
     }
+    // Background re-indexing waits for the project's scheme: the DRC checks tags against it.
+    setTagSchemeReady(false);
     api
       .getTagScheme(projectId)
       .then((read) => {
@@ -344,6 +461,9 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       })
       .catch(() => {
         if (!cancelled) setTagScheme(DEFAULT_TAG_SCHEME);
+      })
+      .finally(() => {
+        if (!cancelled) setTagSchemeReady(true);
       });
     return () => {
       cancelled = true;
@@ -353,6 +473,11 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   useEffect(() => {
     editor?.setTagScheme(tagScheme);
   }, [editor, tagScheme]);
+
+  // Tags on the drawing's other sheets: suggestions skip them and the DRC flags duplicates.
+  useEffect(() => {
+    editor?.setReservedTags(tagsOf(otherSheets.filter((sheet) => sheet.sheetId !== sheetId).map((sheet) => sheet.doc)));
+  }, [editor, otherSheets, sheetId]);
 
   // Project line classes for the line inspector.
   useEffect(() => {
@@ -424,24 +549,24 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawing?.id, drawing?.sheets.length]);
 
-  // Load the sheet document into an editor session.
+  // Load the sheet document into an editor session. Only a sheet change
+  // reloads: a rebuilt registry (custom symbol metadata saved) is applied to
+  // the open editor below, keeping unsaved edits and undo history.
   useEffect(() => {
     let cancelled = false;
     if (!sheetId) {
-      setEditor(null);
+      setSession(null);
       return;
     }
+    const loadingSheetId = sheetId;
     setLoading(true);
     api
-      .getSheet(sheetId)
+      .getSheet(loadingSheetId)
       .then((sheet) => {
         if (cancelled) return;
         const document = withFrameTemplate(sheet.document as unknown as SchematicDocument, drawing?.frame_template ?? "basic");
         const store = new DocumentStore(document);
-        setEditor((previous) => {
-          previous?.dispose();
-          return new Editor(store, registry, { author: user.name, tagScheme });
-        });
+        setSession({ editor: new Editor(store, registry, { author: user.name, tagScheme, readOnly: !canEditRef.current }), sheetId: loadingSheetId });
       })
       .catch((error) => {
         if (!cancelled) notify(error instanceof Error ? error.message : "Could not open the sheet.", true);
@@ -453,16 +578,20 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheetId, registry]);
+  }, [sheetId]);
+
+  useEffect(() => {
+    sessionEditor?.setRegistry(registry);
+  }, [sessionEditor, registry]);
 
   // Keep the document's frame template in step with the drawing setting.
   useEffect(() => {
     if (!editor || !drawing) return;
     const next = withFrameTemplate(editor.store.doc, drawing.frame_template);
-    if (next !== editor.store.doc) editor.store.dispatch({ type: "sheet", sheet: next.sheet });
+    if (next !== editor.store.doc) editor.dispatch({ type: "sheet", sheet: next.sheet });
   }, [editor, drawing]);
 
-  useEffect(() => () => editor?.dispose(), [editor]);
+  useEffect(() => () => sessionEditor?.dispose(), [sessionEditor]);
 
   useEffect(() => {
     const guard = (event: BeforeUnloadEvent) => {
@@ -472,26 +601,41 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     return () => window.removeEventListener("beforeunload", guard);
   }, [editor]);
 
+  // In-app navigation and sign-out ask before this page's unsaved sheet is dropped.
+  useUnsavedChanges("drafting", () => Boolean(editor?.store.dirty), { routeScoped: true, scope: "project" });
+
   const context = useMemo(
     () => (drawing && sheetSummary ? buildDrawingContext(drawing, sheetSummary.sheet_no, sheetSummary.title, projectName, systemName) : undefined),
     [drawing, sheetSummary, projectName, systemName]
   );
 
   const save = useCallback(async (): Promise<boolean> => {
-    if (!editor || !sheetId || !drawing) return false;
+    // `editor` is only set while it holds `sheetId`'s document (see `session`).
+    if (!editor || !sheetId || !drawing || !canEdit) return false;
     try {
       const sheetNo = sheetSummary?.sheet_no ?? 1;
-      const connectorTargets = resolveConnectorTargets({ sheetNo, doc: editor.store.doc }, otherSheets).targets;
-      // The index rows travel with the document so lists, BoM, and where-used read the saved state.
-      const index = buildSheetIndex(editor.store.doc, registry, { connectivity: editor.connectivity, connectorTargets });
-      // The DRC runs on save: open and waived findings plus requirement checks are stored with the sheet.
-      const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
-      await api.updateSheet(sheetId, {
-        document: editor.store.doc,
-        index,
-        drc: { findings: [...drc.findings, ...drc.waived].map(({ key, rule, severity, message, itemId, subject, zone, requirementId }) => ({ key, rule, severity, message, itemId, subject, zone, requirementId })), checks: drc.requirementChecks }
+      // Capture the document and its version together: edits made while the
+      // request is in flight are not in this save and must stay dirty.
+      const version = editor.store.version;
+      const doc = editor.store.doc;
+      // The index rows and the DRC (open and waived findings, requirement checks) travel with the
+      // document so lists, BoM, where-used, and release read the saved state.
+      const { index, drc, payload } = deriveSheetData({
+        doc,
+        sheetId,
+        sheetNo,
+        otherSheets,
+        registry,
+        connectivity: editor.connectivity,
+        tagScheme,
+        parts: partMap,
+        requirements: requirementRefs,
+        waivers
       });
-      editor.store.markSaved();
+      touchSheet(sheetId);
+      await api.updateSheet(sheetId, { document: doc, ...payload });
+      editor.store.markSaved(version);
+      markSheetIndexed(drawing.id, sheetId, drc.counts.error);
       const drcSummary = drc.counts.error || drc.counts.warning ? `; DRC: ${drc.counts.error} error(s), ${drc.counts.warning} warning(s)` : "; DRC clean";
       notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed${drcSummary}).`);
       return true;
@@ -499,7 +643,226 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       notify(error instanceof Error ? error.message : "Save failed.", true);
       return false;
     }
-  }, [editor, sheetId, drawing, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify]);
+  }, [editor, sheetId, drawing, canEdit, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify, touchSheet, markSheetIndexed]);
+
+  // Inputs of the background re-index, read when each sheet's turn comes.
+  const reindexInputs = useRef({ drawing, registry, tagScheme, partMap, requirementRefs });
+  useEffect(() => {
+    reindexInputs.current = { drawing, registry, tagScheme, partMap, requirementRefs };
+  }, [drawing, registry, tagScheme, partMap, requirementRefs]);
+
+  /**
+   * Re-derive one stale sheet from its stored document, exactly as a save would
+   * (same index and DRC inputs), and store it. The open sheet is left alone
+   * while it has unsaved edits: its save indexes it.
+   */
+  const reindexSheet = useCallback(
+    async (targetId: string, isCancelled: () => boolean): Promise<ReindexOutcome> => {
+      const openWithEdits = () => {
+        const open = sessionRef.current;
+        return Boolean(open && open.sheetId === targetId && open.editor.store.dirty);
+      };
+      const current = reindexInputs.current;
+      const target = current.drawing?.sheets.find((entry) => entry.id === targetId);
+      if (!current.drawing || !target || openWithEdits()) return "skipped";
+      const touched = sheetTouches.current.get(targetId) ?? 0;
+      const sheets: DrawingSheet[] = [];
+      for (const entry of current.drawing.sheets) sheets.push(await api.getSheet(entry.id));
+      const stored = await api.getSheetDrc(targetId);
+      // Stand down if the drawing changed, the sheet was saved meanwhile, or it now has unsaved edits.
+      if (isCancelled() || !canEditRef.current || openWithEdits() || (sheetTouches.current.get(targetId) ?? 0) !== touched) return "skipped";
+      const { drawing: latestDrawing, registry: latestRegistry, tagScheme: latestScheme, partMap: latestParts, requirementRefs: latestRequirements } = reindexInputs.current;
+      if (!latestDrawing) return "skipped";
+      const own = sheets.find((entry) => entry.id === targetId);
+      if (!own) return "skipped";
+      const doc = withFrameTemplate(own.document as unknown as SchematicDocument, latestDrawing.frame_template);
+      const { drc, payload } = deriveSheetData({
+        doc,
+        sheetId: targetId,
+        sheetNo: own.sheet_no,
+        otherSheets: sheets.map((entry) => ({ sheetId: entry.id, sheetNo: entry.sheet_no, doc: entry.document as unknown as SchematicDocument })),
+        registry: latestRegistry,
+        tagScheme: latestScheme,
+        parts: latestParts,
+        requirements: latestRequirements,
+        waivers: stored.waivers.map((waiver) => ({ key: waiver.key, reason: waiver.reason, by: waiver.waived_by, at: waiver.created_at }))
+      });
+      await api.updateSheet(targetId, { document: doc, ...payload });
+      markSheetIndexed(latestDrawing.id, targetId, drc.counts.error);
+      return "indexed";
+    },
+    [markSheetIndexed]
+  );
+
+  const staleSheetIds = useMemo(() => staleSheets.map((entry) => entry.id), [staleSheets]);
+  const { status: reindexStatus, reindexNow } = useStaleReindex({
+    drawingId: drawing?.id ?? null,
+    staleSheetIds,
+    enabled: Boolean(drawing) && canEdit && tagSchemeReady,
+    reindex: reindexSheet
+  });
+
+  /**
+   * Field edits from the lists drawer (inline, paste, bulk): the open sheet
+   * through the editor (one undo step), the drawing's other sheets re-derived
+   * and stored. Refused on a released drawing or for a viewer. Commits run one
+   * after another, each against the documents the previous one stored.
+   */
+  const otherSheetsRef = useRef(otherSheets);
+  useEffect(() => {
+    otherSheetsRef.current = otherSheets;
+  }, [otherSheets]);
+  const listEditQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const commitListEdits = useCallback(
+    (edits: SheetFieldEdit[]): Promise<SheetEditResult> => {
+      const latestDrawing = drawing;
+      const run = () =>
+        commitSheetEdits(
+          {
+            drawing: latestDrawing,
+            locked,
+            canWrite,
+            editor,
+            openSheetId: sheetId,
+            otherSheets: otherSheetsRef.current,
+            registry,
+            tagScheme,
+            lineClasses,
+            parts: partMap,
+            requirements: requirementRefs,
+            loadSheet: (id) => api.getSheet(id),
+            loadWaivers: async (id) => (await api.getSheetDrc(id)).waivers.map((waiver) => ({ key: waiver.key, reason: waiver.reason, by: waiver.waived_by, at: waiver.created_at })),
+            saveSheet: (id, body) => api.updateSheet(id, body),
+            prepareDocument: (doc) => withFrameTemplate(doc, latestDrawing?.frame_template ?? "basic"),
+            onBeforeSave: touchSheet,
+            onSheetSaved: (id, savedSheetNo, doc, drcErrors) => {
+              const replace = (current: SheetDoc[]) => current.map((entry) => (entry.sheetId === id ? { sheetNo: savedSheetNo, sheetId: id, doc } : entry));
+              otherSheetsRef.current = replace(otherSheetsRef.current);
+              setOtherSheets(replace);
+              if (latestDrawing) markSheetIndexed(latestDrawing.id, id, drcErrors);
+            }
+          },
+          edits
+        );
+      const next = listEditQueue.current.then(run, run);
+      listEditQueue.current = next.catch(() => undefined);
+      return next;
+    },
+    [drawing, locked, canWrite, editor, sheetId, registry, tagScheme, lineClasses, partMap, requirementRefs, touchSheet, markSheetIndexed]
+  );
+
+  /** "Re-index now": the open sheet with unsaved edits is saved; the others re-index in the background. */
+  function requestReindex(sheetIds?: string[]) {
+    const ids = sheetIds ?? staleSheets.map((entry) => entry.id);
+    if (editor?.store.dirty && ids.includes(sheetId)) void save();
+    reindexNow(ids.filter((id) => !(editor?.store.dirty && id === sheetId)));
+  }
+
+  // Forget refused-release reasons when another drawing opens.
+  useEffect(() => {
+    setBlockers([]);
+    setSnapshotRevision(null);
+  }, [drawing?.id]);
+
+  function replaceDrawing(updated: DrawingRead) {
+    setDrawings((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
+  }
+
+  async function runWorkflow(action: (id: string) => Promise<DrawingRead>, success: (updated: DrawingRead) => string): Promise<void> {
+    if (!drawing) return;
+    const id = drawing.id;
+    setWorkflowBusy(true);
+    try {
+      const updated = await action(id);
+      replaceDrawing(updated);
+      setBlockers([]);
+      notify(success(updated));
+    } catch (error) {
+      if (error instanceof WorkflowConflictError && error.reasons.length) {
+        setBlockers(error.reasons);
+        // The server's view of which sheets are stale feeds the background re-index.
+        await refreshDrawings().catch(() => null);
+      }
+      notify(error instanceof Error ? error.message : "The workflow action failed.", true);
+    } finally {
+      setWorkflowBusy(false);
+    }
+  }
+
+  async function submitForReview() {
+    if (!drawing || !(await ensureSaved())) return;
+    await runWorkflow(submitDrawing, (updated) => `Submitted ${updated.number} rev ${updated.current_revision?.label ?? ""} for review.`);
+  }
+
+  async function withdrawFromReview() {
+    await runWorkflow(withdrawDrawing, (updated) => `Withdrew ${updated.number} from review.`);
+  }
+
+  async function release() {
+    if (!drawing) return;
+    const label = drawing.current_revision?.label ?? drawing.revisions[drawing.revisions.length - 1]?.label ?? "-";
+    const question = `Release ${drawing.number} rev ${label}?\n\nThe drawing locks and you are recorded as the approver. Later changes need a new revision.`;
+    if (!window.confirm(question)) return;
+    // Release reads the stored index, so unsaved edits go in first.
+    if (!(await ensureSaved())) return;
+    await runWorkflow(releaseDrawing, (updated) => `Released ${updated.number} rev ${updated.current_revision?.label ?? label}.`);
+  }
+
+  async function startRevision(body: { label?: string; description?: string }) {
+    await runWorkflow(
+      (id) => reviseDrawing(id, body.label || body.description ? body : undefined),
+      (updated) => `Started revision ${updated.current_revision?.label ?? ""} of ${updated.number}; the drawing is editable again.`
+    );
+  }
+
+  /** A release blocker was clicked: open its sheet, and its DRC for open errors. */
+  function openBlocker(blocker: ReleaseBlocker) {
+    if (blocker.sheet_id !== sheetId) {
+      if (!confirmDiscard()) return;
+      setSheetId(blocker.sheet_id);
+    }
+    if (blocker.code === "drc_errors") setFocusDrcSheet(blocker.sheet_id);
+  }
+
+  // Bring the design rule check into view once the blocker's sheet is open.
+  useEffect(() => {
+    if (!editor || !focusDrcSheet || focusDrcSheet !== sheetId) return;
+    setFocusDrcSheet(null);
+    const handle = window.setTimeout(() => {
+      const panel = document.querySelector<HTMLElement>(".draftingSide .drcPanel");
+      panel?.scrollIntoView?.({ block: "start", behavior: "smooth" });
+      panel?.classList.add("drcPanelFocus");
+      window.setTimeout(() => panel?.classList.remove("drcPanelFocus"), 1600);
+    }, 50);
+    return () => window.clearTimeout(handle);
+  }, [editor, focusDrcSheet, sheetId]);
+
+  const snapshotContext = useCallback(
+    (snapshot: RevisionSnapshot, snapshotSheet: ReleaseSnapshotSheet): DrawingContext | undefined => {
+      if (!drawing) return undefined;
+      const meta = snapshot.snapshot.drawing as Partial<Drawing>;
+      const frozen: Drawing = {
+        ...drawing,
+        number: meta.number ?? drawing.number,
+        title: meta.title ?? drawing.title,
+        size: meta.size ?? drawing.size,
+        units: meta.units ?? drawing.units,
+        discipline: meta.discipline ?? drawing.discipline,
+        fields: meta.fields ?? drawing.fields,
+        notes: meta.notes ?? drawing.notes,
+        status: "released",
+        sheets: snapshot.snapshot.sheets.map((entry) => ({ id: entry.id, sheet_no: entry.sheet_no, title: entry.title, source_diagram_id: null })),
+        revisions: drawing.revisions.filter((revision) => revision.sequence <= snapshot.sequence)
+      };
+      const docOf = (entry: ReleaseSnapshotSheet) => entry.document as unknown as SchematicDocument;
+      const others = snapshot.snapshot.sheets.filter((entry) => entry.id !== snapshotSheet.id).map((entry) => ({ sheetId: entry.id, sheetNo: entry.sheet_no, doc: docOf(entry) }));
+      return {
+        ...buildDrawingContext(frozen, snapshotSheet.sheet_no, snapshotSheet.title, projectName, systemName),
+        connectorTargets: resolveConnectorTargets({ sheetNo: snapshotSheet.sheet_no, doc: docOf(snapshotSheet) }, others).targets
+      };
+    },
+    [drawing, projectName, systemName]
+  );
 
   async function waiveFinding(key: string, reason: string) {
     if (!sheetId) return;
@@ -532,7 +895,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   /** Exports and the BoM read the saved index, so save a dirty sheet first. */
   async function ensureSaved(): Promise<boolean> {
     if (!editor?.store.dirty) return true;
-    if (!canWrite) {
+    if (!canEdit) {
       notify("Unsaved changes are not in the stored index; a writer must save the sheet first.", true);
       return false;
     }
@@ -576,6 +939,17 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     setBomReadiness(null);
   }, [drawing?.id]);
 
+  // Ctrl/Cmd+S saves the sheet (the canvas leaves the shortcut to the page).
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      if (canEdit && editor?.store.dirty) void save();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [canEdit, editor, save]);
+
   const focusItem = useCallback(
     (itemId: string) => {
       if (!editor) return;
@@ -614,6 +988,21 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     return () => window.clearTimeout(handle);
   }, [editor, sheetId, focusItem]);
 
+  // Deep link: once the project's drawings are listed (and the loader has picked one),
+  // open the target drawing and sheet, and centre the item when its editor is ready.
+  const deepLink = useRef(target);
+  useEffect(() => {
+    const link = deepLink.current;
+    if (!link || !drawingId) return;
+    const targetDrawing = drawings.find((entry) => entry.id === link.drawingId);
+    if (!targetDrawing) return;
+    deepLink.current = null;
+    const targetSheet = targetDrawing.sheets.find((entry) => entry.id === link.sheetId)?.id ?? targetDrawing.sheets[0]?.id ?? "";
+    if (link.itemId && targetSheet) pendingLocate.current = { drawingId: targetDrawing.id, sheetId: targetSheet, itemId: link.itemId };
+    setDrawingId(targetDrawing.id);
+    setSheetId(targetSheet);
+  }, [drawings, drawingId]);
+
   async function exportSheet(format: "pdf" | "png" | "svg") {
     if (!editor || !sheetId || !context) return;
     setExporting(true);
@@ -627,7 +1016,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       });
       const pages: string[] = [];
       if (format === "pdf" && exportFindings) {
-        const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers });
+        const drc = runDrc({ doc: editor.store.doc, registry, connectivity: editor.connectivity, tagScheme, parts: partMap, requirements: requirementRefs, waivers, reservedTags: editor.reservedTags });
         pages.push(renderFindingsSheet(editor.store.doc, registry, fullContext, drc.findings, drc.waived));
       }
       const { blob, filename } = await api.exportSheet(sheetId, { svg, format, dpi: 300, pages });
@@ -655,17 +1044,22 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   }
 
   async function createDrawing(form: NewDrawingForm) {
+    // The created drawing opens in place of the current sheet.
+    if (!confirmDiscard()) return;
     try {
       let firstSheet: { document?: unknown; source_diagram_id?: string | null } | undefined;
       let title = form.title;
       let systemId: string | null = form.systemId || null;
       if (form.mode === "convert") {
-        const source = diagrams.find((entry) => entry.id === form.diagramId);
+        const source = legacyDiagrams.find((entry) => entry.id === form.diagramId);
         if (!source) throw new Error("Choose a diagram to convert.");
         const stored = await api.getSchematic(source.id);
         const converted = stored.document
           ? (stored.document as unknown as SchematicDocument)
-          : convertLegacyGraph((await api.getDiagram(source.id)).graph ?? {}, registry, { title: source.name });
+          : convertLegacyGraph((await api.getDiagram(source.id)).graph ?? {}, registry, {
+              title: source.name,
+              components: await api.listComponents(source.id)
+            });
         // The chosen paper size wins over the converter's best-fit guess.
         const document: SchematicDocument = {
           ...converted,
@@ -694,7 +1088,8 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
   }
 
   async function addSheet() {
-    if (!drawing) return;
+    // The new sheet opens in place of this one.
+    if (!drawing || !confirmDiscard()) return;
     try {
       const sheet = await api.createSheet(drawing.id, {});
       await refreshDrawings(drawing.id);
@@ -720,11 +1115,36 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     if (!drawing || !window.confirm(`Delete drawing ${drawing.number} and all of its sheets?`)) return;
     try {
       await api.deleteDrawing(drawing.id);
-      setEditor(null);
+      setSession(null);
       const list = await refreshDrawings();
-      setDrawingId(list[0]?.id ?? "");
+      if (list) setDrawingId(list[0]?.id ?? "");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not delete the drawing.", true);
+    }
+  }
+
+  /** The legacy-diagram hint shows once per project: until dismissed or the convert form is opened. */
+  function dismissLegacyHint() {
+    writeStoredFlag(legacyHintKey, "dismissed");
+    setLegacyHintDismissed((current) => ({ ...current, [projectId]: true }));
+  }
+
+  function openConvertForm() {
+    dismissLegacyHint();
+    setCreating({ mode: "convert" });
+  }
+
+  /** Legacy diagrams can be deleted once converted (or when no longer wanted). */
+  async function deleteLegacyDiagram(diagram: DiagramSummary) {
+    const converted = convertedInto.get(diagram.id);
+    const note = converted ? ` It was converted into ${converted}, which is kept.` : " It has not been converted into a drawing.";
+    if (!window.confirm(`Delete legacy diagram "${diagram.name}"?${note}`)) return;
+    try {
+      await api.deleteDiagram(diagram.id);
+      setLegacyDiagrams((current) => current.filter((entry) => entry.id !== diagram.id));
+      notify(`Deleted legacy diagram ${diagram.name}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not delete the legacy diagram.", true);
     }
   }
 
@@ -738,6 +1158,28 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
     }
   }
 
+  /** A saved symbol reaches the open sheet through the rebuilt registry; the sheet is not reloaded. */
+  function symbolSaved(symbol: PidSymbolDef) {
+    setSymbolEditor(null);
+    refreshSymbols?.();
+    notify(`Saved symbol ${symbol.name}.`);
+  }
+
+  async function deleteCustomSymbol(symbolId: string) {
+    const symbol = customSymbols.find((entry) => entry.id === symbolId);
+    if (!symbol) return;
+    const used = editor?.store.doc.items.filter((item) => item.kind === "symbol" && item.symbol.library === CUSTOM_LIBRARY && item.symbol.key === symbolId).length ?? 0;
+    const usage = used ? ` ${used} item(s) on this sheet use it and will show as missing.` : " Sheets that use it will show it as missing.";
+    if (!window.confirm(`Delete symbol "${symbol.name}"?${usage}`)) return;
+    try {
+      await api.deleteSymbol(symbolId);
+      refreshSymbols?.();
+      notify(`Deleted symbol ${symbol.name}.`);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not delete the symbol.", true);
+    }
+  }
+
   async function updateDrawing(patch: Parameters<typeof api.updateDrawing>[1]) {
     if (!drawing) return;
     try {
@@ -746,26 +1188,6 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
       notify(`Updated drawing ${updated.number}.`);
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not update the drawing.", true);
-    }
-  }
-
-  async function addRevision(body: Parameters<typeof api.createRevision>[1]) {
-    if (!drawing) return;
-    try {
-      await api.createRevision(drawing.id, body);
-      await refreshDrawings(drawing.id);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Could not add the revision.", true);
-    }
-  }
-
-  async function updateRevision(revisionId: string, body: Parameters<typeof api.updateRevision>[1]) {
-    if (!drawing) return;
-    try {
-      await api.updateRevision(revisionId, body);
-      await refreshDrawings(drawing.id);
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Could not update the revision.", true);
     }
   }
 
@@ -793,14 +1215,14 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 type="button"
                 role="tab"
                 aria-selected={sheet.id === sheetId}
-                className={sheet.id === sheetId ? "sheetTab active" : "sheetTab"}
+                className={`sheetTab${sheet.id === sheetId ? " active" : ""}${sheet.index_stale ? " stale" : ""}`}
                 onClick={() => switchSheet(sheet.id)}
-                title={sheet.title ?? `Sheet ${sheet.sheet_no}`}
+                title={`${sheet.title ?? `Sheet ${sheet.sheet_no}`}${sheet.index_stale ? " (index out of date)" : ""}`}
               >
                 {sheet.sheet_no}
               </button>
             ))}
-            <button type="button" className="sheetTab sheetTabAdd" disabled={!canWrite} onClick={() => void addSheet()} title="Add sheet">
+            <button type="button" className="sheetTab sheetTabAdd" disabled={!canEdit} onClick={() => void addSheet()} title={locked ? "Released: start a new revision to add sheets" : "Add sheet"}>
               +
             </button>
           </div>
@@ -809,7 +1231,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           <button type="button" disabled={!canWrite || !projectId} onClick={() => setCreating({ mode: "new" })}>
             New drawing
           </button>
-          <button type="button" disabled={!canWrite || !diagrams.length} onClick={() => setCreating({ mode: "convert" })} title="Create a drawing from a diagram on the Diagrams page">
+          <button type="button" disabled={!canWrite || !legacyDiagrams.length} onClick={openConvertForm} title="Create a drawing from a diagram of the retired Diagrams editor">
             Convert diagram…
           </button>
           {editor && (
@@ -830,28 +1252,48 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                   <span>DRC page</span>
                 </label>
               </div>
-              <SaveButton editor={editor} canWrite={canWrite} onSave={() => void save()} />
+              <SaveButton editor={editor} canWrite={canEdit} onSave={() => void save()} />
             </>
           )}
         </div>
       </header>
+      {showLegacyHint && !creating && (
+        <div className="draftingNotice" role="status" aria-label="Unconverted legacy diagrams">
+          <span>
+            {unconvertedDiagrams.length === 1 ? "1 legacy diagram" : `${unconvertedDiagrams.length} legacy diagrams`} in this project{" "}
+            {unconvertedDiagrams.length === 1 ? "has" : "have"} not been converted into drawings. The Diagrams editor is retired; convert them to keep
+            working on them here.
+          </span>
+          <button type="button" onClick={openConvertForm}>
+            Convert diagram…
+          </button>
+          <button type="button" onClick={dismissLegacyHint}>
+            Dismiss
+          </button>
+        </div>
+      )}
       {creating && (
         <NewDrawingForm
           mode={creating.mode}
           systems={systems}
-          diagrams={diagrams}
+          diagrams={legacyDiagrams}
+          convertedInto={convertedInto}
+          onDeleteDiagram={canWrite ? (diagram) => void deleteLegacyDiagram(diagram) : undefined}
           defaultSystemId={selectedSystemId}
           defaultCompany={stringField(drawing?.fields, "company") ?? ""}
           onSubmit={(form) => void createDrawing(form)}
           onCancel={() => setCreating(null)}
         />
       )}
+      {symbolEditor && canWrite && (
+        <SymbolEditorModal symbol={symbolEditor.symbol} onClose={() => setSymbolEditor(null)} onSaved={symbolSaved} />
+      )}
       <section className="draftingWorkspace">
         {editor && (
           <EditorToolbar
             editor={editor}
             registry={registry}
-            canWrite={canWrite}
+            canWrite={canEdit}
             showGrid={showGrid}
             onToggleGrid={() => setShowGrid((current) => !current)}
             onFit={() => canvasRef.current?.fitToSheet()}
@@ -866,12 +1308,39 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
           {editor && showLibrary && (
             <>
               <aside className="draftingLibrary" style={{ width: libraryWidth }}>
-                <LibraryPanelHost editor={editor} registry={registry} canWrite={canWrite} onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)} />
+                <LibraryPanelHost
+                  editor={editor}
+                  registry={registry}
+                  canWrite={canWrite}
+                  onUpdateCustom={(id, patch) => void updateCustomSymbol(id, patch)}
+                  onNewSymbol={() => setSymbolEditor({ symbol: null })}
+                  onEditSymbol={(id) => setSymbolEditor({ symbol: customSymbols.find((entry) => entry.id === id) ?? null })}
+                  onDeleteSymbol={(id) => void deleteCustomSymbol(id)}
+                />
               </aside>
               <PanelResizer width={libraryWidth} onResize={setLibraryWidth} direction={1} label="Resize symbol library" />
             </>
           )}
           <div className="draftingCenter">
+            {drawing && locked && (
+              <div className="lockBanner" role="status">
+                <span>
+                  <strong>Released</strong> — start a new revision to edit.
+                </span>
+                {canWrite && (
+                  <button type="button" className="primary" disabled={workflowBusy} onClick={() => void startRevision({})}>
+                    Start new revision
+                  </button>
+                )}
+              </div>
+            )}
+            {drawing && !canWrite && !locked && (
+              <div className="lockBanner" role="status">
+                <span>
+                  <strong>View only</strong> — your role can look, find, and measure, but not edit.
+                </span>
+              </div>
+            )}
             {editor ? (
               <DrawingCanvas
                 editor={editor}
@@ -883,6 +1352,7 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 sheetNo={sheetSummary?.sheet_no ?? 1}
                 otherSheets={otherSheets}
                 parts={parts}
+                readOnly={!canEdit}
                 canvasRef={canvasRef}
                 onCursor={setCursor}
                 onViewport={setViewport}
@@ -893,10 +1363,10 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                   {loading
                     ? "Opening sheet…"
                     : !projectId
-                      ? "Select a project on the Systems page first."
+                      ? "Select a project with the project switcher in the sidebar."
                       : drawings.length
                         ? "Select a drawing."
-                        : "Create a new drawing, or convert a diagram from the Diagrams page."}
+                        : "Create a new drawing, or convert a legacy diagram."}
                 </p>
               </div>
             )}
@@ -910,6 +1380,12 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                 projectId={projectId}
                 drawing={drawing}
                 canWrite={canWrite}
+                editable={canEdit && Boolean(drawing)}
+                readOnlyReason={locked ? `${drawing?.number ?? "This drawing"} is released: its lists are read-only. Start a new revision to edit.` : !canWrite ? "View only: your role cannot edit these lists." : null}
+                tagScheme={tagScheme}
+                lineClasses={lineClasses}
+                onCommitEdits={commitListEdits}
+                staleSheetNos={staleSheets.map((entry) => entry.sheet_no)}
                 tab={listTab}
                 onTab={setListTab}
                 onLocate={locate}
@@ -931,21 +1407,43 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
                     drawing={drawing}
                     systems={systems}
                     sheetCount={drawing.sheets.length}
-                    canWrite={canWrite}
+                    canEdit={canEdit}
                     open={showDrawingPanel}
                     onToggle={() => setShowDrawingPanel((current) => !current)}
                     onUpdate={(patch) => void updateDrawing(patch)}
-                    onAddRevision={(body) => void addRevision(body)}
-                    onUpdateRevision={(id, body) => void updateRevision(id, body)}
+                    onViewRevision={setSnapshotRevision}
                     onDeleteSheet={drawing.sheets.length > 1 ? () => void removeSheet() : undefined}
                     onDeleteDrawing={() => void removeDrawing()}
-                  />
+                  >
+                    <WorkflowPanel
+                      status={status}
+                      revisionLabel={drawing.current_revision?.label ?? drawing.revisions[drawing.revisions.length - 1]?.label ?? "-"}
+                      canWrite={canWrite}
+                      busy={workflowBusy}
+                      blockers={blockers}
+                      onSubmit={() => void submitForReview()}
+                      onWithdraw={() => void withdrawFromReview()}
+                      onRelease={() => void release()}
+                      onRevise={(body) => void startRevision(body)}
+                      onBlocker={openBlocker}
+                      onReindex={(id) => requestReindex([id])}
+                      onDismissBlockers={() => setBlockers([])}
+                    />
+                    {!locked && (
+                      <IndexStatusNote
+                        staleSheetNos={staleSheets.map((entry) => entry.sheet_no)}
+                        status={reindexStatus}
+                        canReindex={canEdit}
+                        onReindex={() => requestReindex()}
+                      />
+                    )}
+                  </DrawingPanel>
                 )}
                 {editor && (
                   <Inspector
                     editor={editor}
                     registry={registry}
-                    canWrite={canWrite}
+                    canWrite={canEdit}
                     lineClasses={lineClasses}
                     otherSheets={otherSheets}
                     sheetNo={sheetSummary?.sheet_no ?? 1}
@@ -963,24 +1461,18 @@ export function DraftingPage({ projectId, projectName, systems, diagrams, select
         </div>
         {editor && <StatusBar editor={editor} cursor={cursor} viewport={viewport} drcInputs={drcInputs} />}
       </section>
+      {snapshotRevision && <RevisionSnapshotModal revision={snapshotRevision} registry={registry} contextFor={snapshotContext} onClose={() => setSnapshotRevision(null)} />}
     </PageLayout>
   );
 }
 
 function LibraryPanelHost({
   editor,
-  registry,
-  canWrite,
-  onUpdateCustom
-}: {
-  editor: Editor;
-  registry: SymbolRegistry;
-  canWrite: boolean;
-  onUpdateCustom: (symbolId: string, patch: { category?: string; legend?: string; tag_prefix?: string }) => void;
-}) {
+  ...panel
+}: { editor: Editor } & Omit<Parameters<typeof LibraryPanel>[0], "placing" | "onPlace">) {
   const { state } = useEditorSnapshot(editor);
   const placing = state.tool === "place" && state.place ? state.place.symbol : null;
-  return <LibraryPanel registry={registry} placing={placing} canWrite={canWrite} onPlace={(ref) => editor.startPlacing(ref)} onUpdateCustom={onUpdateCustom} />;
+  return <LibraryPanel {...panel} placing={placing} onPlace={(ref) => editor.startPlacing(ref)} />;
 }
 
 type NewDrawingForm = {
@@ -994,10 +1486,21 @@ type NewDrawingForm = {
   company: string;
 };
 
+/** Legacy diagrams grouped by their system, in system order (unknown systems last). */
+function diagramsBySystem(diagrams: DiagramSummary[], systems: FluidSystem[]): Array<{ system: string; diagrams: DiagramSummary[] }> {
+  const names = new Map(systems.map((system) => [system.id, system.name]));
+  const groups = new Map<string, DiagramSummary[]>();
+  for (const diagram of diagrams) groups.set(diagram.system_id, [...(groups.get(diagram.system_id) ?? []), diagram]);
+  const order = [...systems.map((system) => system.id), ...[...groups.keys()].filter((id) => !names.has(id))];
+  return order.filter((id) => groups.has(id)).map((id) => ({ system: names.get(id) ?? "Other system", diagrams: groups.get(id)! }));
+}
+
 function NewDrawingForm({
   mode,
   systems,
   diagrams,
+  convertedInto,
+  onDeleteDiagram,
   defaultSystemId,
   defaultCompany,
   onSubmit,
@@ -1005,12 +1508,18 @@ function NewDrawingForm({
 }: {
   mode: "new" | "convert";
   systems: FluidSystem[];
-  diagrams: Diagram[];
+  /** The project's legacy diagrams (conversion sources). */
+  diagrams: DiagramSummary[];
+  /** Drawing number by legacy diagram id, for diagrams already converted. */
+  convertedInto: Map<string, string>;
+  onDeleteDiagram?: (diagram: DiagramSummary) => void;
   defaultSystemId: string;
   defaultCompany: string;
   onSubmit: (form: NewDrawingForm) => void;
   onCancel: () => void;
 }) {
+  const groups = diagramsBySystem(diagrams, systems);
+  const firstChoice = groups.flatMap((group) => group.diagrams).find((diagram) => !convertedInto.has(diagram.id)) ?? groups[0]?.diagrams[0];
   const [form, setForm] = useState<NewDrawingForm>({
     mode,
     title: "",
@@ -1018,11 +1527,13 @@ function NewDrawingForm({
     size: "A3",
     units: "mm",
     systemId: defaultSystemId,
-    diagramId: diagrams[0]?.id ?? "",
+    diagramId: firstChoice?.id ?? "",
     company: defaultCompany
   });
   const update = (patch: Partial<NewDrawingForm>) => setForm((current) => ({ ...current, ...patch }));
-  const canSubmit = mode === "convert" ? Boolean(form.diagramId) : Boolean(form.title.trim());
+  const selectedDiagram = diagrams.find((diagram) => diagram.id === form.diagramId) ?? null;
+  const convertedNumber = selectedDiagram ? convertedInto.get(selectedDiagram.id) : undefined;
+  const canSubmit = mode === "convert" ? Boolean(selectedDiagram) : Boolean(form.title.trim());
   return (
     <form
       className="draftingNewForm"
@@ -1036,13 +1547,33 @@ function NewDrawingForm({
         <label>
           Diagram
           <select value={form.diagramId} onChange={(event) => update({ diagramId: event.target.value })}>
-            {diagrams.map((diagram) => (
-              <option key={diagram.id} value={diagram.id}>
-                {diagram.name} rev {diagram.revision}
-              </option>
+            {groups.map((group) => (
+              <optgroup key={group.system} label={group.system}>
+                {group.diagrams.map((diagram) => (
+                  <option key={diagram.id} value={diagram.id}>
+                    {diagram.name} rev {diagram.revision}
+                    {convertedInto.has(diagram.id) ? ` (converted: ${convertedInto.get(diagram.id)})` : ""}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
+      )}
+      {mode === "convert" && selectedDiagram && (
+        <p className="hint draftingFormNote">
+          {convertedNumber
+            ? `Already converted into ${convertedNumber}; converting again creates another drawing.`
+            : "Legacy diagrams are read-only; the converted drawing is edited here."}
+          {onDeleteDiagram && (
+            <>
+              {" "}
+              <button type="button" className="linkButton" onClick={() => onDeleteDiagram(selectedDiagram)}>
+                Delete legacy diagram
+              </button>
+            </>
+          )}
+        </p>
       )}
       <label>
         Title{mode === "convert" ? " (defaults to the diagram name)" : ""}
@@ -1098,79 +1629,61 @@ function NewDrawingForm({
   );
 }
 
-function DrawingPanel({
-  drawing,
-  systems,
-  sheetCount,
-  canWrite,
-  open,
-  onToggle,
-  onUpdate,
-  onAddRevision,
-  onUpdateRevision,
-  onDeleteSheet,
-  onDeleteDrawing
-}: {
-  drawing: Drawing;
-  systems: FluidSystem[];
-  sheetCount: number;
-  canWrite: boolean;
-  open: boolean;
-  onToggle: () => void;
-  onUpdate: (patch: Parameters<typeof api.updateDrawing>[1]) => void;
-  onAddRevision: (body: Parameters<typeof api.createRevision>[1]) => void;
-  onUpdateRevision: (id: string, body: Parameters<typeof api.updateRevision>[1]) => void;
-  onDeleteSheet?: () => void;
-  onDeleteDrawing: () => void;
-}) {
-  const [form, setForm] = useState({
+function drawingForm(drawing: Drawing) {
+  const legends = legendFlags(drawing);
+  return {
     number: drawing.number,
     title: drawing.title,
     size: drawing.size,
     units: drawing.units,
-    status: drawing.status,
     frame_template: drawing.frame_template,
     system_id: drawing.system_id ?? "",
     company: stringField(drawing.fields, "company") ?? "",
     scale: stringField(drawing.fields, "scale") ?? "NO SCALE",
     notes: (drawing.notes ?? []).join("\n"),
-    legendSymbols: legendFlags(drawing).symbols,
-    legendLetters: legendFlags(drawing).letters,
-    legendLines: legendFlags(drawing).lines
-  });
-  const [revision, setRevision] = useState({ label: "", description: "", checked_by: "", approved_by: "" });
+    legendSymbols: legends.symbols,
+    legendLetters: legends.letters,
+    legendLines: legends.lines
+  };
+}
+
+function DrawingPanel({
+  drawing,
+  systems,
+  sheetCount,
+  canEdit,
+  open,
+  onToggle,
+  onUpdate,
+  onViewRevision,
+  onDeleteSheet,
+  onDeleteDrawing,
+  children
+}: {
+  drawing: Drawing;
+  systems: FluidSystem[];
+  sheetCount: number;
+  /** Writer on a drawing that is not released. */
+  canEdit: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onUpdate: (patch: Parameters<typeof api.updateDrawing>[1]) => void;
+  onViewRevision: (revision: DrawingRevision) => void;
+  onDeleteSheet?: () => void;
+  onDeleteDrawing: () => void;
+  /** Release workflow controls, always shown. */
+  children?: React.ReactNode;
+}) {
+  const saved = useMemo(() => drawingForm(drawing), [drawing]);
+  // Reset the form only when the stored metadata changes, not when a background
+  // re-index or a workflow action replaces the drawing object.
+  const savedKey = JSON.stringify(saved);
+  const [form, setForm] = useState(saved);
   useEffect(() => {
-    setForm({
-      number: drawing.number,
-      title: drawing.title,
-      size: drawing.size,
-      units: drawing.units,
-      status: drawing.status,
-      frame_template: drawing.frame_template,
-      system_id: drawing.system_id ?? "",
-      company: stringField(drawing.fields, "company") ?? "",
-      scale: stringField(drawing.fields, "scale") ?? "NO SCALE",
-      notes: (drawing.notes ?? []).join("\n"),
-      legendSymbols: legendFlags(drawing).symbols,
-      legendLetters: legendFlags(drawing).letters,
-      legendLines: legendFlags(drawing).lines
-    });
-  }, [drawing]);
+    setForm(JSON.parse(savedKey) as typeof saved);
+  }, [savedKey]);
   const update = (patch: Partial<typeof form>) => setForm((current) => ({ ...current, ...patch }));
-  const dirty =
-    form.number !== drawing.number ||
-    form.title !== drawing.title ||
-    form.size !== drawing.size ||
-    form.units !== drawing.units ||
-    form.status !== drawing.status ||
-    form.frame_template !== drawing.frame_template ||
-    form.system_id !== (drawing.system_id ?? "") ||
-    form.company !== (stringField(drawing.fields, "company") ?? "") ||
-    form.scale !== (stringField(drawing.fields, "scale") ?? "NO SCALE") ||
-    form.notes !== (drawing.notes ?? []).join("\n") ||
-    form.legendSymbols !== legendFlags(drawing).symbols ||
-    form.legendLetters !== legendFlags(drawing).letters ||
-    form.legendLines !== legendFlags(drawing).lines;
+  const dirty = JSON.stringify(form) !== savedKey;
 
   function apply() {
     onUpdate({
@@ -1178,7 +1691,6 @@ function DrawingPanel({
       title: form.title.trim() || drawing.title,
       size: form.size,
       units: form.units,
-      status: form.status,
       frame_template: form.frame_template,
       system_id: form.system_id || null,
       fields: {
@@ -1199,32 +1711,31 @@ function DrawingPanel({
       <div className="panelHead">
         <h2>Drawing {drawing.number}</h2>
         <button type="button" className="linkButton" onClick={onToggle}>
-          {open ? "Hide" : "Edit"}
+          {open ? "Hide" : canEdit ? "Edit" : "Details"}
         </button>
       </div>
+      {children}
       {!open && (
         <p className="drawingSummary">
           <span>{drawing.title.split("\n")[0]}</span>
           <span className="mono">{SHEET_SIZES[drawing.size as SheetSizeId]?.label ?? drawing.size}</span>
           <span>{sheetCount} sheet(s)</span>
-          <span>rev {drawing.revisions[drawing.revisions.length - 1]?.label ?? "-"}</span>
-          <span className="pill pill-muted">{drawing.status}</span>
         </p>
       )}
       {open && (
         <>
           <label>
             Number
-            <input value={form.number} onChange={(event) => update({ number: event.target.value })} disabled={!canWrite} />
+            <input value={form.number} onChange={(event) => update({ number: event.target.value })} disabled={!canEdit} />
           </label>
           <label>
             Title (up to 3 lines)
-            <textarea value={form.title} onChange={(event) => update({ title: event.target.value })} disabled={!canWrite} rows={3} />
+            <textarea value={form.title} onChange={(event) => update({ title: event.target.value })} disabled={!canEdit} rows={3} />
           </label>
           <div className="fieldRow">
             <label>
               Size
-              <select value={form.size} onChange={(event) => update({ size: event.target.value })} disabled={!canWrite}>
+              <select value={form.size} onChange={(event) => update({ size: event.target.value })} disabled={!canEdit}>
                 {(Object.keys(SHEET_SIZES) as SheetSizeId[]).map((size) => (
                   <option key={size} value={size}>
                     {SHEET_SIZES[size].label}
@@ -1234,7 +1745,7 @@ function DrawingPanel({
             </label>
             <label>
               Units
-              <select value={form.units} onChange={(event) => update({ units: event.target.value })} disabled={!canWrite}>
+              <select value={form.units} onChange={(event) => update({ units: event.target.value })} disabled={!canEdit}>
                 <option value="mm">mm</option>
                 <option value="in">in</option>
               </select>
@@ -1242,7 +1753,7 @@ function DrawingPanel({
           </div>
           <label>
             Frame
-            <select value={form.frame_template} onChange={(event) => update({ frame_template: event.target.value })} disabled={!canWrite}>
+            <select value={form.frame_template} onChange={(event) => update({ frame_template: event.target.value })} disabled={!canEdit}>
               {(Object.keys(FRAME_TEMPLATE_LABELS) as FrameTemplateId[]).map((id) => (
                 <option key={id} value={id}>
                   {FRAME_TEMPLATE_LABELS[id]}
@@ -1252,7 +1763,7 @@ function DrawingPanel({
           </label>
           <label>
             System
-            <select value={form.system_id} onChange={(event) => update({ system_id: event.target.value })} disabled={!canWrite}>
+            <select value={form.system_id} onChange={(event) => update({ system_id: event.target.value })} disabled={!canEdit}>
               <option value="">None</option>
               {systems.map((system) => (
                 <option key={system.id} value={system.id}>
@@ -1264,105 +1775,49 @@ function DrawingPanel({
           <div className="fieldRow">
             <label>
               Company
-              <input value={form.company} onChange={(event) => update({ company: event.target.value })} disabled={!canWrite} />
+              <input value={form.company} onChange={(event) => update({ company: event.target.value })} disabled={!canEdit} />
             </label>
             <label>
               Scale
-              <input value={form.scale} onChange={(event) => update({ scale: event.target.value })} disabled={!canWrite} />
+              <input value={form.scale} onChange={(event) => update({ scale: event.target.value })} disabled={!canEdit} />
             </label>
           </div>
           <label>
-            Status
-            <select value={form.status} onChange={(event) => update({ status: event.target.value })} disabled={!canWrite}>
-              <option value="working">Working</option>
-              <option value="for_review">For review</option>
-              <option value="released">Released</option>
-            </select>
-          </label>
-          <label>
             General notes (one per line)
-            <textarea value={form.notes} onChange={(event) => update({ notes: event.target.value })} disabled={!canWrite} rows={4} />
+            <textarea value={form.notes} onChange={(event) => update({ notes: event.target.value })} disabled={!canEdit} rows={4} />
           </label>
           <div className="fieldRow">
             <label className="checkRow">
-              <input type="checkbox" checked={form.legendSymbols} onChange={(event) => update({ legendSymbols: event.target.checked })} disabled={!canWrite} />
+              <input type="checkbox" checked={form.legendSymbols} onChange={(event) => update({ legendSymbols: event.target.checked })} disabled={!canEdit} />
               <span>Symbol legend</span>
             </label>
             <label className="checkRow">
-              <input type="checkbox" checked={form.legendLetters} onChange={(event) => update({ legendLetters: event.target.checked })} disabled={!canWrite} />
+              <input type="checkbox" checked={form.legendLetters} onChange={(event) => update({ legendLetters: event.target.checked })} disabled={!canEdit} />
               <span>Instrument letter table</span>
             </label>
             <label className="checkRow">
-              <input type="checkbox" checked={form.legendLines} onChange={(event) => update({ legendLines: event.target.checked })} disabled={!canWrite} />
+              <input type="checkbox" checked={form.legendLines} onChange={(event) => update({ legendLines: event.target.checked })} disabled={!canEdit} />
               <span>Line legend</span>
             </label>
           </div>
           <div className="toolGroup">
-            <button type="button" className="primary" disabled={!canWrite || !dirty} onClick={apply}>
+            <button type="button" className="primary" disabled={!canEdit || !dirty} onClick={apply}>
               Apply
             </button>
             {onDeleteSheet && (
-              <button type="button" disabled={!canWrite} onClick={onDeleteSheet}>
+              <button type="button" disabled={!canEdit} onClick={onDeleteSheet}>
                 Delete sheet
               </button>
             )}
-            <button type="button" className="danger" disabled={!canWrite} onClick={onDeleteDrawing}>
+            <button type="button" className="danger" disabled={!canEdit} onClick={onDeleteDrawing}>
               Delete drawing
             </button>
           </div>
           <p>
             <strong>Revisions</strong> · {sheetCount} sheet(s)
           </p>
-          <table className="revisionTable">
-            <thead>
-              <tr>
-                <th>Rev</th>
-                <th>Description</th>
-                <th>By</th>
-                <th>Approved</th>
-              </tr>
-            </thead>
-            <tbody>
-              {drawing.revisions.map((row: DrawingRevision) => (
-                <tr key={row.id}>
-                  <td className="mono">{row.label}</td>
-                  <td>{row.description}</td>
-                  <td>{row.drawn_by ?? ""}</td>
-                  <td>
-                    <input
-                      value={row.approved_by ?? ""}
-                      placeholder="—"
-                      disabled={!canWrite}
-                      onChange={(event) => onUpdateRevision(row.id, { approved_by: event.target.value })}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {canWrite && (
-            <form
-              className="revisionForm"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (!revision.label.trim() || !revision.description.trim()) return;
-                onAddRevision({
-                  label: revision.label.trim(),
-                  description: revision.description.trim(),
-                  checked_by: revision.checked_by || null,
-                  approved_by: revision.approved_by || null,
-                  drawn_date: todayIso()
-                });
-                setRevision({ label: "", description: "", checked_by: "", approved_by: "" });
-              }}
-            >
-              <input value={revision.label} onChange={(event) => setRevision({ ...revision, label: event.target.value })} placeholder="Rev" aria-label="Revision label" />
-              <input value={revision.description} onChange={(event) => setRevision({ ...revision, description: event.target.value })} placeholder="Description" aria-label="Revision description" />
-              <button type="submit" disabled={!revision.label.trim() || !revision.description.trim()}>
-                Add revision
-              </button>
-            </form>
-          )}
+          <RevisionTable revisions={drawing.revisions} onView={onViewRevision} />
+          <p className="hint">Signatures are stamped by the workflow: drawn when a revision opens, submitted on review, approved on release.</p>
         </>
       )}
     </article>
@@ -1417,18 +1872,18 @@ function EditorToolbar({
   const { state } = useEditorSnapshot(editor);
   const store = editor.store;
   void registry;
-  void canWrite;
-  const hasSelection = state.selection.length > 0;
+  // `canWrite` is false for viewers and released drawings: only looking tools stay available.
+  const hasSelection = state.selection.length > 0 && canWrite;
 
   return (
     <div className="draftingRibbon" role="toolbar" aria-label="Editor tools">
       <div className="ribbonGroup" role="group" aria-label="Tools">
         {TOOLS.map((tool) => (
-          <RibbonButton key={tool.id} active={state.tool === tool.id} onClick={() => editor.setTool(tool.id)} title={`${tool.label} (${tool.key})`}>
+          <RibbonButton key={tool.id} active={state.tool === tool.id} disabled={!canWrite && !READ_ONLY_TOOLS.has(tool.id)} onClick={() => editor.setTool(tool.id)} title={`${tool.label} (${tool.key})`}>
             {tool.label}
           </RibbonButton>
         ))}
-        <select className="ribbonSelect" value={state.lineType} onChange={(event) => editor.setLineType(event.target.value as LineType)} aria-label="Line type" title="Line type for new wires">
+        <select className="ribbonSelect" value={state.lineType} onChange={(event) => editor.setLineType(event.target.value as LineType)} disabled={!canWrite} aria-label="Line type" title="Line type for new wires">
           {(Object.keys(LINE_TYPE_LABELS) as LineType[]).map((type) => (
             <option key={type} value={type}>
               {LINE_TYPE_LABELS[type]}
@@ -1438,16 +1893,16 @@ function EditorToolbar({
       </div>
       <span className="ribbonDivider" />
       <div className="ribbonGroup" role="group" aria-label="Edit">
-        <RibbonButton disabled={!store.canUndo} onClick={() => store.undo()} title="Undo (Ctrl+Z)">
+        <RibbonButton disabled={!canWrite || !store.canUndo} onClick={() => editor.undo()} title="Undo (Ctrl+Z)">
           Undo
         </RibbonButton>
-        <RibbonButton disabled={!store.canRedo} onClick={() => store.redo()} title="Redo (Ctrl+Shift+Z)">
+        <RibbonButton disabled={!canWrite || !store.canRedo} onClick={() => editor.redo()} title="Redo (Ctrl+Shift+Z)">
           Redo
         </RibbonButton>
-        <RibbonButton disabled={!hasSelection && state.tool !== "place"} onClick={() => editor.rotateSelection()} title="Rotate (R)">
+        <RibbonButton disabled={!hasSelection && !(canWrite && state.tool === "place")} onClick={() => editor.rotateSelection()} title="Rotate (R)">
           Rotate
         </RibbonButton>
-        <RibbonButton disabled={!hasSelection && state.tool !== "place"} onClick={() => editor.mirrorSelection()} title="Mirror (X)">
+        <RibbonButton disabled={!hasSelection && !(canWrite && state.tool === "place")} onClick={() => editor.mirrorSelection()} title="Mirror (X)">
           Mirror
         </RibbonButton>
         <RibbonButton disabled={!hasSelection} onClick={() => editor.deleteSelection()} title="Delete (Del)">
@@ -1552,7 +2007,7 @@ function Inspector({
                 Paper size
                 <select
                   value={doc.sheet.size}
-                  onChange={(event) => editor.store.dispatch({ type: "sheet", sheet: makeSheet(event.target.value as SheetSizeId, doc.sheet.orientation) })}
+                  onChange={(event) => editor.dispatch({ type: "sheet", sheet: makeSheet(event.target.value as SheetSizeId, doc.sheet.orientation) })}
                   disabled={!canWrite}
                 >
                   {(Object.keys(SHEET_SIZES) as SheetSizeId[]).map((size) => (
@@ -1564,7 +2019,7 @@ function Inspector({
               </label>
               <label>
                 Orientation
-                <select value={doc.sheet.orientation} onChange={(event) => editor.store.dispatch({ type: "sheet", sheet: makeSheet(doc.sheet.size, event.target.value as "landscape" | "portrait") })} disabled={!canWrite}>
+                <select value={doc.sheet.orientation} onChange={(event) => editor.dispatch({ type: "sheet", sheet: makeSheet(doc.sheet.size, event.target.value as "landscape" | "portrait") })} disabled={!canWrite}>
                   <option value="landscape">Landscape</option>
                   <option value="portrait">Portrait</option>
                 </select>
@@ -1629,6 +2084,7 @@ function Inspector({
               </button>
             </div>
             <p className="hint">Rotate (R), mirror (X), duplicate (Ctrl+D), or delete the selection.</p>
+            <SelectionBulkEdit key={state.selection.join(",")} editor={editor} items={items} registry={registry} parts={parts} lineClasses={lineClasses} canWrite={canWrite} />
           </>
         )}
         {item?.kind === "symbol" && (
@@ -2140,7 +2596,7 @@ function PartSection({ item, editor, registry, parts, canWrite }: { item: Symbol
 
 function TagChecks({ editor }: { editor: Editor }) {
   const { doc } = useEditorSnapshot(editor);
-  const issues = useMemo(() => tagIssues(doc, editor.tagScheme), [doc, editor.tagScheme]);
+  const issues = useMemo(() => tagIssues(doc, editor.tagScheme, editor.reservedTags), [doc, editor.tagScheme, editor.reservedTags]);
   if (!issues.length) {
     return (
       <p>
@@ -2186,5 +2642,38 @@ function StatusBar({ editor, cursor, viewport, drcInputs }: { editor: Editor; cu
       </span>
       <span>{editor.store.dirty ? "Unsaved changes" : "Saved"}</span>
     </div>
+  );
+}
+
+/**
+ * The /drafting route: the editor bound to the workspace's project, system, and
+ * catalog. A deep link (?project=&drawing=&sheet=&item=) switches to the
+ * linked project and opens the drawing there.
+ */
+export function DraftingRoutePage() {
+  const { user, canWrite, notify, projects, selectedProjectId, selectProject, selectedProject, systems, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  const [searchParams] = useSearchParams();
+  const [target] = useState(() => parseDraftingTarget(searchParams));
+  useEffect(() => {
+    const projectId = target?.projectId;
+    if (projectId && projectId !== selectedProjectId && projects.some((project) => project.id === projectId)) selectProject(projectId);
+    // Only when the linked project becomes available; later switches are the user's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target, projects]);
+  return (
+    <DraftingPage
+      projectId={selectedProjectId}
+      projectName={selectedProject?.name ?? ""}
+      systems={systems}
+      selectedSystemId={selectedSystemId}
+      customSymbols={customSymbols}
+      refreshSymbols={refreshSymbols}
+      parts={parts}
+      requirements={requirements}
+      user={user}
+      canWrite={canWrite}
+      notify={notify}
+      target={target}
+    />
   );
 }

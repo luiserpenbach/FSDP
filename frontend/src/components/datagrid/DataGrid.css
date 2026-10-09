@@ -1,0 +1,509 @@
+/* ============================================================
+   <DataGrid> — spreadsheet-grade table. Uses the design tokens
+   from styles.css (Inter UI, JetBrains Mono data, light palette).
+   Everything is scoped under .dataGrid so the global control
+   styles (block inputs, button margins) don't leak in.
+   ============================================================ */
+
+.dataGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* ---------- Toolbar ---------- */
+
+.dataGrid .dgToolbar,
+.dataGrid .dgBulk {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dataGrid .dgSpacer {
+  flex: 1 1 auto;
+}
+
+.dataGrid .dgCount,
+.dataGrid .dgMuted {
+  color: var(--text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dataGrid .dgQuickFilter {
+  display: inline-block;
+  font-size: 13px;
+  margin: 0;
+  max-width: 260px;
+  padding: 5px 10px;
+}
+
+.dataGrid button.dgButton,
+.dgPopover button.dgLink {
+  font-size: 12.5px;
+  margin: 0;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+
+.dataGrid button.dgButton[aria-pressed="true"],
+.dataGrid button.dgButton[aria-expanded="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.dataGrid button.dgLink,
+.dgPopover button.dgLink {
+  background: transparent;
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.dataGrid button.dgLink:hover:not(:disabled),
+.dgPopover button.dgLink:hover:not(:disabled) {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+/* ---------- Bulk-action bar ---------- */
+
+.dataGrid .dgBulk {
+  background: var(--accent-soft);
+  border: 1px solid #c9d7f3;
+  border-radius: var(--radius-sm);
+  color: var(--accent-strong);
+  font-size: 13px;
+  padding: 5px 10px;
+}
+
+.dataGrid .dgBulkActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dataGrid .dgBulkActions button {
+  font-size: 12.5px;
+  margin: 0;
+  padding: 4px 10px;
+}
+
+/* ---------- Scroll viewport ---------- */
+
+.dataGrid .dgScroll {
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  min-height: 120px;
+  outline: none;
+  overflow: auto;
+  overscroll-behavior: contain;
+  position: relative;
+}
+
+.dataGrid .dgScroll:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.dataGrid .dgHead {
+  min-width: 100%;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.dataGrid .dgHeadRow {
+  display: flex;
+  min-width: 100%;
+}
+
+.dataGrid .dgHeadCell {
+  align-items: center;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line-soft);
+  color: var(--text-3);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  min-width: 0;
+  padding: 0 8px;
+  position: relative;
+  text-transform: uppercase;
+}
+
+.dataGrid .dgHeadCell.dgAlign-right {
+  justify-content: flex-end;
+}
+
+.dataGrid .dgHeadCell.dgAlign-center {
+  justify-content: center;
+}
+
+.dataGrid .dgSortButton {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: inherit;
+  display: inline-flex;
+  font: inherit;
+  gap: 4px;
+  letter-spacing: inherit;
+  margin: 0;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 2px;
+  text-transform: inherit;
+}
+
+.dataGrid .dgSortButton:hover:not(:disabled) {
+  background: transparent;
+  color: var(--text);
+}
+
+.dataGrid .dgHeadLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataGrid .dgSortIcon {
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0;
+}
+
+.dataGrid .dgSortIcon sup {
+  font-size: 8px;
+  margin-left: 1px;
+}
+
+.dataGrid .dgResize {
+  bottom: 0;
+  cursor: col-resize;
+  position: absolute;
+  right: -4px;
+  top: 0;
+  touch-action: none;
+  width: 8px;
+  z-index: 1;
+}
+
+.dataGrid .dgResize:hover {
+  background: linear-gradient(to right, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px);
+}
+
+.dataGrid .dgFilterRow .dgHeadCell {
+  letter-spacing: 0;
+  padding: 0 4px;
+  text-transform: none;
+}
+
+.dataGrid .dgFilterInput {
+  display: block;
+  font-size: 12px;
+  margin: 0;
+  padding: 3px 6px;
+  width: 100%;
+}
+
+.dataGrid button.dgFilterButton {
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  padding: 3px 6px;
+  text-align: left;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+
+.dataGrid button.dgFilterButton.dgFilterOn {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+/* ---------- Body ---------- */
+
+.dataGrid .dgBody {
+  min-width: 100%;
+  position: relative;
+}
+
+.dataGrid .dgRow {
+  background: var(--surface);
+  display: flex;
+  left: 0;
+  min-width: 100%;
+  position: absolute;
+}
+
+.dataGrid .dgRow.dgRowOdd {
+  background: #fbfcfe;
+}
+
+.dataGrid .dgRow:hover {
+  background: var(--surface-2);
+}
+
+.dataGrid .dgRow.dgRowSelected {
+  background: var(--accent-soft);
+}
+
+.dataGrid .dgCell {
+  align-items: center;
+  background: inherit;
+  border-bottom: 1px solid var(--line-soft);
+  border-right: 1px solid var(--line-soft);
+  color: var(--text);
+  cursor: cell;
+  display: flex;
+  flex: 0 0 auto;
+  font-size: 13px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 8px;
+  position: relative;
+  user-select: none;
+}
+
+.dataGrid .dgCell.dgAlign-right {
+  font-variant-numeric: tabular-nums;
+  justify-content: flex-end;
+}
+
+.dataGrid .dgCell.dgAlign-center {
+  justify-content: center;
+}
+
+.dataGrid .dgMono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.dataGrid .dgText {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dataGrid .dgFrozen {
+  position: sticky;
+  z-index: 1;
+}
+
+.dataGrid .dgHeadCell.dgFrozen {
+  z-index: 2;
+}
+
+.dataGrid .dgRow .dgFrozen {
+  background: var(--surface);
+}
+
+.dataGrid .dgRow.dgRowOdd .dgFrozen {
+  background: #fbfcfe;
+}
+
+.dataGrid .dgRow.dgRowSelected .dgFrozen {
+  background: var(--accent-soft);
+}
+
+.dataGrid .dgCheckCell {
+  cursor: default;
+  justify-content: center;
+  padding: 0;
+}
+
+.dataGrid .dgRow.dgRowSelected .dgCheckCell {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.dataGrid .dgCheckCell input,
+.dataGrid input.dgBool,
+.dgPopover .dgCheckRow input {
+  accent-color: var(--accent);
+  display: inline-block;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  width: 14px;
+}
+
+.dataGrid .dgCell.dgInRange {
+  background: #dfe8fa;
+}
+
+.dataGrid .dgCell.dgCursor {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.dataGrid .dgScroll:not(:focus-within) .dgCell.dgCursor {
+  box-shadow: inset 0 0 0 1px #9fb5e3;
+}
+
+.dataGrid .dgCell.dgEditable:not(.dgCursor):hover {
+  box-shadow: inset 0 0 0 1px #c2cddd;
+}
+
+.dataGrid .dgCell.dgPending {
+  background: repeating-linear-gradient(135deg, var(--amber-soft) 0 6px, #fffaf0 6px 12px);
+  color: var(--amber-deep);
+}
+
+.dataGrid .dgCell.dgError {
+  background: var(--red-soft);
+  box-shadow: inset 0 0 0 1px #e3b8b5;
+}
+
+.dataGrid .dgCell.dgError.dgCursor {
+  box-shadow: inset 0 0 0 2px var(--red);
+}
+
+.dataGrid .dgErrorMark {
+  border-left: 7px solid transparent;
+  border-top: 7px solid var(--red);
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+
+.dataGrid .dgCell.dgEditing {
+  overflow: visible;
+  padding: 0;
+  z-index: 4;
+}
+
+.dataGrid .dgEditor {
+  border: 2px solid var(--accent);
+  border-radius: 0;
+  box-shadow: 0 2px 10px rgba(13, 24, 41, 0.16);
+  display: block;
+  font: inherit;
+  height: 100%;
+  margin: 0;
+  padding: 0 6px;
+  width: 100%;
+}
+
+.dataGrid .dgEditor:focus-visible {
+  box-shadow: 0 2px 10px rgba(13, 24, 41, 0.16);
+}
+
+.dataGrid .dgEditor[aria-invalid="true"] {
+  border-color: var(--red);
+}
+
+.dataGrid .dgEditError {
+  background: var(--red);
+  border-radius: 0 0 4px 4px;
+  color: #ffffff;
+  font-size: 11.5px;
+  font-weight: 600;
+  left: 0;
+  max-width: 320px;
+  padding: 3px 8px;
+  position: absolute;
+  top: 100%;
+  white-space: normal;
+  width: max-content;
+  z-index: 5;
+}
+
+/* ---------- Empty / loading / status ---------- */
+
+.dataGrid .dgEmpty {
+  align-items: center;
+  color: var(--text-3);
+  display: flex;
+  font-size: 13px;
+  gap: 10px;
+  justify-content: center;
+  left: 0;
+  padding: 28px 16px;
+  position: sticky;
+  width: 100%;
+}
+
+.dataGrid .dgLoadingBar {
+  animation: dgLoading 1.1s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  height: 2px;
+  left: 0;
+  position: sticky;
+  top: 0;
+  width: 100%;
+  z-index: 4;
+}
+
+@keyframes dgLoading {
+  from {
+    transform: translateX(-60%);
+  }
+  to {
+    transform: translateX(60%);
+  }
+}
+
+.dataGrid .dgStatus {
+  color: var(--text-2);
+  display: flex;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  gap: 16px;
+  justify-content: flex-end;
+}
+
+/* ---------- Popovers (fixed so the scroll viewport can't clip them) ---------- */
+
+.dgPopover {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 10px 28px rgba(13, 24, 41, 0.16);
+  max-height: 320px;
+  min-width: 200px;
+  overflow: auto;
+  padding: 6px;
+  position: fixed;
+  z-index: 50;
+}
+
+.dgPopover .dgCheckRow {
+  align-items: center;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  font-weight: 500;
+  gap: 8px;
+  letter-spacing: 0;
+  margin: 0;
+  padding: 4px 6px;
+  text-transform: none;
+}
+
+.dgPopover .dgCheckRow:hover {
+  background: var(--surface-2);
+}
+
+.dgPopover .dgPopoverActions {
+  display: flex;
+  gap: 4px;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dataGrid .dgLoadingBar {
+    animation: none;
+  }
+}

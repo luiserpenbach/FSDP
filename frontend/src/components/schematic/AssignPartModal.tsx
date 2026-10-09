@@ -3,11 +3,18 @@
  * the symbol's category, and warn-only findings per part (draft, unqualified,
  * rating below the connected line's design pressure). Obsolete parts cannot
  * be assigned; everything else warns and lets the engineer decide.
+ *
+ * Multi-target mode (`targetCount` > 1) assigns one part to N items: the
+ * warnings combine the lines connected to all of them (the highest design
+ * pressure counts), and "Remove part" clears every target that has one.
  */
 import { useMemo, useState } from "react";
 import { partTone, partWarnings, suggestedPartType } from "../../engine/parts";
 import type { LineItem } from "../../engine/types";
 import type { Part } from "../../types";
+
+/** Line data the warnings read: only the design pressure. */
+export type ConnectedLine = Pick<LineItem, "designPressure">;
 
 export function AssignPartModal({
   parts,
@@ -15,14 +22,21 @@ export function AssignPartModal({
   currentPartId,
   connectedLines,
   caption,
+  targetCount = 1,
+  assignedCount,
   onAssign,
   onClose
 }: {
   parts: Part[];
   category: string | null;
+  /** The targets' part when they all share one. */
   currentPartId: string | null | undefined;
-  connectedLines: LineItem[];
+  connectedLines: ReadonlyArray<ConnectedLine>;
   caption: string;
+  /** Number of items the part is assigned to (default 1). */
+  targetCount?: number;
+  /** Targets that already have a part (defaults to all of them when `currentPartId` is set). */
+  assignedCount?: number;
   onAssign: (partId: string | null) => void;
   onClose: () => void;
 }) {
@@ -43,6 +57,8 @@ export function AssignPartModal({
   }, [parts, typeFilter, query, connectedLines]);
   const selected = rows.find((row) => row.part.id === selectedId) ?? null;
   const blocked = selected?.part.lifecycle_status === "obsolete";
+  const multi = targetCount > 1;
+  const withPart = assignedCount ?? (currentPartId ? targetCount : 0);
 
   return (
     <div className="modalBackdrop" role="presentation" onClick={onClose}>
@@ -53,6 +69,11 @@ export function AssignPartModal({
             ×
           </button>
         </div>
+        {multi && (
+          <p className="hint assignPartMulti">
+            One part for {targetCount} items{withPart ? `; ${withPart} already have a part and will be replaced` : ""}. Warnings combine the lines connected to all of them.
+          </p>
+        )}
         <div className="assignPartFilters">
           <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search part number, description, manufacturer…" aria-label="Search parts" />
           {partTypes.map((type) => (
@@ -95,16 +116,16 @@ export function AssignPartModal({
           ))}
         </div>
         <div className="modalActions">
-          {currentPartId && (
+          {withPart > 0 && (
             <button type="button" onClick={() => onAssign(null)}>
-              Remove part
+              {multi ? `Remove part from ${withPart}` : "Remove part"}
             </button>
           )}
           <button type="button" onClick={onClose}>
             Cancel
           </button>
           <button type="button" className="primary" disabled={!selected || blocked} onClick={() => selected && onAssign(selected.part.id)}>
-            {currentPartId && selectedId !== currentPartId ? "Replace part" : "Assign part"}
+            {multi ? `Assign to ${targetCount}` : currentPartId && selectedId !== currentPartId ? "Replace part" : "Assign part"}
           </button>
         </div>
         {blocked && <p className="formError">Obsolete parts cannot be assigned. Pick an alternate.</p>}

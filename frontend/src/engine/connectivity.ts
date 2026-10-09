@@ -6,9 +6,10 @@
  * connected components of that relation. Junction dots are derived: a point
  * where three or more line arms meet.
  */
-import { EPSILON, closestPointOnSegment, pointKey, pointsEqual } from "./geometry";
+import { EPSILON, pointKey, pointsEqual } from "./geometry";
 import { type SymbolRegistry, type WorldPort } from "./library";
 import { computeCrossings } from "./lines";
+import { SegmentIndex } from "./segmentIndex";
 import type { EquipmentItem, LineItem, Point, SchematicDocument, SymbolItem } from "./types";
 
 export type PortRef = { itemId: string; portId: string };
@@ -89,36 +90,33 @@ export function portsByPosition(ports: IndexedPort[]): Map<string, IndexedPort[]
   return map;
 }
 
+/** Union-find over dense integer node ids. */
 class UnionFind {
-  private parent = new Map<string, string>();
+  private readonly parent: Int32Array;
 
-  find(key: string): string {
-    let root = key;
-    while (this.parent.get(root) !== undefined && this.parent.get(root) !== root) root = this.parent.get(root)!;
-    if (!this.parent.has(key)) this.parent.set(key, key);
+  constructor(size: number) {
+    this.parent = new Int32Array(size);
+    for (let index = 0; index < size; index += 1) this.parent[index] = index;
+  }
+
+  find(node: number): number {
+    let root = node;
+    while (this.parent[root] !== root) root = this.parent[root];
     // Path compression.
-    let cursor = key;
+    let cursor = node;
     while (cursor !== root) {
-      const next = this.parent.get(cursor)!;
-      this.parent.set(cursor, root);
+      const next = this.parent[cursor];
+      this.parent[cursor] = root;
       cursor = next;
     }
     return root;
   }
 
-  union(a: string, b: string): void {
+  union(a: number, b: number): void {
     const rootA = this.find(a);
     const rootB = this.find(b);
-    if (rootA !== rootB) this.parent.set(rootB, rootA);
+    if (rootA !== rootB) this.parent[rootB] = rootA;
   }
-}
-
-function lineKey(id: string): string {
-  return `line:${id}`;
-}
-
-function portKeyOf(port: PortRef): string {
-  return `port:${portMapKey(port.itemId, port.portId)}`;
 }
 
 /** Where a point sits on a line: at an end, on a segment interior, or off it. */
@@ -131,8 +129,18 @@ export function locateOnLine(line: LineItem, point: Point, tolerance = EPSILON):
   if (pointsEqual(points[0], point, tolerance)) return { kind: "end", end: 0 };
   if (pointsEqual(points[points.length - 1], point, tolerance)) return { kind: "end", end: 1 };
   for (let index = 0; index < points.length - 1; index += 1) {
-    const hit = closestPointOnSegment(point, points[index], points[index + 1]);
-    if (hit.distance <= tolerance) return { kind: "segment", segmentIndex: index };
+    // Same arithmetic as `closestPointOnSegment`, without allocating (this is the connectivity hot loop).
+    const a = points[index];
+    const b = points[index + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lengthSquared = dx * dx + dy * dy;
+    let t = 0;
+    if (lengthSquared > 0) {
+      t = ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared;
+      t = Math.max(0, Math.min(1, t));
+    }
+    if (Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy)) <= tolerance) return { kind: "segment", segmentIndex: index };
   }
   return null;
 }
@@ -141,13 +149,30 @@ export function computeConnectivity(doc: SchematicDocument, registry: SymbolRegi
   const lines = doc.items.filter((item): item is LineItem => item.kind === "line" && item.points.length >= 2);
   const ports = indexPorts(doc, registry);
   const portIndex = portsByPosition(ports);
-  const unionFind = new UnionFind();
   const lineEnds: LineEnd[] = [];
   const usedPorts = new Set<string>();
 
-  for (const line of lines) unionFind.find(lineKey(line.id));
+  // Union-find nodes: one per distinct line id, then one per distinct port key.
+  const nodeOf = new Map<string, number>();
+  const node = (key: string): number => {
+    let id = nodeOf.get(key);
+    if (id === undefined) {
+      id = nodeOf.size;
+      nodeOf.set(key, id);
+    }
+    return id;
+  };
+  const lineNodes = lines.map((line) => node(`line:${line.id}`));
+  const portKeys = ports.map((port) => portMapKey(port.itemId, port.id));
+  const portNodes = portKeys.map((key) => node(`port:${key}`));
+  const portNodeOf = new Map<IndexedPort, number>();
+  ports.forEach((port, index) => portNodeOf.set(port, portNodes[index]));
+  const unionFind = new UnionFind(nodeOf.size);
 
-  for (const line of lines) {
+  const segments = new SegmentIndex(lines);
+
+  lines.forEach((line, lineIndex) => {
+    const self = lineNodes[lineIndex];
     const ends: Array<{ end: 0 | 1; position: Point }> = [
       { end: 0, position: line.points[0] },
       { end: 1, position: line.points[line.points.length - 1] }
@@ -156,10 +181,12 @@ export function computeConnectivity(doc: SchematicDocument, registry: SymbolRegi
       const attachments: LineEndAttachment[] = [];
       for (const port of portIndex.get(pointKey(position)) ?? []) {
         attachments.push({ kind: "port", itemId: port.itemId, portId: port.id });
-        unionFind.union(lineKey(line.id), portKeyOf({ itemId: port.itemId, portId: port.id }));
+        unionFind.union(self, portNodeOf.get(port)!);
         usedPorts.add(portMapKey(port.itemId, port.id));
       }
-      for (const other of lines) {
+      // Only lines with a segment near this end can touch it; candidates come back in document order.
+      for (const otherIndex of segments.near(position)) {
+        const other = lines[otherIndex];
         if (other.id === line.id) continue;
         const location = locateOnLine(other, position);
         if (!location) continue;
@@ -168,28 +195,27 @@ export function computeConnectivity(doc: SchematicDocument, registry: SymbolRegi
             ? { kind: "line-end", lineId: other.id, end: location.end }
             : { kind: "line", lineId: other.id, segmentIndex: location.segmentIndex }
         );
-        unionFind.union(lineKey(line.id), lineKey(other.id));
+        unionFind.union(self, lineNodes[otherIndex]);
       }
       lineEnds.push({ lineId: line.id, end, position, attachments });
     }
-  }
+  });
 
   // Group into nets.
-  const netMembers = new Map<string, { lineIds: string[]; ports: PortRef[] }>();
-  for (const line of lines) {
-    const root = unionFind.find(lineKey(line.id));
+  const netMembers = new Map<number, { lineIds: string[]; ports: PortRef[] }>();
+  lines.forEach((line, lineIndex) => {
+    const root = unionFind.find(lineNodes[lineIndex]);
     const members = netMembers.get(root) ?? { lineIds: [], ports: [] };
     members.lineIds.push(line.id);
     netMembers.set(root, members);
-  }
-  for (const port of ports) {
-    const key = portMapKey(port.itemId, port.id);
-    if (!usedPorts.has(key)) continue;
-    const root = unionFind.find(`port:${key}`);
+  });
+  ports.forEach((port, index) => {
+    if (!usedPorts.has(portKeys[index])) return;
+    const root = unionFind.find(portNodes[index]);
     const members = netMembers.get(root) ?? { lineIds: [], ports: [] };
     members.ports.push({ itemId: port.itemId, portId: port.id });
     netMembers.set(root, members);
-  }
+  });
 
   const nets: Net[] = [];
   const lineNet = new Map<string, string>();

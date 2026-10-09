@@ -5,6 +5,12 @@ Run after migrations (idempotent — skips if the demo project exists):
     python -m app.seed
 
 Also creates the bootstrap admin when FSDP_ADMIN_EMAIL/FSDP_ADMIN_PASSWORD are set.
+
+The demo P&ID is stored the way the retired Diagrams editor left existing data:
+a legacy diagram with component instances and requirement trace links, written
+directly through the ORM (the API no longer creates legacy rows). Open Drafting
+and use "Convert diagram…" to turn it into a drawing, then trace requirements to
+its tags and generate the drawing BoM.
 """
 
 import logging
@@ -25,7 +31,6 @@ from app.models import (
     Requirement,
     TraceLink,
 )
-from app.services.bom import generate_bom_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +189,10 @@ def seed_demo(db: Session) -> None:
     project = Project(
         name=DEMO_PROJECT_NAME,
         owner="Propulsion Engineering",
-        description="Seeded demo project showing the P&ID → parts → requirements → BoM thread.",
+        description=(
+            "Seeded demo project: convert its legacy P&ID in Drafting to follow the "
+            "P&ID → parts → requirements → BoM thread."
+        ),
     )
     system = FluidSystem(
         project=project,
@@ -259,7 +267,6 @@ def seed_demo(db: Session) -> None:
             )
         )
 
-    generate_bom_snapshot(db, diagram)
     db.commit()
     logger.info("Seeded demo project '%s'", DEMO_PROJECT_NAME)
 

@@ -9,11 +9,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
     func,
+    true,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -126,9 +128,9 @@ class Diagram(TimestampMixin, Base):
     diagram_type: Mapped[str] = mapped_column(String(40), nullable=False, default="pid")
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     graph: Mapped[dict] = mapped_column(JSON, default=dict)
-    # Schematic document (mm paper space) authored by the drafting editor.
-    # NULL until a diagram has been opened and saved there; the legacy React
-    # Flow `graph` stays the source for the classic editor until conversion.
+    # Schematic document (mm paper space) saved by early drafting builds; NULL for
+    # most diagrams. Legacy diagrams are read-only: Drafting converts the schematic,
+    # or else the React Flow `graph`, into a drawing.
     schematic: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     system: Mapped[FluidSystem] = relationship(back_populates="diagrams")
@@ -188,6 +190,7 @@ class ComponentInstance(TimestampMixin, Base):
         UniqueConstraint("diagram_id", "tag", name="uq_component_tag"),
         # One component per canvas node (NULLs allowed for unbound instances).
         UniqueConstraint("node_id", name="uq_component_node"),
+        Index("ix_component_instances_part_id", "part_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
@@ -201,6 +204,11 @@ class ComponentInstance(TimestampMixin, Base):
     diagram: Mapped[Diagram] = relationship(back_populates="components")
     node: Mapped[DiagramNode | None] = relationship(back_populates="component")
     part: Mapped[Part | None] = relationship()
+
+    @property
+    def node_external_id(self) -> str | None:
+        """The canvas node id in the diagram graph (what conversion matches on)."""
+        return self.node.external_id if self.node else None
 
 
 class Drawing(TimestampMixin, Base):
@@ -220,7 +228,9 @@ class Drawing(TimestampMixin, Base):
     size: Mapped[str] = mapped_column(String(16), nullable=False, default="A3")
     units: Mapped[str] = mapped_column(String(16), nullable=False, default="mm")
     discipline: Mapped[str] = mapped_column(String(40), nullable=False, default="P&ID")
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="working")
+    # Release workflow state (DRAWING_STATUSES); changed only by the submit,
+    # release, withdraw, and revise actions, never by a metadata update.
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
     frame_template: Mapped[str] = mapped_column(String(40), nullable=False, default="fsdp-standard")
     # Title-block extras (company, bldg/sys, area, scale) and general notes.
     fields: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -237,6 +247,10 @@ class Drawing(TimestampMixin, Base):
         order_by="DrawingRevision.sequence",
     )
 
+    @property
+    def current_revision(self) -> DrawingRevision | None:
+        return self.revisions[-1] if self.revisions else None
+
 
 class DrawingSheet(TimestampMixin, Base):
     __tablename__ = "drawing_sheets"
@@ -251,6 +265,13 @@ class DrawingSheet(TimestampMixin, Base):
         ForeignKey("diagrams.id", ondelete="SET NULL")
     )
     document: Mapped[dict] = mapped_column(JSON, default=dict)
+    # The index rows and DRC results are computed by the browser engine and sent
+    # with a save. They are stale when the document was stored without them, or
+    # when a part or requirement they depend on changed since the last indexed save.
+    index_stale: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
+    indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     drawing: Mapped[Drawing] = relationship(back_populates="sheets")
 
@@ -264,13 +285,20 @@ class DrawingRevision(TimestampMixin, Base):
     sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     label: Mapped[str] = mapped_column(String(16), nullable=False, default="-")
     description: Mapped[str] = mapped_column(Text, nullable=False, default="Initial issue")
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="working")
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
     drawn_by: Mapped[str | None] = mapped_column(String(160))
     drawn_date: Mapped[str | None] = mapped_column(String(32))
     checked_by: Mapped[str | None] = mapped_column(String(160))
     checked_date: Mapped[str | None] = mapped_column(String(32))
+    # Stamped from the authenticated user by the submit and release actions.
+    submitted_by: Mapped[str | None] = mapped_column(String(160))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_by: Mapped[str | None] = mapped_column(String(160))
     approved_date: Mapped[str | None] = mapped_column(String(32))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Immutable copy of every sheet (document and index rows) taken at release.
+    # Deferred: it holds whole documents and only the snapshot endpoint reads it.
+    snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True, deferred=True)
 
     drawing: Mapped[Drawing] = relationship(back_populates="revisions")
 
@@ -278,8 +306,9 @@ class DrawingRevision(TimestampMixin, Base):
 class SheetItem(TimestampMixin, Base):
     """Normalized index row for one symbol or equipment item on a sheet.
 
-    Rebuilt from the sheet document on every save (the document stays the
-    source of truth); lists, BoM roll-ups, and where-used queries read this.
+    Synced from the sheet document on every save (the document stays the
+    source of truth), matched by item_id so row ids stay stable for trace
+    links; lists, BoM roll-ups, and where-used queries read this.
     """
 
     __tablename__ = "sheet_items"
@@ -455,6 +484,7 @@ class TagScheme(TimestampMixin, Base):
 
 class Requirement(TimestampMixin, Base):
     __tablename__ = "requirements"
+    __table_args__ = (Index("ix_requirements_project_id", "project_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
@@ -474,6 +504,10 @@ class Requirement(TimestampMixin, Base):
 
 class TraceLink(TimestampMixin, Base):
     __tablename__ = "trace_links"
+    __table_args__ = (
+        Index("ix_trace_links_source", "source_type", "source_id"),
+        Index("ix_trace_links_target", "target_type", "target_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     source_type: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -486,6 +520,7 @@ class TraceLink(TimestampMixin, Base):
 
 class BomSnapshot(TimestampMixin, Base):
     __tablename__ = "bom_snapshots"
+    __table_args__ = (Index("ix_bom_snapshots_drawing_id", "drawing_id"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     # A snapshot belongs to either a legacy diagram or a controlled drawing.
@@ -498,6 +533,12 @@ class BomSnapshot(TimestampMixin, Base):
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[str] = mapped_column(String(80), default="draft")
     rows: Mapped[list] = mapped_column(JSON, default=list)
+    # Drawing revision label at generation, and the sheets whose index was stale
+    # then (their rows may not match the drawing, so the BoM cannot be released).
+    drawing_revision: Mapped[str | None] = mapped_column(String(16))
+    stale_sheets: Mapped[list | None] = mapped_column(JSON, default=list)
+    released_by: Mapped[str | None] = mapped_column(String(160))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     diagram: Mapped[Diagram | None] = relationship(back_populates="bom_snapshots")
     drawing: Mapped[Drawing | None] = relationship()
@@ -517,6 +558,7 @@ class BomSnapshot(TimestampMixin, Base):
 
 class ChangeEvent(TimestampMixin, Base):
     __tablename__ = "change_events"
+    __table_args__ = (Index("ix_change_events_created_at", "created_at"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
     object_type: Mapped[str] = mapped_column(String(80), nullable=False)

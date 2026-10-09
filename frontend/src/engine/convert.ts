@@ -5,8 +5,6 @@
  * Item ids are preserved so component bindings keyed by node external id keep
  * lining up with the converted symbols.
  */
-import type { Edge, Node } from "reactflow";
-import { customSymbolId } from "../components/PidSymbols";
 import { normalizeRotation, orthogonalize, rectUnion, simplifyPolyline, snapPoint, snapValue } from "./geometry";
 import { BUILTIN_LIBRARY, CUSTOM_LIBRARY, type SymbolRegistry } from "./library";
 import { routeBetween } from "./routing";
@@ -49,22 +47,53 @@ const LEGACY_SYMBOL_KEYS: Record<string, string> = {
 
 const LEGACY_DEFAULT_SIZE = { width: 56, height: 50 };
 
-type LegacyGraph = { nodes?: Node[]; edges?: Edge[] };
+/** A node of a legacy diagram graph as the retired React Flow editor stored it. */
+export type LegacyNode = {
+  id: string;
+  type?: string;
+  position?: { x: number; y: number };
+  /** Section the node sits in; positions are relative to it. */
+  parentNode?: string;
+  width?: number | null;
+  height?: number | null;
+  style?: { width?: number | string; height?: number | string; [key: string]: unknown };
+  data?: Record<string, unknown>;
+};
+
+/** A legacy diagram edge between node handles (ports). */
+export type LegacyEdge = {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
+  label?: unknown;
+  data?: Record<string, unknown>;
+};
+
+export type LegacyGraph = { nodes?: LegacyNode[]; edges?: LegacyEdge[] };
+
+/** Legacy custom symbols were referenced by node type "custom:<symbol id>". */
+const LEGACY_CUSTOM_PREFIX = "custom:";
+
+export function legacyCustomSymbolId(symbolType: string): string | null {
+  return symbolType.startsWith(LEGACY_CUSTOM_PREFIX) ? symbolType.slice(LEGACY_CUSTOM_PREFIX.length) : null;
+}
 
 function symbolRefFor(symbolType: string): SymbolRef {
-  const custom = customSymbolId(symbolType);
+  const custom = legacyCustomSymbolId(symbolType);
   if (custom) return { library: CUSTOM_LIBRARY, key: custom, version: 1 };
   return { library: BUILTIN_LIBRARY, key: LEGACY_SYMBOL_KEYS[symbolType] ?? "component", version: 1 };
 }
 
-function nodeSize(node: Node): { width: number; height: number } {
+function nodeSize(node: LegacyNode): { width: number; height: number } {
   const width = Number(node.width ?? node.style?.width ?? LEGACY_DEFAULT_SIZE.width);
   const height = Number(node.height ?? node.style?.height ?? LEGACY_DEFAULT_SIZE.height);
   return { width: Number.isFinite(width) ? width : LEGACY_DEFAULT_SIZE.width, height: Number.isFinite(height) ? height : LEGACY_DEFAULT_SIZE.height };
 }
 
 /** Absolute top-left in px, resolving section parents. */
-function absolutePosition(node: Node, byId: Map<string, Node>): Point {
+function absolutePosition(node: LegacyNode, byId: Map<string, LegacyNode>): Point {
   let x = node.position?.x ?? 0;
   let y = node.position?.y ?? 0;
   let parentId = node.parentNode;
@@ -80,7 +109,7 @@ function absolutePosition(node: Node, byId: Map<string, Node>): Point {
   return { x, y };
 }
 
-function legacyKind(node: Node): "symbol" | "section" | "text" | "comment" | "junction" {
+function legacyKind(node: LegacyNode): "symbol" | "section" | "text" | "comment" | "junction" {
   switch (node.type) {
     case "pidSection":
       return "section";
@@ -105,15 +134,26 @@ function pickSheet(content: Rect | null): SheetSizeId {
   return "A0";
 }
 
-function lineTypeFor(edge: Edge): LineType {
+function lineTypeFor(edge: LegacyEdge): LineType {
   const style = edge.data?.strokeStyle as string | undefined;
   if (style === "dashed") return "signal_electric";
   if (style === "dotted") return "signal_software";
   return "process";
 }
 
-export function convertLegacyGraph(graph: LegacyGraph, registry: SymbolRegistry, options: { title?: string } = {}): SchematicDocument {
+/** A part placed on a legacy diagram node (from GET /diagrams/{id}/components). */
+export type LegacyComponent = { node_external_id?: string | null; tag: string; part_id?: string | null };
+
+export function convertLegacyGraph(
+  graph: LegacyGraph,
+  registry: SymbolRegistry,
+  options: { title?: string; components?: LegacyComponent[] } = {}
+): SchematicDocument {
   const nodes = graph.nodes ?? [];
+  // Placed parts live in the component table, not the graph; the node label only showed "TAG: PART".
+  const componentByNode = new Map(
+    (options.components ?? []).filter((component) => component.node_external_id).map((component) => [component.node_external_id as string, component])
+  );
   const edges = graph.edges ?? [];
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const grid = DEFAULT_GRID_MM;
@@ -174,6 +214,12 @@ export function convertLegacyGraph(graph: LegacyGraph, registry: SymbolRegistry,
       default: {
         const symbolType = String(data.symbolType ?? node.type ?? "component");
         const scaleFromWidth = (size.width * PX_TO_MM) / 20;
+        const component = componentByNode.get(node.id);
+        const nodeTag = typeof data.tag === "string" && data.tag ? data.tag : undefined;
+        const tag = component?.tag || nodeTag;
+        const nodeLabel = typeof data.label === "string" && data.label && data.label !== node.id ? data.label : undefined;
+        // Drop labels that only repeated the tag (legacy "TAG" or "TAG: PART-NUMBER" captions).
+        const label = nodeLabel && tag && (nodeLabel === tag || nodeLabel.startsWith(`${tag}:`)) ? undefined : nodeLabel;
         symbols.push({
           id: node.id,
           kind: "symbol",
@@ -182,8 +228,9 @@ export function convertLegacyGraph(graph: LegacyGraph, registry: SymbolRegistry,
           position: centre,
           rotation: normalizeRotation(Number(data.rotation ?? 0)),
           scale: Math.abs(scaleFromWidth - 1) < 0.15 ? undefined : Number(scaleFromWidth.toFixed(2)),
-          tag: typeof data.tag === "string" && data.tag ? data.tag : undefined,
-          label: typeof data.label === "string" && data.label && data.label !== node.id ? data.label : undefined,
+          tag,
+          label,
+          partId: component?.part_id ?? undefined,
           color: typeof data.color === "string" ? data.color : undefined,
           fields: { legacySymbolType: symbolType }
         });

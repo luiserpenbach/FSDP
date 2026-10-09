@@ -1,38 +1,65 @@
 /**
- * Symbol editor: create custom P&ID symbols from SVG markup and place
- * connection ports on them (KiCad-style pin placement).
+ * Symbol editor: create or edit a custom P&ID symbol from SVG markup and
+ * place its connection ports (KiCad-style pin placement). Opened from the
+ * Drafting library panel.
  *
  * Workflow: import or paste SVG (or draw lines/rects/circles directly on the
  * grid with the toolbar) → click the preview in Ports mode to drop a port
  * exactly on the drawing → drag ports to fine-tune → save. Ports are stored
  * in viewBox coordinates alongside the sanitized SVG; drawn shapes are kept
  * as structured objects (individually selectable, restylable and deletable)
- * and serialized into the imported base's SVG on save.
+ * and serialized into the imported base's SVG on save. Editor metadata (e.g.
+ * Inkscape's sodipodi:/inkscape: markup) is stripped so the server accepts it.
  */
 import { useEffect, useRef, useState, type ChangeEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { api } from "../../api";
-import { parseViewBox, type ViewBox } from "../PidSymbols";
-import { EDGE_COLORS } from "./OrthogonalEdge";
-import { sanitizeSvgInner, scrubSvgElement } from "./svgSanitize";
+import { sanitizeSvgInner, scrubSvgElement } from "../../engine/svgSanitize";
 import type { PidSymbolDef, SymbolPort, SymbolPortSide } from "../../types";
 
 const DEFAULT_VIEWBOX = "0 0 64 40";
 const EXAMPLE_SVG = [
   '<path d="M12 10 L32 20 L12 30 Z" />',
   '<path d="M52 10 L32 20 L52 30 Z" />',
-  '<path d="M2 20 H12 M52 20 H62" />'
+  '<path d="M2 20 H62" />'
 ].join("\n");
 
-export { sanitizeSvgInner, scrubSvgElement } from "./svgSanitize";
+/** Stroke colors offered by the drawing toolbar. */
+const DRAW_COLORS = ["#41536b", "#2257c4", "#0f766e", "#b3261e", "#8a5b00", "#6d28d9"];
 
-/** Strip active content and return { viewBox, inner } from raw SVG text. */
+/**
+ * Prefixes vector editors write into SVG fragments. Declared on the wrapper
+ * when pasted markup has no <svg> root, so it parses and the scrubber can drop it.
+ */
+const EDITOR_NAMESPACES: Record<string, string> = {
+  xlink: "http://www.w3.org/1999/xlink",
+  sodipodi: "http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd",
+  inkscape: "http://www.inkscape.org/namespaces/inkscape",
+  rdf: "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+  cc: "http://creativecommons.org/ns#",
+  dc: "http://purl.org/dc/elements/1.1/"
+};
+
+export type ViewBox = { x: number; y: number; width: number; height: number };
+
+export function parseViewBox(raw: string | undefined): ViewBox {
+  const parts = (raw ?? DEFAULT_VIEWBOX).trim().split(/[\s,]+/).map(Number);
+  if (parts.length === 4 && parts.every(Number.isFinite) && parts[2] > 0 && parts[3] > 0) {
+    return { x: parts[0], y: parts[1], width: parts[2], height: parts[3] };
+  }
+  return { x: 0, y: 0, width: 64, height: 40 };
+}
+
+/** Strip active content and editor metadata; return { viewBox, inner } from raw SVG text. */
 export function importSvgMarkup(raw: string): { viewBox: string; inner: string } {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("SVG markup is empty.");
 
-  const source = trimmed.startsWith("<svg") || trimmed.includes("<svg")
+  const declarations = Object.entries(EDITOR_NAMESPACES)
+    .map(([prefix, uri]) => ` xmlns:${prefix}="${uri}"`)
+    .join("");
+  const source = trimmed.includes("<svg")
     ? trimmed
-    : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${DEFAULT_VIEWBOX}">${trimmed}</svg>`;
+    : `<svg xmlns="http://www.w3.org/2000/svg"${declarations} viewBox="${DEFAULT_VIEWBOX}">${trimmed}</svg>`;
   const doc = new DOMParser().parseFromString(source, "image/svg+xml");
   if (doc.querySelector("parsererror")) throw new Error("Could not parse SVG markup.");
   const svg = doc.querySelector("svg");
@@ -181,28 +208,27 @@ function nearestSide(x: number, y: number, viewBox: { x: number; y: number; widt
   return distances[0][0];
 }
 
-const EMPTY_DRAFT = {
-  id: null as string | null,
-  name: "",
-  viewBox: DEFAULT_VIEWBOX,
-  svg: "",
-  drawn: [] as DrawnShape[],
-  ports: [] as SymbolPort[]
-};
-
+/**
+ * Edit `symbol`, or create a new one when it is null. Rendered only while
+ * open; `onSaved` receives the stored symbol.
+ */
 export function SymbolEditorModal({
-  open,
-  symbols,
+  symbol,
   onClose,
-  onChanged
+  onSaved
 }: {
-  open: boolean;
-  symbols: PidSymbolDef[];
+  symbol: PidSymbolDef | null;
   onClose: () => void;
-  onChanged: () => void;
+  onSaved: (symbol: PidSymbolDef) => void;
 }) {
-  const [draft, setDraft] = useState(EMPTY_DRAFT);
-  const [markupDraft, setMarkupDraft] = useState("");
+  const [draft, setDraft] = useState(() => ({
+    name: symbol?.name ?? "",
+    viewBox: symbol?.view_box ?? DEFAULT_VIEWBOX,
+    svg: symbol?.svg ?? "",
+    drawn: [] as DrawnShape[],
+    ports: symbol ? [...symbol.ports] : ([] as SymbolPort[])
+  }));
+  const [markupDraft, setMarkupDraft] = useState(symbol?.svg ?? "");
   const [tool, setTool] = useState<ToolMode>("port");
   const [linePoints, setLinePoints] = useState<DrawPoint[]>([]);
   const [shapeDraft, setShapeDraft] = useState<{ start: DrawPoint; end: DrawPoint } | null>(null);
@@ -212,31 +238,13 @@ export function SymbolEditorModal({
   const [strokeWidthPick, setStrokeWidthPick] = useState<number | undefined>(undefined);
   const [cursor, setCursor] = useState<DrawPoint | null>(null);
   const [zoom, setZoom] = useState(1);
-  const [pendingNew, setPendingNew] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const previewRef = useRef<HTMLDivElement>(null);
-  const nameInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (open) {
-      setDraft(EMPTY_DRAFT);
-      setMarkupDraft("");
-      setTool("port");
-      setLinePoints([]);
-      setShapeDraft(null);
-      setSelectedShape(null);
-      setHoverShape(null);
-      setCursor(null);
-      setZoom(1);
-      setPendingNew(false);
-      setError("");
-    }
-  }, [open]);
 
   // Finish (Enter) or cancel (Escape) the in-progress line from the keyboard.
   useEffect(() => {
-    if (!open || linePoints.length === 0) return;
+    if (linePoints.length === 0) return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.target instanceof Element && event.target.closest("input, textarea")) return;
       if (event.key === "Enter") {
@@ -255,19 +263,17 @@ export function SymbolEditorModal({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, linePoints, strokeColor, strokeWidthPick]);
+  }, [linePoints, strokeColor, strokeWidthPick]);
 
   // Escape drops the shape-chip selection.
   useEffect(() => {
-    if (!open || selectedShape === null) return;
+    if (selectedShape === null) return;
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") setSelectedShape(null);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open, selectedShape]);
-
-  if (!open) return null;
+  }, [selectedShape]);
 
   const viewBox = parseViewBox(draft.viewBox);
   // Everything rendered and clicked in the preview goes through the zoom
@@ -294,31 +300,6 @@ export function SymbolEditorModal({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not import SVG.");
     }
-  }
-
-  function loadSymbol(symbol: PidSymbolDef) {
-    setDraft({ id: symbol.id, name: symbol.name, viewBox: symbol.view_box, svg: symbol.svg, drawn: [], ports: [...symbol.ports] });
-    setMarkupDraft(symbol.svg);
-    setLinePoints([]);
-    setShapeDraft(null);
-    setSelectedShape(null);
-    setHoverShape(null);
-    setZoom(1);
-    setPendingNew(false);
-    setError("");
-  }
-
-  function startNewSymbol() {
-    setDraft(EMPTY_DRAFT);
-    setMarkupDraft("");
-    setLinePoints([]);
-    setShapeDraft(null);
-    setSelectedShape(null);
-    setHoverShape(null);
-    setZoom(1);
-    setPendingNew(true);
-    setError("");
-    nameInputRef.current?.focus();
   }
 
   function uploadSvg(event: ChangeEvent<HTMLInputElement>) {
@@ -529,11 +510,8 @@ export function SymbolEditorModal({
         svg: safeCombinedSvg,
         ports: draft.ports
       };
-      if (draft.id) await api.updateSymbol(draft.id, body);
-      else await api.createSymbol(body);
-      setPendingNew(false);
-      onChanged();
-      onClose();
+      const saved = symbol ? await api.updateSymbol(symbol.id, body) : await api.createSymbol(body);
+      onSaved(saved);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not save symbol.");
     } finally {
@@ -541,56 +519,20 @@ export function SymbolEditorModal({
     }
   }
 
-  async function removeSymbol(symbol: PidSymbolDef) {
-    if (!window.confirm(`Delete symbol "${symbol.name}"? Diagrams using it will fall back to a generic glyph.`)) return;
-    setBusy(true);
-    try {
-      await api.deleteSymbol(symbol.id);
-      if (draft.id === symbol.id) {
-        setDraft(EMPTY_DRAFT);
-        setMarkupDraft("");
-      }
-      onChanged();
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not delete symbol.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="modalBackdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="modal symbolEditor">
+      <div className="modal symbolEditor" role="dialog" aria-modal="true" aria-label={symbol ? "Edit symbol" : "New symbol"}>
         <div className="modalHeader">
-          <h2>Symbol editor</h2>
+          <h2>{symbol ? `Edit symbol: ${symbol.name}` : "New symbol"}</h2>
           <button className="modalClose" onClick={onClose} title="Close" type="button">&#215;</button>
         </div>
         <div className="symbolEditorBody">
-          <aside className="symbolEditorList">
-            <button className="primary" type="button" onClick={startNewSymbol}>
-              + New symbol
-            </button>
-            {pendingNew && (
-              <div className="symbolListRow selected">
-                <span className={draft.name.trim() ? "symbolListPendingName" : "symbolListPendingName untitled"}>
-                  {draft.name.trim() || "Untitled symbol"}
-                </span>
-              </div>
-            )}
-            {symbols.length === 0 && !pendingNew && <p className="hint">No custom symbols yet.</p>}
-            {symbols.map((symbol) => (
-              <div className={draft.id === symbol.id ? "symbolListRow selected" : "symbolListRow"} key={symbol.id}>
-                <button className="symbolListName" type="button" onClick={() => loadSymbol(symbol)}>{symbol.name}</button>
-                <button className="symbolListDelete" disabled={busy} title="Delete symbol" type="button" onClick={() => void removeSymbol(symbol)}>&#215;</button>
-              </div>
-            ))}
-          </aside>
           <div className="symbolEditorMain">
             <div className="symbolEditorFields">
               <label>
                 Name
                 <input
-                  ref={nameInputRef}
+                  autoFocus
                   value={draft.name}
                   placeholder="e.g. Cryo check valve"
                   onChange={(event) => setDraft({ ...draft, name: event.target.value })}
@@ -632,7 +574,7 @@ export function SymbolEditorModal({
                   type="button"
                   onClick={() => pickStrokeColor(undefined)}
                 />
-                {EDGE_COLORS.map((color) => (
+                {DRAW_COLORS.map((color) => (
                   <button
                     key={color}
                     className={controlColor === color ? "symbolSwatch active" : "symbolSwatch"}
@@ -821,7 +763,7 @@ export function SymbolEditorModal({
                 type="button"
                 onClick={() => void save()}
               >
-                {draft.id ? "Update symbol" : "Save symbol"}
+                {symbol ? "Update symbol" : "Save symbol"}
               </button>
             </div>
           </div>

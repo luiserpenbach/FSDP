@@ -8,7 +8,7 @@ import type { Editor } from "../../engine/editor";
 import type { SymbolRegistry } from "../../engine/library";
 import type { PartLike } from "../../engine/parts";
 import type { TagScheme } from "../../engine/tags";
-import { useEditorSnapshot } from "./SchematicCanvas";
+import { useSettledSnapshot } from "./useSettledSnapshot";
 
 export type DrcInputs = {
   registry: SymbolRegistry;
@@ -18,12 +18,32 @@ export type DrcInputs = {
   waivers: DrcWaiver[];
 };
 
-/** Live DRC over the editor's document; recomputed when the document or inputs change. */
+type DrcRun = { key: unknown[]; result: DrcResult };
+
+/** The last DRC run, shared by every `useDrc` caller (status bar and panel) over the same inputs. */
+let lastRun: DrcRun | null = null;
+
+function cachedDrc(key: unknown[], run: () => DrcResult): DrcResult {
+  if (lastRun && lastRun.key.length === key.length && lastRun.key.every((entry, index) => entry === key[index])) return lastRun.result;
+  const result = run();
+  lastRun = { key, result };
+  return result;
+}
+
+/**
+ * Live DRC over the editor's document. Recomputed when the document or inputs
+ * change, at most every ~250 ms while editing and at once when a drag ends
+ * (saves run their own DRC on the current document).
+ */
 export function useDrc(editor: Editor, inputs: DrcInputs): DrcResult {
-  const { doc, connectivity } = useEditorSnapshot(editor);
+  const { doc, connectivity } = useSettledSnapshot(editor);
+  const reservedTags = editor.reservedTags;
   return useMemo(
-    () => runDrc({ doc, registry: inputs.registry, connectivity, tagScheme: inputs.tagScheme, parts: inputs.parts, requirements: inputs.requirements, waivers: inputs.waivers }),
-    [doc, connectivity, inputs.registry, inputs.tagScheme, inputs.parts, inputs.requirements, inputs.waivers]
+    () =>
+      cachedDrc([doc, connectivity, inputs.registry, inputs.tagScheme, inputs.parts, inputs.requirements, inputs.waivers, reservedTags], () =>
+        runDrc({ doc, registry: inputs.registry, connectivity, tagScheme: inputs.tagScheme, parts: inputs.parts, requirements: inputs.requirements, waivers: inputs.waivers, reservedTags })
+      ),
+    [doc, connectivity, inputs.registry, inputs.tagScheme, inputs.parts, inputs.requirements, inputs.waivers, reservedTags]
   );
 }
 

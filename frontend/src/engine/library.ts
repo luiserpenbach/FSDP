@@ -9,6 +9,7 @@
  *  - markup uses `stroke="currentColor"`; the renderer sets the stroke width.
  */
 import { mirrorSide, rotateOffset, rotateSide } from "./geometry";
+import { sanitizeSvgInner } from "./svgSanitize";
 import type { PidSymbolDef } from "../types";
 import type { Point, PortDef, Rect, Side, SymbolDef, SymbolItem, SymbolRef } from "./types";
 
@@ -79,7 +80,8 @@ export function customSymbolDef(custom: PidSymbolDef): SymbolDef {
     tagPrefix: custom.tag_prefix || undefined,
     width: CUSTOM_SYMBOL_WIDTH_MM,
     height: viewBox.height * scale,
-    svg: `<g transform="scale(${scale}) translate(${-centreX} ${-centreY})" stroke-width="${strokeWidth}">${custom.svg}</g>`,
+    // Stored markup is user input painted with innerHTML: sanitize it before it enters the registry.
+    svg: `<g transform="scale(${scale}) translate(${-centreX} ${-centreY})" stroke-width="${strokeWidth}">${sanitizeSvgInner(custom.svg ?? "")}</g>`,
     ports: custom.ports.map((port) => ({
       id: port.id,
       x: (port.x - centreX) * scale,

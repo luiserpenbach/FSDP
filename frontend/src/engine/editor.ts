@@ -13,7 +13,7 @@ import {
   moveItemsCommand,
   rotateItemsCommand
 } from "./edit";
-import { DEFAULT_TAG_SCHEME, nextTag, renumberCommand, type TagContext, type TagScheme } from "./tags";
+import { DEFAULT_TAG_SCHEME, nextTag, parseTag, renumberCommand, type TagContext, type TagScheme } from "./tags";
 import { normalizeRotation, rectFromPoints, simplifyPolyline, snapPoint, subtract } from "./geometry";
 import { type SymbolRegistry } from "./library";
 import { previewSegment } from "./routing";
@@ -38,6 +38,9 @@ import {
 } from "./types";
 
 export type ToolId = "select" | "wire" | "place" | "label" | "equipment" | "note" | "measure";
+
+/** Tools that only look at the sheet; the only ones offered while the editor is read-only. */
+export const READ_ONLY_TOOLS: ReadonlySet<ToolId> = new Set<ToolId>(["select", "measure"]);
 
 export type AlignMode = "left" | "right" | "top" | "bottom" | "centerX" | "centerY";
 
@@ -68,6 +71,8 @@ export type EditorState = {
   grid: number;
   /** System / class digits used when suggesting structured tags. */
   tagContext: TagContext;
+  /** Released drawing or a viewer: select, pan, zoom, find, copy, and measure only. */
+  readOnly: boolean;
 };
 
 export type EditorSnapshot = {
@@ -77,7 +82,15 @@ export type EditorSnapshot = {
   version: number;
 };
 
-export type EditorOptions = { author?: string; makeId?: () => string; tagScheme?: TagScheme };
+export type EditorOptions = {
+  author?: string;
+  makeId?: () => string;
+  tagScheme?: TagScheme;
+  /** Tags used on other sheets of the drawing (see `setReservedTags`). */
+  reservedTags?: Iterable<string>;
+  /** Start read-only (see `setReadOnly`). */
+  readOnly?: boolean;
+};
 
 function parseLetters(tag: string): string | null {
   const match = /^([A-Za-z]+)/.exec(tag.trim());
@@ -95,6 +108,9 @@ export class Editor {
   private index: SpatialIndex;
   private ports: IndexedPort[];
   private connectivityValue: Connectivity;
+  /** Set while a drag defers the connectivity recompute to the next frame. */
+  private connectivityStale = false;
+  private connectivityFrame: { cancel: () => void } | null = null;
   private snapshotValue: EditorSnapshot;
   private listeners = new Set<() => void>();
   private unsubscribeStore: () => void;
@@ -103,6 +119,8 @@ export class Editor {
   /** Hit tolerance in mm; the host sets it from the zoom level. */
   tolerance = 1.5;
   tagScheme: TagScheme;
+  /** Tags used on other sheets of the drawing: suggestions skip them and tag checks flag duplicates. */
+  reservedTags: ReadonlySet<string>;
 
   setTolerance(mm: number): void {
     this.tolerance = mm;
@@ -116,6 +134,7 @@ export class Editor {
   ) {
     this.makeId = options.makeId ?? defaultId;
     this.tagScheme = options.tagScheme ?? DEFAULT_TAG_SCHEME;
+    this.reservedTags = new Set(options.reservedTags ?? []);
     this.stateValue = {
       tool: "select",
       selection: [],
@@ -129,7 +148,8 @@ export class Editor {
       measure: null,
       lineType: "process",
       grid: store.doc.meta.grid ?? DEFAULT_GRID_MM,
-      tagContext: {}
+      tagContext: {},
+      readOnly: Boolean(options.readOnly)
     };
     this.index = new SpatialIndex(store.doc, registry);
     this.ports = indexPorts(store.doc, registry);
@@ -139,6 +159,8 @@ export class Editor {
   }
 
   dispose(): void {
+    this.connectivityFrame?.cancel();
+    this.connectivityFrame = null;
     this.unsubscribeStore();
     this.listeners.clear();
   }
@@ -156,6 +178,7 @@ export class Editor {
   }
 
   get connectivity(): Connectivity {
+    if (this.connectivityStale) this.refreshConnectivity();
     return this.connectivityValue;
   }
 
@@ -164,14 +187,92 @@ export class Editor {
     return () => this.listeners.delete(listener);
   }
 
+  /** Swap in a rebuilt registry (custom symbol metadata changed) without reloading the document or its undo history. */
+  setRegistry(registry: SymbolRegistry): void {
+    if (registry === this.registry) return;
+    (this as { registry: SymbolRegistry }).registry = registry;
+    this.onDocumentChanged();
+  }
+
   private onDocumentChanged(): void {
     this.index = new SpatialIndex(this.store.doc, this.registry);
     this.ports = indexPorts(this.store.doc, this.registry);
-    this.connectivityValue = computeConnectivity(this.store.doc, this.registry);
+    if (this.dragging()) this.deferConnectivity();
+    else this.refreshConnectivity();
     const present = new Set(this.store.doc.items.map((item) => item.id));
     const selection = this.stateValue.selection.filter((id) => present.has(id));
     this.stateValue = { ...this.stateValue, selection };
     this.emit();
+  }
+
+  /** A move or segment drag is in progress (connectivity recompute is deferred). */
+  private dragging(): boolean {
+    const drag = this.stateValue.drag;
+    return drag?.kind === "move" || drag?.kind === "segment";
+  }
+
+  private refreshConnectivity(): void {
+    this.connectivityStale = false;
+    this.connectivityValue = computeConnectivity(this.store.doc, this.registry);
+  }
+
+  /**
+   * During a drag, recompute connectivity (junction dots, hops, dangling
+   * ends) at most once per animation frame instead of on every pointer step.
+   * Ending the drag, or reading `connectivity`, brings it up to date at once.
+   */
+  private deferConnectivity(): void {
+    this.connectivityStale = true;
+    if (this.connectivityFrame) return;
+    const run = () => {
+      this.connectivityFrame = null;
+      if (this.connectivityStale) this.refreshConnectivity();
+      if (this.snapshotValue.connectivity !== this.connectivityValue) this.emit();
+    };
+    const raf = (globalThis as { requestAnimationFrame?: (callback: () => void) => number }).requestAnimationFrame;
+    const caf = (globalThis as { cancelAnimationFrame?: (handle: number) => void }).cancelAnimationFrame;
+    if (raf && caf) {
+      const handle = raf(run);
+      this.connectivityFrame = { cancel: () => caf(handle) };
+    } else {
+      const handle = setTimeout(run, 16);
+      this.connectivityFrame = { cancel: () => clearTimeout(handle) };
+    }
+  }
+
+  get readOnly(): boolean {
+    return this.stateValue.readOnly;
+  }
+
+  /**
+   * Lock or unlock editing. While read-only every document command is dropped,
+   * drawing tools are unavailable, and an in-progress wire, drag, or placement
+   * is abandoned; selection, find, copy, measure, pan, and zoom keep working.
+   */
+  setReadOnly(readOnly: boolean): void {
+    if (readOnly === this.stateValue.readOnly) return;
+    if (!readOnly) {
+      this.setState({ readOnly });
+      return;
+    }
+    if (this.stateValue.drag) this.store.endCoalescing();
+    const tool = READ_ONLY_TOOLS.has(this.stateValue.tool) ? this.stateValue.tool : "select";
+    this.setState({ readOnly, tool, wire: null, drag: null, place: null, equipmentDraft: null, snap: null });
+  }
+
+  /** Apply a document command unless the editor is read-only; returns whether it ran. */
+  dispatch(command: Command, options: { coalesceKey?: string } = {}): boolean {
+    if (this.stateValue.readOnly) return false;
+    this.store.dispatch(command, options);
+    return true;
+  }
+
+  undo(): boolean {
+    return !this.stateValue.readOnly && this.store.undo();
+  }
+
+  redo(): boolean {
+    return !this.stateValue.readOnly && this.store.redo();
   }
 
   private setState(patch: Partial<EditorState>): void {
@@ -180,6 +281,7 @@ export class Editor {
   }
 
   private emit(): void {
+    if (this.connectivityStale && !this.dragging()) this.refreshConnectivity();
     this.snapshotValue = {
       doc: this.store.doc,
       state: this.stateValue,
@@ -232,6 +334,7 @@ export class Editor {
   /* ---------- Tool switching ---------- */
 
   setTool(tool: ToolId): void {
+    if (this.stateValue.readOnly && !READ_ONLY_TOOLS.has(tool)) return;
     this.setState({ tool, wire: null, drag: null, equipmentDraft: null, measure: null, place: tool === "place" ? this.stateValue.place : null });
   }
 
@@ -273,7 +376,7 @@ export class Editor {
       commands.push(command);
       working = applyCommand(working, command);
     }
-    if (commands.length) this.store.dispatch({ type: "batch", commands, label: `Align ${mode}` });
+    if (commands.length) this.dispatch({ type: "batch", commands, label: `Align ${mode}` });
   }
 
   /** Spread the selected items evenly between the two outermost along an axis. */
@@ -298,7 +401,7 @@ export class Editor {
       commands.push(command);
       working = applyCommand(working, command);
     });
-    if (commands.length) this.store.dispatch({ type: "batch", commands, label: `Distribute ${axis}` });
+    if (commands.length) this.dispatch({ type: "batch", commands, label: `Distribute ${axis}` });
   }
 
   copySelection(): number {
@@ -308,9 +411,13 @@ export class Editor {
     return this.clipboard.length;
   }
 
-  /** Paste the clipboard offset by the paste count; symbol tags are re-suggested under the scheme. */
+  /**
+   * Paste the clipboard offset by the paste count. Symbol and equipment tags
+   * are re-suggested under the scheme; a structured tag keeps its own system
+   * and class digits.
+   */
   paste(): string[] {
-    if (!this.clipboard.length) return [];
+    if (!this.clipboard.length || this.stateValue.readOnly) return [];
     this.pasteCount += 1;
     const grid = this.stateValue.grid;
     const offset = { x: grid * 4 * this.pasteCount, y: grid * 4 * this.pasteCount };
@@ -321,15 +428,18 @@ export class Editor {
     for (const original of this.clipboard) {
       const copy = translateItem(original, offset);
       copy.id = idMap.get(original.id) ?? this.makeId();
-      if (copy.kind === "symbol") {
-        copy.componentId = undefined;
-        const definition = this.registry.resolve(copy.symbol);
-        copy.tag = copy.tag ? nextTag(working, this.tagScheme, parseLetters(copy.tag) ?? definition.tagPrefix ?? "X", this.stateValue.tagContext) : undefined;
+      if (copy.kind === "symbol") copy.componentId = undefined;
+      if ((copy.kind === "symbol" || copy.kind === "equipment") && copy.tag) {
+        const parsed = parseTag(copy.tag, this.tagScheme);
+        const context = parsed && this.tagScheme.kind === "structured" ? { system: parsed.system, cls: parsed.cls } : this.stateValue.tagContext;
+        const fallback = copy.kind === "symbol" ? this.registry.resolve(copy.symbol).tagPrefix : undefined;
+        const letters = parsed?.letters ?? parseLetters(copy.tag) ?? fallback ?? "X";
+        copy.tag = nextTag(working, this.tagScheme, letters, context, this.reservedTags) ?? undefined;
       }
       items.push(copy);
       working = applyCommand(working, { type: "add", items: [copy] });
     }
-    this.store.dispatch({ type: "add", items });
+    this.dispatch({ type: "add", items });
     this.setState({ selection: items.map((item) => item.id) });
     return items.map((item) => item.id);
   }
@@ -357,23 +467,24 @@ export class Editor {
     const line = this.itemById(lineId);
     if (!line || line.kind !== "line") return;
     const annotations = [...(line.annotations ?? []), { id: this.makeId(), ...annotation }];
-    this.store.dispatch({ type: "update", id: lineId, patch: { annotations } });
+    this.dispatch({ type: "update", id: lineId, patch: { annotations } });
   }
 
   removeLineAnnotation(lineId: string, annotationId: string): void {
     const line = this.itemById(lineId);
     if (!line || line.kind !== "line") return;
-    this.store.dispatch({ type: "update", id: lineId, patch: { annotations: (line.annotations ?? []).filter((entry) => entry.id !== annotationId) } });
+    this.dispatch({ type: "update", id: lineId, patch: { annotations: (line.annotations ?? []).filter((entry) => entry.id !== annotationId) } });
   }
 
   startPlacing(symbol: SymbolRef): void {
+    if (this.stateValue.readOnly) return;
     this.setState({ tool: "place", place: { symbol, rotation: 0, mirror: false }, wire: null, drag: null, selection: [] });
   }
 
   setLineType(lineType: LineType): void {
     const selectedLines = this.selectedItems().filter((item): item is LineItem => item.kind === "line");
     if (selectedLines.length) {
-      this.store.dispatch({
+      this.dispatch({
         type: "batch",
         label: "Line type",
         commands: selectedLines.map((line) => ({
@@ -395,6 +506,12 @@ export class Editor {
     this.emit();
   }
 
+  /** Tags used on the drawing's other sheets; replaces the previous set. */
+  setReservedTags(tags: Iterable<string>): void {
+    this.reservedTags = new Set(tags);
+    this.emit();
+  }
+
   setTagContext(context: TagContext): void {
     this.setState({ tagContext: { ...this.stateValue.tagContext, ...context } });
   }
@@ -402,13 +519,13 @@ export class Editor {
   /** Suggested tag for a symbol definition under the project scheme. */
   suggestTagFor(tagPrefix: string | undefined): string | undefined {
     if (!tagPrefix) return undefined;
-    return nextTag(this.store.doc, this.tagScheme, tagPrefix, this.stateValue.tagContext);
+    return nextTag(this.store.doc, this.tagScheme, tagPrefix, this.stateValue.tagContext, this.reservedTags) ?? undefined;
   }
 
   /** Re-sequence the selected symbols' tags per letter group in reading order. */
   renumberSelection(startAt = 1): void {
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(renumberCommand(this.store.doc, this.tagScheme, this.stateValue.selection, this.stateValue.tagContext, startAt));
+    this.dispatch(renumberCommand(this.store.doc, this.tagScheme, this.stateValue.selection, this.stateValue.tagContext, startAt, this.reservedTags));
   }
 
   /** Escape: cancel the in-progress action, else drop back to select. */
@@ -446,7 +563,7 @@ export class Editor {
 
   deleteSelection(): void {
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch({ type: "remove", ids: this.stateValue.selection });
+    this.dispatch({ type: "remove", ids: this.stateValue.selection });
   }
 
   rotateSelection(by = 90): void {
@@ -455,7 +572,7 @@ export class Editor {
       return;
     }
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(rotateItemsCommand(this.store.doc, this.registry, this.stateValue.selection, by));
+    this.dispatch(rotateItemsCommand(this.store.doc, this.registry, this.stateValue.selection, by));
   }
 
   mirrorSelection(): void {
@@ -464,29 +581,29 @@ export class Editor {
       return;
     }
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(mirrorItemsCommand(this.store.doc, this.registry, this.stateValue.selection));
+    this.dispatch(mirrorItemsCommand(this.store.doc, this.registry, this.stateValue.selection));
   }
 
   duplicateSelection(): void {
-    if (!this.stateValue.selection.length) return;
+    if (!this.stateValue.selection.length || this.stateValue.readOnly) return;
     const grid = this.stateValue.grid;
     const copies = duplicateItems(this.store.doc, this.stateValue.selection, { x: grid * 4, y: grid * 4 }, this.makeId);
-    this.store.dispatch({ type: "add", items: copies });
+    this.dispatch({ type: "add", items: copies });
     this.setState({ selection: copies.map((item) => item.id) });
   }
 
   nudgeSelection(delta: Point): void {
     if (!this.stateValue.selection.length) return;
-    this.store.dispatch(moveItemsCommand(this.store.doc, this.registry, this.stateValue.selection, delta));
+    this.dispatch(moveItemsCommand(this.store.doc, this.registry, this.stateValue.selection, delta));
   }
 
   updateItem(id: string, patch: Record<string, unknown>): void {
-    this.store.dispatch({ type: "update", id, patch });
+    this.dispatch({ type: "update", id, patch });
   }
 
   updateSelection(patch: Record<string, unknown>): void {
     const commands: Command[] = this.stateValue.selection.map((id) => ({ type: "update", id, patch }));
-    this.store.dispatch({ type: "batch", commands, label: "Edit" });
+    this.dispatch({ type: "batch", commands, label: "Edit" });
   }
 
   /* ---------- Pointer events (sheet mm) ---------- */
@@ -534,8 +651,10 @@ export class Editor {
     const grid = state.grid;
     const drag = state.drag;
     if (!drag) {
-      const hit = this.hitAt(raw);
-      this.setState({ cursor: raw, hover: hit?.item.id ?? null });
+      const hover = this.hitAt(raw)?.item.id ?? null;
+      // Only re-render when the hovered item changes; the select tool draws nothing at the cursor.
+      if (hover === state.hover) this.stateValue = { ...state, cursor: raw };
+      else this.setState({ cursor: raw, hover });
       return;
     }
     if (drag.kind === "window") {
@@ -551,7 +670,7 @@ export class Editor {
       const horizontal = a.y === b.y;
       const coordinate = modifiers.alt ? (horizontal ? raw.y : raw.x) : (horizontal ? snapPoint(raw, grid).y : snapPoint(raw, grid).x);
       const points = dragSegment(line.points, drag.index, coordinate);
-      this.store.dispatch({ type: "set-points", id: line.id, points }, { coalesceKey: drag.key });
+      this.dispatch({ type: "set-points", id: line.id, points }, { coalesceKey: drag.key });
       // Re-resolve the segment index after simplification: pick the segment at the new coordinate.
       const updated = this.itemById(drag.lineId);
       if (updated && updated.kind === "line") {
@@ -571,7 +690,7 @@ export class Editor {
       this.setState({ cursor: raw });
       return;
     }
-    this.store.dispatch(moveItemsCommand(this.store.doc, this.registry, drag.ids, step), { coalesceKey: drag.key });
+    this.dispatch(moveItemsCommand(this.store.doc, this.registry, drag.ids, step), { coalesceKey: drag.key });
     this.setState({ cursor: raw, drag: { ...drag, applied: wanted, moved: true } });
   }
 
@@ -623,6 +742,11 @@ export class Editor {
       return;
     }
     if (!alreadySelected) selection = [id];
+    if (this.stateValue.readOnly) {
+      // Nothing moves: a click just selects what is under the cursor.
+      this.setState({ selection: [id] });
+      return;
+    }
     // Dragging a segment of a single selected line slides that segment.
     if (hit.item.kind === "line" && hit.part.type === "segment" && selection.length === 1 && selection[0] === id) {
       this.setState({ selection, drag: { kind: "segment", lineId: id, index: hit.part.index, key: `segment-${Date.now()}` } });
@@ -723,7 +847,7 @@ export class Editor {
       showArrow: false,
       fields: {}
     };
-    this.store.dispatch({ type: "add", items: [line] });
+    this.dispatch({ type: "add", items: [line] });
     this.setState({ wire: null, selection: [line.id] });
   }
 
@@ -752,7 +876,7 @@ export class Editor {
       tag: this.suggestTagFor(definition.tagPrefix),
       fields: {}
     };
-    this.store.dispatch({ type: "add", items: [item] });
+    this.dispatch({ type: "add", items: [item] });
     this.setState({ selection: [item.id], cursor: position });
   }
 
@@ -768,7 +892,7 @@ export class Editor {
       tag: this.suggestTagFor(definition.tagPrefix),
       fields: {}
     };
-    this.store.dispatch({ type: "add", items: [item] });
+    this.dispatch({ type: "add", items: [item] });
     this.setState({ selection: [item.id] });
     return item;
   }
@@ -784,7 +908,7 @@ export class Editor {
       rotation: 0,
       anchor: "start"
     };
-    this.store.dispatch({ type: "add", items: [item] });
+    this.dispatch({ type: "add", items: [item] });
     this.setState({ selection: [item.id], tool: "select" });
   }
 
@@ -798,7 +922,7 @@ export class Editor {
       author: this.options.author,
       createdAt: new Date().toISOString()
     };
-    this.store.dispatch({ type: "add", items: [item] });
+    this.dispatch({ type: "add", items: [item] });
     this.setState({ selection: [item.id], tool: "select" });
   }
 
@@ -814,15 +938,37 @@ export class Editor {
       fields: {}
     };
     // Equipment goes to the back so its contents stay clickable and draw on top.
-    this.store.dispatch({ type: "add", items: [item], indices: [0] });
+    this.dispatch({ type: "add", items: [item], indices: [0] });
     this.setState({ selection: [item.id], tool: "select" });
   }
 
   /* ---------- Keyboard ---------- */
 
-  /** Returns true when the key was consumed. */
+  /**
+   * Returns true when the key was consumed. Letter shortcuts with Ctrl/Cmd
+   * are only the clipboard and selection combos; others (Ctrl+S, Ctrl+R, ...)
+   * return false so the page or browser handles them.
+   */
   key(key: string, modifiers: Modifiers = {}): boolean {
     const grid = this.stateValue.grid;
+    if (modifiers.ctrl && /^[a-z]$/i.test(key)) {
+      switch (key.toLowerCase()) {
+        case "c":
+          this.copySelection();
+          return true;
+        case "v":
+          this.paste();
+          return true;
+        case "a":
+          this.selectAll();
+          return true;
+        case "d":
+          this.duplicateSelection();
+          return true;
+        default:
+          return false;
+      }
+    }
     switch (key) {
       case "Escape":
         this.cancel();
@@ -845,19 +991,8 @@ export class Editor {
         return true;
       case "v":
       case "V":
-        if (modifiers.ctrl) {
-          this.paste();
-          return true;
-        }
         this.setTool("select");
         return true;
-      case "c":
-      case "C":
-        if (modifiers.ctrl) {
-          this.copySelection();
-          return true;
-        }
-        return false;
       case "m":
       case "M":
         this.setTool("measure");
@@ -888,20 +1023,6 @@ export class Editor {
       case "Enter":
         if (this.stateValue.wire) {
           this.finishWire();
-          return true;
-        }
-        return false;
-      case "a":
-      case "A":
-        if (modifiers.ctrl) {
-          this.selectAll();
-          return true;
-        }
-        return false;
-      case "d":
-      case "D":
-        if (modifiers.ctrl) {
-          this.duplicateSelection();
           return true;
         }
         return false;
