@@ -559,21 +559,29 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       return;
     }
     const loadingSheetId = sheetId;
+    // Lists write-backs (and saves) bump this; if it moves during our GET we
+    // re-read so we do not open a pre-edit document that Save would put back.
+    const touchedAtStart = sheetTouches.current.get(loadingSheetId) ?? 0;
     setLoading(true);
-    api
-      .getSheet(loadingSheetId)
-      .then((sheet) => {
+    void (async () => {
+      try {
+        let sheet = await api.getSheet(loadingSheetId);
         if (cancelled) return;
+        while ((sheetTouches.current.get(loadingSheetId) ?? 0) !== touchedAtStart) {
+          const seen = sheetTouches.current.get(loadingSheetId) ?? 0;
+          sheet = await api.getSheet(loadingSheetId);
+          if (cancelled) return;
+          if ((sheetTouches.current.get(loadingSheetId) ?? 0) === seen) break;
+        }
         const document = withFrameTemplate(sheet.document as unknown as SchematicDocument, drawing?.frame_template ?? "basic");
         const store = new DocumentStore(document);
         setSession({ editor: new Editor(store, registry, { author: user.name, tagScheme, readOnly: !canEditRef.current }), sheetId: loadingSheetId });
-      })
-      .catch((error) => {
+      } catch (error) {
         if (!cancelled) notify(error instanceof Error ? error.message : "Could not open the sheet.", true);
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -724,6 +732,9 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
             canWrite,
             editor,
             openSheetId: sheetId,
+            // Live session: locate / sheet tabs can open the target sheet while
+            // this other-sheet commit is still loading or saving.
+            getOpenSession: () => sessionRef.current,
             otherSheets: otherSheetsRef.current,
             registry,
             tagScheme,
