@@ -110,10 +110,32 @@ function sheet(id: string, sheetNo: number, items: unknown[]): DrawingSheet {
 
 const sheets: Record<string, DrawingSheet> = { sh1: sheet("sh1", 1, [pt]), sh2: sheet("sh2", 2, [hv]) };
 
-function renderPage({ canWrite = true, notify = vi.fn() }: { canWrite?: boolean; notify?: (message: string, error?: boolean) => void } = {}) {
+const valvePart = {
+  id: "part-1",
+  part_number: "AMB2-001",
+  description: "Ball valve",
+  part_type: "valve",
+  source_type: "vendor",
+  material: "316L",
+  pressure_rating_bar: 200,
+  qualification_status: "qualified",
+  certification_status: "certified",
+  lifecycle_status: "active",
+  preferred: true
+};
+
+function renderPage({
+  canWrite = true,
+  notify = vi.fn(),
+  parts = [] as Array<typeof valvePart>
+}: {
+  canWrite?: boolean;
+  notify?: (message: string, error?: boolean) => void;
+  parts?: Array<typeof valvePart>;
+} = {}) {
   return render(
     <MemoryRouter>
-      <DraftingPage projectId="p1" projectName="AMB2" systems={[]} selectedSystemId="" customSymbols={[]} parts={[]} user={engineer} canWrite={canWrite} notify={notify} />
+      <DraftingPage projectId="p1" projectName="AMB2" systems={[]} selectedSystemId="" customSymbols={[]} parts={parts as never[]} user={engineer} canWrite={canWrite} notify={notify} />
     </MemoryRouter>
   );
 }
@@ -188,12 +210,12 @@ describe("DraftingPage release workflow", () => {
     expect(alert.textContent).toContain("Release refused");
     expect(notify).toHaveBeenCalledWith("Drawing AMB2-9003 cannot be released yet.", true);
 
-    // "Re-index now" re-derives the stale sheet from its stored document.
+    // "Re-index now" re-derives the stale sheet's index/DRC from its stored document.
     fireEvent.click(within(alert).getByRole("button", { name: "Re-index now" }));
     await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
-    const [savedId, body] = apiMock.updateSheet.mock.calls[0] as [string, { document: { items: Array<{ id: string }> }; index: { items: unknown[] }; drc: { findings: unknown[]; checks: unknown[] } }];
+    const [savedId, body] = apiMock.updateSheet.mock.calls[0] as [string, { document?: unknown; index: { items: unknown[] }; drc: { findings: unknown[]; checks: unknown[] } }];
     expect(savedId).toBe("sh1");
-    expect(body.document.items.map((item) => item.id)).toEqual(["pt"]);
+    expect(body.document).toBeUndefined();
     expect(body.index.items).toHaveLength(1);
     expect(Array.isArray(body.drc.findings)).toBe(true);
     // The re-indexed sheet's reason goes away.
@@ -227,9 +249,11 @@ describe("DraftingPage release workflow", () => {
 
     resolveScheme({ project_id: "p1", scheme: null });
     await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
-    const [indexedId, body] = apiMock.updateSheet.mock.calls[0] as [string, { document: unknown; index: unknown; drc: unknown }];
+    const [indexedId, body] = apiMock.updateSheet.mock.calls[0] as [string, { document?: unknown; index: unknown; drc: unknown }];
     expect(indexedId).toBe("sh2");
-    expect(body.document).toBeTruthy();
+    // Re-index refreshes index and DRC only; rewriting the document would race
+    // a concurrent lists write-back and could wipe field edits.
+    expect(body.document).toBeUndefined();
     expect(body.index).toBeTruthy();
     expect(body.drc).toBeTruthy();
     await waitFor(() => expect(screen.getByText("Sheet 1 out of date")).toBeInTheDocument());
@@ -240,6 +264,64 @@ describe("DraftingPage release workflow", () => {
     await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(2));
     expect(apiMock.updateSheet.mock.calls[1][0]).toBe("sh1");
     await waitFor(() => expect(screen.getByText("Index up to date")).toBeInTheDocument());
+  });
+
+  it("stands down re-index when a lists write-back changes the sheet after the first load", async () => {
+    apiMock.listDrawings.mockResolvedValue([
+      makeDrawing({
+        sheets: [
+          { id: "sh1", sheet_no: 1, title: null, source_diagram_id: null, index_stale: false, indexed_at: null },
+          { id: "sh2", sheet_no: 2, title: "Vent", source_diagram_id: null, index_stale: true, indexed_at: null }
+        ]
+      })
+    ]);
+    let resolveScheme!: (value: unknown) => void;
+    apiMock.getTagScheme.mockReturnValue(new Promise((resolve) => (resolveScheme = resolve)));
+
+    // Server copy of sheet 2; lists write-back mutates it while re-index is mid-flight.
+    let serverSh2 = sheets.sh2;
+    let sh2Gets = 0;
+    let releaseReread!: (value: DrawingSheet) => void;
+    apiMock.getSheet.mockImplementation(async (id: string) => {
+      if (id !== "sh2") return sheets[id];
+      sh2Gets += 1;
+      // 1: otherSheets prefetch, 2: re-index load, 3: re-index confirm read (held).
+      if (sh2Gets === 3) return new Promise<DrawingSheet>((resolve) => (releaseReread = resolve));
+      return serverSh2;
+    });
+    apiMock.updateSheet.mockImplementation(async (id: string, body: { document?: unknown }) => {
+      if (id === "sh2" && body.document) serverSh2 = { ...serverSh2, document: body.document };
+      return { ...serverSh2, document: body.document ?? serverSh2.document };
+    });
+
+    renderPage({ parts: [valvePart] });
+    await openCanvas();
+    fireEvent.click(screen.getByRole("button", { name: "Lists" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
+    const drawer = screen.getByRole("region", { name: "Engineering lists" });
+    await waitFor(() => expect(drawer.textContent).toContain("HV-3201"));
+
+    // Start background re-index; it blocks on the confirm GET for sheet 2.
+    resolveScheme({ project_id: "p1", scheme: null });
+    await waitFor(() => expect(sh2Gets).toBeGreaterThanOrEqual(3));
+
+    // Lists write-back assigns a part on sheet 2 while re-index still holds the old doc.
+    fireEvent.click(within(drawer).getByLabelText("Select row 1"));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Assign part…" }));
+    const dialog = screen.getByRole("dialog", { name: "Assign part" });
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-001/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign part" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalled());
+    const listPut = apiMock.updateSheet.mock.calls.find((call) => call[0] === "sh2" && (call[1] as { document?: { items: Array<{ partId?: string }> } }).document);
+    expect(listPut).toBeTruthy();
+    expect((listPut![1] as { document: { items: Array<{ partId?: string }> } }).document.items[0].partId).toBe("part-1");
+
+    const putsBeforeRelease = apiMock.updateSheet.mock.calls.length;
+    releaseReread(serverSh2);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // Re-index saw the newer document and skipped; it must not PUT a stale index/document.
+    expect(apiMock.updateSheet.mock.calls.length).toBe(putsBeforeRelease);
+    expect(serverSh2.document).toMatchObject({ items: [{ partId: "part-1" }] });
   });
 
   it("keeps edits made while a save is in flight unsaved", async () => {
