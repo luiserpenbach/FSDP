@@ -56,6 +56,10 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
   (a hint shows while some are unconverted); converted diagrams can be deleted.
 - Create, select, update, and delete catalog parts with qualification/certification
   status tracking, and assign them to symbols and equipment on drawings.
+- Find Swagelok tube fittings on the Fitting Selector page from a plain description
+  ("3/8 tube to 1/4 male NPT elbow") or an ordering number, with specs, a generated
+  product illustration, and a link to the swagelok.com product page; build a per-project
+  fitting list (CSV/XLSX export) and add its fittings to the parts catalog.
 - Create, select, update, and delete requirements; trace them to tagged drawing items
   or whole drawings. Links made to legacy components show read-only.
 - Generate drawing BoM snapshots with history, release workflow, revision diffs,

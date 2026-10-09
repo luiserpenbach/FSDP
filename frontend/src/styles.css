@@ -3786,3 +3786,275 @@ textarea.importPaste {
 .assignPartMulti {
   margin: 0 0 8px;
 }
+
+/* ---------- Fitting Selector ---------- */
+
+.fittingsHeader {
+  grid-template-columns: auto minmax(220px, 1fr);
+}
+
+.fittingSearchBar {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.fittingSearch {
+  max-width: 760px;
+}
+
+.fittingSearch input {
+  font-size: 15px;
+  padding-bottom: 10px;
+  padding-top: 10px;
+}
+
+.fittingChips {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 26px;
+}
+
+.fittingChips .hint {
+  margin: 0;
+}
+
+.fittingExample {
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 0;
+  padding: 3px 10px;
+}
+
+.fittingWorkspace {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
+  margin-bottom: 12px;
+}
+
+.fittingResults {
+  display: flex;
+  flex-direction: column;
+  max-height: 640px;
+  min-height: 0;
+  padding: 12px 10px 10px;
+}
+
+.fittingResults .panelHead {
+  padding: 0 6px;
+}
+
+.fittingResults > .hint {
+  padding: 0 6px;
+}
+
+.fittingResultList {
+  display: grid;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.fittingResult {
+  align-items: center;
+  border-color: transparent;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 64px minmax(0, 1fr);
+  margin: 0;
+  padding: 4px 8px 4px 4px;
+  text-align: left;
+  width: 100%;
+}
+
+.fittingResult.selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.fittingResult span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.fittingResult strong {
+  font-size: 13px;
+}
+
+.fittingResult small {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fittingThumb {
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  height: 50px;
+  width: 64px;
+}
+
+.fittingDetail {
+  min-width: 0;
+}
+
+.fittingDetailEmpty {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 240px;
+}
+
+.fittingDetailHead {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.fittingPartNumber {
+  align-items: center;
+  display: flex;
+  font-size: 20px;
+  gap: 10px;
+  margin: 0;
+}
+
+.fittingCopy {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  margin: 0;
+  padding: 2px 8px;
+}
+
+.fittingDescription {
+  color: var(--text-2);
+  margin: 4px 0 0;
+}
+
+.fittingDetailBody {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(240px, 1fr) minmax(300px, 1.25fr);
+}
+
+.fittingFigure {
+  margin: 0;
+  max-width: 560px;
+}
+
+.fittingFigure .fittingIllustration {
+  aspect-ratio: 240 / 190;
+  background: radial-gradient(circle at 50% 40%, #ffffff 0%, #eef1f5 75%);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  display: block;
+  width: 100%;
+}
+
+.fittingIllustrationLabel {
+  fill: #4a5768;
+  font-family: var(--font-sans);
+  font-size: 9px;
+}
+
+.fittingFigure figcaption {
+  color: var(--text-3);
+  font-size: 12px;
+  margin-top: 6px;
+}
+
+.fittingConfigure {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.fittingFields {
+  display: grid;
+  gap: 8px 10px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+.fittingFields label,
+.fittingAdd label {
+  font-size: 12px;
+}
+
+.fittingSpecs {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  margin: 0;
+}
+
+.fittingSpecs > div {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 130px minmax(0, 1fr);
+  padding: 6px 10px;
+}
+
+.fittingSpecs > div:nth-child(odd) {
+  background: var(--surface-2);
+}
+
+.fittingSpecs dt {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fittingSpecs dd {
+  font-size: 13px;
+  margin: 0;
+}
+
+.fittingSpecs dd small {
+  color: var(--text-3);
+  display: block;
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
+.fittingAdd {
+  align-items: flex-end;
+  display: flex;
+  gap: 10px;
+}
+
+.fittingAdd input {
+  width: 90px;
+}
+
+.fittingAdd button {
+  margin: 0;
+}
+
+.fittingCaveat {
+  font-size: 12px;
+  margin: 0;
+}
+
+@media (max-width: 1100px) {
+  .fittingWorkspace,
+  .fittingDetailBody {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fittingResults {
+    max-height: 320px;
+  }
+}

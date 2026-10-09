@@ -12,6 +12,7 @@ import { WorkspaceSwitcher } from "./workspace/WorkspaceSwitcher";
 // Route pages load on first visit; the dashboard (the landing page) ships in the main chunk.
 const SystemsPage = lazy(() => import("./pages/SystemsPage").then((module) => ({ default: module.SystemsPage })));
 const DraftingPage = lazy(() => import("./pages/DraftingPage").then((module) => ({ default: module.DraftingRoutePage })));
+const FittingsPage = lazy(() => import("./pages/FittingsPage").then((module) => ({ default: module.FittingsPage })));
 const PartsPage = lazy(() => import("./pages/PartsCatalog").then((module) => ({ default: module.PartsPage })));
 const RequirementsPage = lazy(() => import("./pages/RequirementsPage").then((module) => ({ default: module.RequirementsPage })));
 const BomPage = lazy(() => import("./pages/BomPage").then((module) => ({ default: module.BomPage })));
@@ -23,6 +24,7 @@ const navItems: NavItem[] = [
   { path: "/systems", label: "Systems", description: "Projects and fluid systems" },
   { path: "/drafting", label: "Drafting", description: "Paper-space P&ID drawings" },
   { path: "/parts", label: "Parts Catalog", description: "Internal and vendor parts" },
+  { path: "/fittings", label: "Fitting Selector", description: "Swagelok fittings and fitting lists" },
   { path: "/requirements", label: "Requirements", description: "Traceable requirements" },
   { path: "/bom", label: "BoM & Procurement", description: "Snapshots and exports" },
   { path: "/reviews", label: "Reviews", description: "Impact and approvals" },
@@ -147,6 +149,7 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/diagrams" element={<Navigate to="/drafting" replace />} />
           <Route path="/drafting" element={<DraftingPage />} />
           <Route path="/parts" element={<PartsPage />} />
+          <Route path="/fittings" element={<FittingsPage />} />
           <Route path="/requirements" element={<RequirementsPage />} />
           <Route path="/bom" element={<BomPage />} />
           <Route path="/reviews" element={<ReviewsPage />} />

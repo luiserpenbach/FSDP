@@ -24,6 +24,8 @@ FSDP/
       engine/                Schematic engine (paper-space P&ID document model, tools, renderer)
       components/schematic/  React host for the engine (SVG viewport)
       pages/DraftingPage.tsx Drafting page (preview editor built on the engine)
+      fittings/              Swagelok fitting catalog, query parser, illustrations, fitting list
+      pages/FittingsPage.tsx Fitting Selector page
   docs/
     architecture.md          Architecture overview
     implementation.md        Current implementation guide
@@ -321,6 +323,14 @@ The Drafting page is the first slice of the [P&ID professional upgrade plan](pid
 Legacy persistence: `GET /diagrams/{id}/schematic` reads a schematic document stored on a legacy diagram by earlier builds (`diagrams.schematic`, migration `0007`); "Convert diagram…" on the Drafting page uses it as the source when present, else converts the React Flow `graph`.
 
 Tests: `npx vitest run src/engine` covers geometry, library grid conformance, undo/redo (including a randomised inverse property), connectivity, routing, snapping, hit testing, conversion, rendering, frame templates, and the editor tools; `src/pages/DraftingPage.test.tsx` covers opening a sheet with a bound title block, saving, converting a diagram, the symbol editor, deep links, and exporting; `backend/tests/test_drawings.py` and `test_legacy_diagrams.py` cover the API including PDF/PNG export.
+
+### Fitting Selector
+
+**Swagelok fitting selection and fitting lists** (`frontend/src/fittings/`, `pages/FittingsPage.tsx`, route `/fittings`): a frontend-only catalog of Swagelok tube fittings generated from Swagelok's ordering-number system (material prefix, tube size code, fitting type code, thread size and suffix), so it works without reaching swagelok.com. `swagelok.ts` builds a fitting (ordering number, Swagelok-style description, ends, specs) from a configuration, reads free text ("3/8 tube to 1/4 male NPT elbow", "brass 6 mm female connector 1/4 BSPT") into kind, tube and thread sizes, gender, thread standard and material, and looks up ordering numbers by prefix. `FittingIllustration.tsx` draws each configuration as a shaded SVG product image (body shape, tube nuts, threads, stubs, bulkhead nut, material finish); each fitting links to its swagelok.com product page for the photo and datasheet. The detail panel is a configurator (type, material, tube OD, second tube, thread size and standard) that keeps the configuration valid.
+
+The fitting list is a DataGrid (quantity, location/tag and note editable; CSV/XLSX export) kept per project in browser storage (`fittingBom.ts`). "Add to catalog" creates the missing ordering numbers as catalog parts (`part_type` `fitting`, `source_type` `vendor`, manufacturer Swagelok, the configuration in `metadata.swagelok`), which is how they join drawing assignment and the drawing BoM.
+
+Limits: combinations are valid by the ordering rules, not checked against Swagelok stock. No pressure rating is generated (Swagelok tube fittings are rated to the tubing), so catalog parts created here have no pressure rating until an engineer enters one; maximum temperatures are reference values. Tests: `src/fittings/swagelok.test.ts`, `src/pages/FittingsPage.test.tsx`.
 
 ### Release workflow
 

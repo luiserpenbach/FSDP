@@ -11,7 +11,7 @@ export type NavItem = {
 /** Sidebar sections, in order; items not listed fall into the last section. */
 const NAV_GROUPS: Array<{ title: string; paths: string[] }> = [
   { title: "Workspace", paths: ["/dashboard", "/systems", "/drafting"] },
-  { title: "Data", paths: ["/parts", "/requirements", "/bom"] },
+  { title: "Data", paths: ["/parts", "/fittings", "/requirements", "/bom"] },
   { title: "Assurance", paths: ["/reviews"] }
 ];
 
@@ -46,6 +46,14 @@ const NAV_ICONS: Record<string, ReactNode> = {
       <path d="M3 6.5 L10 3 L17 6.5 V13.5 L10 17 L3 13.5 Z" />
       <path d="M3 6.5 L10 10 L17 6.5" />
       <path d="M10 10 V17" />
+    </svg>
+  ),
+  "/fittings": (
+    <svg {...ICON_PROPS}>
+      <path d="M2.5 8 H6 V12 H2.5" />
+      <path d="M17.5 8 H14 V12 H17.5" />
+      <rect x="6" y="6" width="8" height="8" rx="1.2" />
+      <path d="M8.5 6 V14 M11.5 6 V14" />
     </svg>
   ),
   "/requirements": (

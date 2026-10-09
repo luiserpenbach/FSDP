@@ -213,7 +213,15 @@ export const api = {
     const suffix = query.size ? `?${query.toString()}` : "";
     return request<Part[]>(`/parts${suffix}`);
   },
-  createPart: (body: Partial<Part> & { part_number: string; description: string; part_type: string }) =>
+  createPart: (
+    body: Partial<Part> & {
+      part_number: string;
+      description: string;
+      part_type: string;
+      dimensions?: Record<string, unknown>;
+      metadata?: Record<string, unknown>;
+    }
+  ) =>
     request<Part>("/parts", { method: "POST", body: JSON.stringify(body) }),
   updatePart: (partId: string, body: Partial<Part>) =>
     request<Part>(`/parts/${partId}`, { method: "PUT", body: JSON.stringify(body) }),
