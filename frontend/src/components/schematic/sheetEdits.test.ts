@@ -141,4 +141,63 @@ describe("commitSheetEdits", () => {
     expect(result.errors.map((error) => error.sheetId)).toEqual(["sh2"]);
     expect(saveSheet).not.toHaveBeenCalled();
   });
+
+  it("routes through the live open editor when the user switches sheets mid-commit", async () => {
+    const { context, saveSheet, stored } = setup();
+    const switched = new Editor(new DocumentStore(structuredClone(stored)), registry, { tagScheme: DEFAULT_TAG_SCHEME });
+    let open: { sheetId: string; editor: Editor } | null = { sheetId: "sh1", editor: context.editor! };
+    context.getOpenSession = () => open;
+    context.loadSheet = vi.fn(async () => {
+      // Locate / sheet tab opened sheet 2 while the other-sheet load was in flight.
+      open = { sheetId: "sh2", editor: switched };
+      return { sheet_no: 2, document: stored };
+    });
+
+    const result = await commitSheetEdits(context, [{ sheetId: "sh2", itemId: "hv9", field: "partId", value: "p1" }]);
+    expect(result).toEqual({ errors: [], applied: 1, savedSheetIds: [] });
+    expect(saveSheet).not.toHaveBeenCalled();
+    expect((switched.store.doc.items.find((entry) => entry.id === "hv9") as SymbolItem).partId).toBe("p1");
+    expect(switched.store.dirty).toBe(true);
+  });
+
+  it("hydrates a clean editor that opened onto a sheet after the other-sheet PUT", async () => {
+    const { context, stored } = setup();
+    // Editor still holds the pre-edit document (GET raced ahead of the list PUT).
+    const stale = new Editor(new DocumentStore(structuredClone(stored)), registry, { tagScheme: DEFAULT_TAG_SCHEME });
+    let open: { sheetId: string; editor: Editor } | null = { sheetId: "sh1", editor: context.editor! };
+    context.getOpenSession = () => open;
+    const saveSheet = vi.fn(async () => {
+      // Sheet load finished with the pre-edit doc while this PUT was in flight.
+      open = { sheetId: "sh2", editor: stale };
+    });
+    context.saveSheet = saveSheet;
+
+    const result = await commitSheetEdits(context, [{ sheetId: "sh2", itemId: "hv9", field: "partId", value: "p1" }]);
+    expect(result.savedSheetIds).toEqual(["sh2"]);
+    expect(saveSheet).toHaveBeenCalledTimes(1);
+    expect((stale.store.doc.items.find((entry) => entry.id === "hv9") as SymbolItem).partId).toBe("p1");
+    // load() marks the written doc clean so a later canvas edit starts from it.
+    expect(stale.store.dirty).toBe(false);
+  });
+
+  it("re-applies list field edits onto a dirty editor after the other-sheet PUT", async () => {
+    const { context, stored } = setup();
+    const dirty = new Editor(new DocumentStore(structuredClone(stored)), registry, { tagScheme: DEFAULT_TAG_SCHEME });
+    dirty.dispatch({ type: "update", id: "hv9", patch: { position: { x: 99, y: 80 } } });
+    expect(dirty.store.dirty).toBe(true);
+    let open: { sheetId: string; editor: Editor } | null = { sheetId: "sh1", editor: context.editor! };
+    context.getOpenSession = () => open;
+    const saveSheet = vi.fn(async () => {
+      open = { sheetId: "sh2", editor: dirty };
+    });
+    context.saveSheet = saveSheet;
+
+    const result = await commitSheetEdits(context, [{ sheetId: "sh2", itemId: "hv9", field: "partId", value: "p1" }]);
+    expect(result.savedSheetIds).toEqual(["sh2"]);
+    expect(saveSheet).toHaveBeenCalledTimes(1);
+    const item = dirty.store.doc.items.find((entry) => entry.id === "hv9") as SymbolItem;
+    expect(item.partId).toBe("p1");
+    expect(item.position).toEqual({ x: 99, y: 80 });
+    expect(dirty.store.dirty).toBe(true);
+  });
 });
