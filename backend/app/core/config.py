@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 INSECURE_DEFAULT_SECRET_KEY = "dev-insecure-secret-key-change-me"
@@ -23,6 +24,16 @@ class Settings(BaseSettings):
     catalog_files_dir: str = "var/catalog-files"
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="FSDP_")
+
+    @field_validator("database_url")
+    @classmethod
+    def _psycopg_driver(cls, value: str) -> str:
+        # Hosted Postgres (Neon, Render, Heroku-style) hands out postgres:// or
+        # postgresql:// URLs; SQLAlchemy needs the installed psycopg 3 driver named.
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+psycopg://" + value[len(prefix):]
+        return value
 
 
 settings = Settings()

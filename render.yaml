@@ -1,0 +1,35 @@
+# Render Blueprint for the FSDP API (see infra/README.md, "Vercel demo").
+# New -> Blueprint in the Render dashboard, pick this repository, and fill in the
+# values marked "sync: false" when prompted. The frontend runs on Vercel and
+# proxies /api/* to this service (frontend/vercel.json).
+services:
+  - type: web
+    name: fsdp-api
+    runtime: docker
+    plan: free
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /health
+    buildFilter:
+      paths:
+        - backend/**
+    envVars:
+      # Postgres connection string, e.g. from Neon (postgres:// URLs are accepted).
+      - key: FSDP_DATABASE_URL
+        sync: false
+      - key: FSDP_SECRET_KEY
+        generateValue: true
+      - key: FSDP_ADMIN_EMAIL
+        sync: false
+      - key: FSDP_ADMIN_PASSWORD
+        sync: false
+      - key: FSDP_SESSION_COOKIE_SECURE
+        value: "true"
+      # Same-origin through the Vercel rewrite, so no cross-origin callers.
+      - key: FSDP_CORS_ORIGINS
+        value: "[]"
+      # Load the demo project on first boot (idempotent).
+      - key: FSDP_SEED_DEMO
+        value: "true"
+      - key: FSDP_EXPOSE_DOCS
+        value: "false"

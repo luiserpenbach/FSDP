@@ -83,23 +83,35 @@ docker compose up -d --build   # migrations run on api start
 
 ### 3.1 Database — Neon (or Supabase/RDS)
 
-Create a Postgres database and note the **pooled** connection string. Convert it for
-SQLAlchemy: `postgresql+psycopg://USER:PASSWORD@HOST/DBNAME?sslmode=require`.
+Create a Postgres database and copy its **pooled** connection string. With Neon on
+Vercel: **Storage → Create Database → Neon**, then copy `DATABASE_URL` from the
+store's `.env.local` tab. Plain `postgres://` / `postgresql://` URLs are accepted;
+the API adds the `psycopg` driver itself. Put the database in the same region as the
+backend.
 
-### 3.2 Backend — Fly.io / Railway / Render (any container host)
+### 3.2 Backend — Render (Blueprint), or any container host
 
-Deploy `backend/` with its Dockerfile and set:
+**Render:** the repository root has a `render.yaml` Blueprint. In Render choose
+**New → Blueprint**, pick this repository, and fill in the prompted values:
 
 | Variable | Value |
 | --- | --- |
-| `FSDP_DATABASE_URL` | the SQLAlchemy URL above |
-| `FSDP_SECRET_KEY` | strong random secret |
-| `FSDP_SESSION_COOKIE_SECURE` | `true` |
-| `FSDP_ADMIN_EMAIL` / `FSDP_ADMIN_PASSWORD` | demo admin login |
-| `FSDP_CORS_ORIGINS` | `[]` (same-origin via the Vercel rewrite; no CORS needed) |
+| `FSDP_DATABASE_URL` | the connection string from 3.1 |
+| `FSDP_ADMIN_EMAIL` / `FSDP_ADMIN_PASSWORD` | the first admin login |
 
-Migrations run on boot. Seed the demo data once:
-`<host's exec/console> python -m app.seed`.
+The Blueprint generates `FSDP_SECRET_KEY` and sets secure cookies, `FSDP_CORS_ORIGINS=[]`
+(same-origin through the Vercel rewrite), hidden OpenAPI docs, and
+`FSDP_SEED_DEMO=true` (loads the demo project on first boot; idempotent). Migrations
+run on every boot. Note the service URL (e.g. `https://fsdp-api.onrender.com`).
+
+Free-plan caveats: the service sleeps after ~15 idle minutes (the first request then
+takes ~1 minute), and its disk is ephemeral, so uploaded part documents do not survive
+a redeploy. Use a paid instance with a persistent disk (mount it at
+`FSDP_CATALOG_FILES_DIR`) for real use.
+
+**Other hosts** (Fly.io, Railway, …): deploy `backend/` with its Dockerfile and set the
+same variables, plus a strong `FSDP_SECRET_KEY` and `FSDP_SESSION_COOKIE_SECURE=true`.
+The container listens on `$PORT` (default 8000).
 
 ### 3.3 Frontend — Vercel
 
