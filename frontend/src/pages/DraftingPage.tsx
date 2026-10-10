@@ -751,6 +751,20 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     [drawing, locked, canWrite, editor, sheetId, registry, tagScheme, lineClasses, partMap, requirementRefs, touchSheet, markSheetIndexed]
   );
 
+  /**
+   * Wait until every enqueued lists write-back has finished. Release / BoM /
+   * exports read the stored sheets: leaving an other-sheet PUT in flight lets
+   * them snapshot (or lock) before the edit lands, and a post-release PUT is
+   * refused — permanent loss of the list field edits.
+   */
+  async function flushListEditQueue(): Promise<void> {
+    for (;;) {
+      const tip = listEditQueue.current;
+      await tip;
+      if (tip === listEditQueue.current) return;
+    }
+  }
+
   /** "Re-index now": the open sheet with unsaved edits is saved; the others re-index in the background. */
   function requestReindex(sheetIds?: string[]) {
     const ids = sheetIds ?? staleSheets.map((entry) => entry.id);
@@ -803,7 +817,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     const label = drawing.current_revision?.label ?? drawing.revisions[drawing.revisions.length - 1]?.label ?? "-";
     const question = `Release ${drawing.number} rev ${label}?\n\nThe drawing locks and you are recorded as the approver. Later changes need a new revision.`;
     if (!window.confirm(question)) return;
-    // Release reads the stored index, so unsaved edits go in first.
+    // Release snapshots stored sheets: drain lists write-backs and save the open sheet first.
     if (!(await ensureSaved())) return;
     await runWorkflow(releaseDrawing, (updated) => `Released ${updated.number} rev ${updated.current_revision?.label ?? label}.`);
   }
@@ -892,8 +906,9 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     notify(summary, result.counts.error > 0);
   }
 
-  /** Exports and the BoM read the saved index, so save a dirty sheet first. */
+  /** Exports, BoM, and release read stored sheets: drain lists write-backs, then save a dirty open sheet. */
   async function ensureSaved(): Promise<boolean> {
+    await flushListEditQueue();
     if (!editor?.store.dirty) return true;
     if (!canEdit) {
       notify("Unsaved changes are not in the stored index; a writer must save the sheet first.", true);

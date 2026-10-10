@@ -110,10 +110,32 @@ function sheet(id: string, sheetNo: number, items: unknown[]): DrawingSheet {
 
 const sheets: Record<string, DrawingSheet> = { sh1: sheet("sh1", 1, [pt]), sh2: sheet("sh2", 2, [hv]) };
 
-function renderPage({ canWrite = true, notify = vi.fn() }: { canWrite?: boolean; notify?: (message: string, error?: boolean) => void } = {}) {
+const valvePart = {
+  id: "part-1",
+  part_number: "AMB2-001",
+  description: "Ball valve",
+  part_type: "valve",
+  source_type: "vendor",
+  material: "316L",
+  pressure_rating_bar: 200,
+  qualification_status: "qualified",
+  certification_status: "certified",
+  lifecycle_status: "active",
+  preferred: true
+};
+
+function renderPage({
+  canWrite = true,
+  notify = vi.fn(),
+  parts = [] as Array<typeof valvePart>
+}: {
+  canWrite?: boolean;
+  notify?: (message: string, error?: boolean) => void;
+  parts?: Array<typeof valvePart>;
+} = {}) {
   return render(
     <MemoryRouter>
-      <DraftingPage projectId="p1" projectName="AMB2" systems={[]} selectedSystemId="" customSymbols={[]} parts={[]} user={engineer} canWrite={canWrite} notify={notify} />
+      <DraftingPage projectId="p1" projectName="AMB2" systems={[]} selectedSystemId="" customSymbols={[]} parts={parts as never[]} user={engineer} canWrite={canWrite} notify={notify} />
     </MemoryRouter>
   );
 }
@@ -240,6 +262,46 @@ describe("DraftingPage release workflow", () => {
     await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(2));
     expect(apiMock.updateSheet.mock.calls[1][0]).toBe("sh1");
     await waitFor(() => expect(screen.getByText("Index up to date")).toBeInTheDocument());
+  });
+
+  it("drains an in-flight other-sheet lists write-back before release snapshots", async () => {
+    // Other-sheet list PUTs are not open-editor dirty; ensureSaved used to skip them,
+    // so Release could lock the drawing before the PUT landed and the edit was lost.
+    let resolveListPut!: (value: DrawingSheet) => void;
+    let listPutStarted = false;
+    apiMock.updateSheet.mockImplementation(async (id: string, body: { document?: unknown }) => {
+      if (id === "sh2" && body.document) {
+        listPutStarted = true;
+        return new Promise<DrawingSheet>((resolve) => {
+          resolveListPut = resolve;
+        });
+      }
+      return { ...sheets[id], document: body.document ?? sheets[id].document };
+    });
+    workflowMock.releaseDrawing.mockResolvedValue(makeDrawing({ status: "released", revisions: [revA], current_revision: revA }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderPage({ parts: [valvePart] });
+    await openCanvas();
+    fireEvent.click(screen.getByRole("button", { name: "Lists" }));
+    fireEvent.click(screen.getByRole("tab", { name: /Valves/ }));
+    const drawer = screen.getByRole("region", { name: "Engineering lists" });
+    await waitFor(() => expect(drawer.textContent).toContain("HV-3201"));
+
+    fireEvent.click(within(drawer).getByLabelText("Select row 1"));
+    fireEvent.click(within(drawer).getByRole("button", { name: "Assign part…" }));
+    const dialog = screen.getByRole("dialog", { name: "Assign part" });
+    fireEvent.click(within(dialog).getByRole("option", { name: /AMB2-001/ }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Assign part" }));
+    await waitFor(() => expect(listPutStarted).toBe(true));
+
+    const workflow = screen.getByRole("region", { name: "Release workflow" });
+    fireEvent.click(within(workflow).getByRole("button", { name: "Release…" }));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(workflowMock.releaseDrawing).not.toHaveBeenCalled();
+
+    resolveListPut({ ...sheets.sh2, document: (apiMock.updateSheet.mock.calls.find((call) => call[0] === "sh2")![1] as { document: unknown }).document });
+    await waitFor(() => expect(workflowMock.releaseDrawing).toHaveBeenCalledWith("dw1"));
   });
 
   it("keeps edits made while a save is in flight unsaved", async () => {
