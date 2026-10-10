@@ -203,8 +203,17 @@ def seed_demo(db: Session) -> None:
     diagram = Diagram(system=system, name="Pressurization P&ID", graph=build_graph_json())
     db.add_all([project, system, diagram])
 
+    # Parts are global catalog rows. Reuse any leftover AMPH-* numbers so a
+    # second boot after the demo project was deleted/renamed does not IntegrityError
+    # (and take down the API when FSDP_SEED_DEMO=true).
     parts_by_number: dict[str, Part] = {}
     for part_data in PARTS:
+        existing_part = db.scalar(
+            select(Part).where(Part.part_number == part_data["part_number"])
+        )
+        if existing_part is not None:
+            parts_by_number[existing_part.part_number] = existing_part
+            continue
         part = Part(**part_data)
         parts_by_number[part.part_number] = part
         db.add(part)
@@ -253,8 +262,10 @@ def seed_demo(db: Session) -> None:
     db.flush()
 
     for requirement_data in REQUIREMENTS:
-        trace_tag = requirement_data.pop("trace_tag")
-        requirement = Requirement(project_id=project.id, **requirement_data)
+        # Do not mutate the module-level dicts — seed must stay re-runnable.
+        trace_tag = requirement_data["trace_tag"]
+        payload = {key: value for key, value in requirement_data.items() if key != "trace_tag"}
+        requirement = Requirement(project_id=project.id, **payload)
         db.add(requirement)
         db.flush()
         db.add(
@@ -273,12 +284,16 @@ def seed_demo(db: Session) -> None:
 
 def main() -> None:
     ensure_bootstrap_admin()
-    with SessionLocal() as db:
-        existing = db.scalar(select(Project).where(Project.name == DEMO_PROJECT_NAME))
-        if existing is not None:
-            logger.info("Demo project already present; nothing to do.")
-            return
-        seed_demo(db)
+    try:
+        with SessionLocal() as db:
+            existing = db.scalar(select(Project).where(Project.name == DEMO_PROJECT_NAME))
+            if existing is not None:
+                logger.info("Demo project already present; nothing to do.")
+                return
+            seed_demo(db)
+    except Exception:
+        # Render boots with FSDP_SEED_DEMO=true; a seed failure must not block the API.
+        logger.exception("Demo seed failed; starting without demo data.")
 
 
 if __name__ == "__main__":
