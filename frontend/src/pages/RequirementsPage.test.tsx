@@ -8,6 +8,7 @@ const apiMock = vi.hoisted(() => ({
   getVerificationMatrix: vi.fn(),
   listProjectSheetItems: vi.fn(),
   listTraceLinks: vi.fn(),
+  createTraceLink: vi.fn(),
   updateRequirement: vi.fn(),
   createRequirement: vi.fn(),
   deleteRequirement: vi.fn()
@@ -107,12 +108,23 @@ const matrix: VerificationMatrix = {
 };
 
 function renderPage() {
-  render(
+  return render(
     <MemoryRouter>
       <RequirementsPage />
     </MemoryRouter>
   );
 }
+
+const dryRunReport = {
+  entity: "requirement",
+  mode: "create_only" as const,
+  dry_run: true,
+  committed: false,
+  mapping: { key: "key", title: "title" },
+  warnings: [] as string[],
+  rows: [{ row: 1, action: "create" as const, key: "REQ-3", id: null, errors: [], changes: { key: [null, "REQ-3"] } }],
+  summary: { create: 1, update: 0, unchanged: 0, error: 0 }
+};
 
 function requirementsGrid() {
   return screen.getByRole("grid", { name: "Requirements" });
@@ -128,6 +140,8 @@ function cellIn(gridElement: HTMLElement, rowText: string, columnIndex: number):
 beforeEach(() => {
   workspace.requirements = requirements;
   workspace.canWrite = true;
+  workspace.selectedProjectId = "p1";
+  workspace.selectedProject = { id: "p1", name: "Vehicle" };
   workspace.selectedRequirementId = "";
   workspace.runAction.mockImplementation(async (_message: string, action: () => Promise<void>) => {
     await action();
@@ -235,16 +249,7 @@ describe("RequirementsPage grid", () => {
   });
 
   it("imports pasted rows past the end through the wizard", async () => {
-    bulk.importRequirements.mockResolvedValue({
-      entity: "requirement",
-      mode: "create_only",
-      dry_run: true,
-      committed: false,
-      mapping: { key: "key", title: "title" },
-      warnings: [],
-      rows: [{ row: 1, action: "create", key: "REQ-3", id: null, errors: [], changes: { key: [null, "REQ-3"] } }],
-      summary: { create: 1, update: 0, unchanged: 0, error: 0 }
-    });
+    bulk.importRequirements.mockResolvedValue(dryRunReport);
     renderPage();
     const grid = requirementsGrid();
 
@@ -260,6 +265,51 @@ describe("RequirementsPage grid", () => {
       )
     );
     expect(await within(dialog).findByText("1 create")).toBeInTheDocument();
+  });
+
+  it("commits the import into the project that opened the wizard", async () => {
+    bulk.importRequirements
+      .mockResolvedValueOnce(dryRunReport)
+      .mockResolvedValueOnce({ ...dryRunReport, dry_run: false, committed: true });
+    renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+    const dialog = await screen.findByRole("dialog", { name: "Import requirements" });
+    fireEvent.click(within(dialog).getByLabelText("Paste from Excel"));
+    fireEvent.change(within(dialog).getByLabelText("Pasted rows"), {
+      target: { value: "key\ttitle\nREQ-3\tLeak rate\n" }
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Check (dry run)" }));
+    expect(await within(dialog).findByText("1 create")).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Import 1 row" }));
+    await waitFor(() =>
+      expect(bulk.importRequirements).toHaveBeenLastCalledWith(
+        "p1",
+        { headers: ["key", "title"], rows: [["REQ-3", "Leak rate"]] },
+        { dryRun: false, mode: "create_only" }
+      )
+    );
+    expect(workspace.refreshRequirements).toHaveBeenCalledWith("p1");
+  });
+
+  it("closes the import wizard when the workspace project changes", async () => {
+    bulk.importRequirements.mockResolvedValue(dryRunReport);
+    const view = renderPage();
+
+    fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+    expect(await screen.findByRole("dialog", { name: "Import requirements" })).toBeInTheDocument();
+
+    workspace.selectedProjectId = "p2";
+    workspace.selectedProject = { id: "p2", name: "Other vehicle" };
+    view.rerender(
+      <MemoryRouter>
+        <RequirementsPage />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByRole("dialog", { name: "Import requirements" })).not.toBeInTheDocument();
+    expect(bulk.importRequirements).not.toHaveBeenCalledWith("p2", expect.anything(), expect.anything());
   });
 
   it("is read-only for viewers", async () => {
@@ -284,6 +334,22 @@ describe("RequirementsPage editor", () => {
     await waitFor(() =>
       expect(apiMock.updateRequirement).toHaveBeenCalledWith("r1", expect.objectContaining({ key: "REQ-1", status: "verified" }))
     );
+  });
+
+  it("does not link a drawing that is not in the current project list", async () => {
+    workspace.selectedRequirementId = "r1";
+    // Stale id from a previous project; current drawings list is empty after switch.
+    apiMock.listDrawings.mockResolvedValue([]);
+    renderPage();
+
+    const link = screen.getByRole("button", { name: "Link requirement to whole drawing" });
+    // Force the select value the way a blank <select> can retain an orphaned id.
+    const drawingSelect = screen.getByLabelText("Drawing");
+    Object.defineProperty(drawingSelect, "value", { configurable: true, get: () => "drawing-from-other-project" });
+    fireEvent.change(drawingSelect, { target: { value: "drawing-from-other-project" } });
+    fireEvent.click(link);
+
+    expect(apiMock.createTraceLink).not.toHaveBeenCalled();
   });
 });
 

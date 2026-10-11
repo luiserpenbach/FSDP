@@ -256,7 +256,7 @@ export function RequirementsPage() {
   const [checkedIds, setCheckedIds] = useState<string[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [bulkOwner, setBulkOwner] = useState("");
-  const [importer, setImporter] = useState<{ key: number; rows?: ImportSourceRows } | null>(null);
+  const [importer, setImporter] = useState<{ key: number; projectId: string; rows?: ImportSourceRows } | null>(null);
   const [constraintForm, setConstraintForm] = useState<ConstraintForm>({ kind: "", values: "", services: "", categories: "" });
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [selectedDrawingId, setSelectedDrawingId] = useState("");
@@ -277,6 +277,16 @@ export function RequirementsPage() {
     selectedProjectIdRef.current = selectedProjectId;
     selectedRequirementIdRef.current = selectedRequirementId;
   }, [selectedProjectId, selectedRequirementId]);
+
+  // Import dry-runs and drawing/item picks are project-scoped. A live workspace
+  // switch must not leave a Check report (or drawing id) from project A while
+  // commit/link handlers read the newly selected project B.
+  useEffect(() => {
+    setImporter(null);
+    setSelectedDrawingId("");
+    setSelectedItemId("");
+    setItemFilter("");
+  }, [selectedProjectId]);
 
   const selectedRequirement = requirements.find((requirement) => requirement.id === selectedRequirementId) ?? null;
   const itemsById = useMemo(() => new Map(sheetItems.map((item) => [item.id, item])), [sheetItems]);
@@ -466,9 +476,13 @@ export function RequirementsPage() {
 
   function linkRequirementToDrawing() {
     if (!selectedRequirement || !selectedDrawingId) return;
+    // Reject a stale drawing id left over from a previous project (select value
+    // can survive a blank option list until the project-change effect clears it).
+    if (!drawings.some((drawing) => drawing.id === selectedDrawingId)) return;
     const requirementId = selectedRequirement.id;
+    const drawingId = selectedDrawingId;
     void runAction("Linked requirement to drawing.", async () => {
-      await api.createTraceLink({ source_type: "requirement", source_id: requirementId, target_type: "drawing", target_id: selectedDrawingId, link_type: "verified_by" });
+      await api.createTraceLink({ source_type: "requirement", source_id: requirementId, target_type: "drawing", target_id: drawingId, link_type: "verified_by" });
       await reloadTraceLinks(requirementId);
       await refreshVerification(selectedRequirement.project_id);
     }, "traceLink");
@@ -548,8 +562,15 @@ export function RequirementsPage() {
   }
 
   function openImport(rowsToImport?: ImportSourceRows) {
+    if (!selectedProjectId) return;
     setNotice(null);
-    setImporter((current) => ({ key: (current?.key ?? 0) + 1, rows: rowsToImport }));
+    // Bind the wizard to the project that opened it so Check/Import cannot
+    // follow a later workspace switch (shell project picker stays usable).
+    setImporter((current) => ({
+      key: (current?.key ?? 0) + 1,
+      projectId: selectedProjectId,
+      rows: rowsToImport
+    }));
   }
 
   function exportXlsx<T>(title: string, fileName: string, exportRows: T[], visible: DataGridColumn<T>[]) {
@@ -667,10 +688,10 @@ export function RequirementsPage() {
             selectedIds={checkedIds}
             storageKey="requirements.list"
           />
-          {importer && selectedProject && (
+          {importer && selectedProject && importer.projectId === selectedProject.id && (
             <ImportWizard
               canWrite={canWrite}
-              downloadTemplate={(format) => downloadRequirementsImportTemplate(selectedProject.id, format)}
+              downloadTemplate={(format) => downloadRequirementsImportTemplate(importer.projectId, format)}
               entityLabel="requirements"
               fieldLabels={IMPORT_FIELD_LABELS}
               initialRows={importer.rows}
@@ -678,12 +699,12 @@ export function RequirementsPage() {
               keyLabel="key"
               onClose={() => setImporter(null)}
               onImported={async (report) => {
-                await refreshRequirements(selectedProject.id);
+                await refreshRequirements(importer.projectId);
                 setNotice({
                   text: `Imported requirements: ${report.summary.create} created, ${report.summary.update} updated, ${report.summary.unchanged} unchanged.`
                 });
               }}
-              runImport={(source, options) => importRequirements(selectedProject.id, source, options)}
+              runImport={(source, options) => importRequirements(importer.projectId, source, options)}
             />
           )}
         </Panel>
