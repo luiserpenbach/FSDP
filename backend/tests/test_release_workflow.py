@@ -2,12 +2,14 @@
 
 import csv
 import io
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.main import app
-from app.services.release import next_revision_label
+from app.models import DrcResult
+from app.services.release import next_revision_label, release_blockers
 from tests.legacy import add_legacy_diagram
 
 CONSTRAINT = {"kind": "material_in", "values": ["316L"]}
@@ -224,6 +226,49 @@ def test_release_refused_for_stale_index_and_open_drc_errors(client: TestClient)
     released = client.post(f"/drawings/{drawing_id}/release")
     assert released.status_code == 200, released.text
     assert client.get(f"/drawings/{drawing_id}").json()["status"] == "released"
+
+
+def test_release_rechecks_blockers_before_snapshot(client: TestClient) -> None:
+    """Refuse release when open DRC errors appear after the first gate check.
+
+    Simulates the release∩sheet-save TOCTOU: a concurrent writer commits open
+    errors after `release_blockers` first returns []. Without the pre-snapshot
+    re-check, release would 200 and freeze those errors into the immutable
+    revision baseline. Postgres row locks close the real race; this covers the
+    second gate on SQLite where `FOR UPDATE` is a no-op.
+    """
+    drawing = _drawing(client, _project(client), "hv")
+    drawing_id = drawing["id"]
+    sheet_id = drawing["sheets"][0]["id"]
+    _save(client, sheet_id)
+
+    calls = {"n": 0}
+
+    def flaky_blockers(db: Session, locked_drawing):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            db.add(
+                DrcResult(
+                    sheet_id=sheet_id,
+                    key="duplicate_tag:hv",
+                    rule="duplicate_tag",
+                    severity="error",
+                    message="Duplicate HV",
+                )
+            )
+            db.flush()
+            return []
+        return release_blockers(db, locked_drawing)
+
+    with patch("app.api.drawing_routes.release_blockers", side_effect=flaky_blockers):
+        refused = client.post(f"/drawings/{drawing_id}/release")
+
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert "cannot be released" in detail["message"]
+    assert any(reason["code"] == "drc_errors" for reason in detail["reasons"])
+    assert calls["n"] >= 2
+    assert client.get(f"/drawings/{drawing_id}").json()["status"] != "released"
 
 
 def test_released_drawing_is_locked_but_readable(client: TestClient) -> None:

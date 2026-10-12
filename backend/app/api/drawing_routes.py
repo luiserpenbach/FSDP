@@ -117,6 +117,23 @@ def _load_drawing(db: Session, drawing_id: str) -> Drawing:
     return drawing
 
 
+def _lock_drawing_for_update(db: Session, drawing_id: str) -> Drawing:
+    """Load a drawing with `SELECT … FOR UPDATE` so release and sheet writers serialize.
+
+    Postgres row locks close the release∩save TOCTOU under READ COMMITTED. SQLite
+    accepts `FOR UPDATE` but does not enforce row locks in the test suite.
+    """
+    drawing = db.scalar(
+        select(Drawing)
+        .where(Drawing.id == drawing_id)
+        .with_for_update()
+        .options(*DRAWING_LOAD_OPTIONS)
+    )
+    if drawing is None:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    return drawing
+
+
 def _ensure_editable(drawing: Drawing) -> None:
     """Released drawings are locked: changes go into a new revision (POST .../revise)."""
     if drawing.status == "released":
@@ -127,7 +144,9 @@ def _ensure_editable(drawing: Drawing) -> None:
 
 
 def _editable_sheet_drawing(db: Session, sheet: DrawingSheet) -> Drawing:
-    drawing = require_model(db, Drawing, sheet.drawing_id)
+    # Lock the parent drawing before mutating sheet/DRC/waiver state so a concurrent
+    # POST .../release cannot pass release_blockers and then snapshot a later write.
+    drawing = _lock_drawing_for_update(db, sheet.drawing_id)
     _ensure_editable(drawing)
     return drawing
 
@@ -560,6 +579,16 @@ def withdraw_drawing(
     return _load_drawing(db, drawing.id)
 
 
+def _refuse_release(drawing: Drawing, reasons: list[dict]) -> None:
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "message": f"Drawing {drawing.number} cannot be released yet.",
+            "reasons": reasons,
+        },
+    )
+
+
 @drawing_router.post("/drawings/{drawing_id}/release", response_model=DrawingRead)
 def release_drawing(
     drawing_id: str,
@@ -571,8 +600,22 @@ def release_drawing(
     Refused with 409 while any sheet's index/DRC is stale or has open DRC errors;
     `detail.reasons` lists each blocker. Stamps the approver from the session and
     stores an immutable snapshot of every sheet on the revision.
+
+    Locks the drawing and its sheets before the gate so a concurrent sheet save
+    cannot slip open DRC errors (or a stale index) into the immutable snapshot
+    after `release_blockers` has already returned empty.
     """
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
+    # Sheet row locks serialize writers that touch index_stale / document columns;
+    # combined with `_editable_sheet_drawing`'s drawing lock, waiver and DRC
+    # replacements wait until this transaction commits.
+    db.scalars(
+        select(DrawingSheet)
+        .where(DrawingSheet.drawing_id == drawing.id)
+        .with_for_update()
+    ).all()
+    db.expire(drawing, ["sheets"])
+
     if drawing.status == "released":
         raise HTTPException(
             status_code=409,
@@ -580,15 +623,17 @@ def release_drawing(
         )
     reasons = release_blockers(db, drawing)
     if reasons:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": f"Drawing {drawing.number} cannot be released yet.",
-                "reasons": reasons,
-            },
-        )
+        _refuse_release(drawing, reasons)
+
     revision = _current_revision(db, drawing)
     released_at = _now()
+    # Re-check immediately before freezing the baseline. Under Postgres the row
+    # locks already exclude concurrent writers; this second gate also catches
+    # same-session / non-locking writers that mutated DRC after the first check.
+    reasons = release_blockers(db, drawing)
+    if reasons:
+        _refuse_release(drawing, reasons)
+
     drawing.status = "released"
     revision.status = "released"
     revision.approved_by = user.email
