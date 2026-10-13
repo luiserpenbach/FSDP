@@ -117,6 +117,24 @@ def _load_drawing(db: Session, drawing_id: str) -> Drawing:
     return drawing
 
 
+def _lock_drawing_for_update(db: Session, drawing_id: str) -> Drawing:
+    """Load a drawing with `SELECT … FOR UPDATE` so workflow and editors serialize.
+
+    Postgres row locks close release∩withdraw / release∩create_sheet races under
+    READ COMMITTED. SQLite accepts `FOR UPDATE` but does not enforce row locks
+    in the test suite — callers still re-check status after this load.
+    """
+    drawing = db.scalar(
+        select(Drawing)
+        .where(Drawing.id == drawing_id)
+        .with_for_update()
+        .options(*DRAWING_LOAD_OPTIONS)
+    )
+    if drawing is None:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    return drawing
+
+
 def _ensure_editable(drawing: Drawing) -> None:
     """Released drawings are locked: changes go into a new revision (POST .../revise)."""
     if drawing.status == "released":
@@ -127,7 +145,9 @@ def _ensure_editable(drawing: Drawing) -> None:
 
 
 def _editable_sheet_drawing(db: Session, sheet: DrawingSheet) -> Drawing:
-    drawing = require_model(db, Drawing, sheet.drawing_id)
+    # Lock before the released check so a concurrent POST .../release cannot
+    # finish and then lose its lock when this writer still mutates the sheet.
+    drawing = _lock_drawing_for_update(db, sheet.drawing_id)
     _ensure_editable(drawing)
     return drawing
 
@@ -259,7 +279,7 @@ def update_drawing(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> Drawing:
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
     _ensure_editable(drawing)
     data = payload.model_dump(exclude_unset=True)
     status = data.pop("status", None)
@@ -302,7 +322,7 @@ def delete_drawing(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> Response:
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
     _ensure_editable(drawing)
     delete_trace_links_for_many(db, drawing_trace_endpoints(db, [drawing.id]))
     record_change(
@@ -322,7 +342,7 @@ def create_sheet(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> DrawingSheet:
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
     _ensure_editable(drawing)
     document, source_diagram_id = _sheet_source_document(db, payload, drawing.size)
     sheet_no = max((sheet.sheet_no for sheet in drawing.sheets), default=0) + 1
@@ -399,7 +419,7 @@ def delete_sheet(
     user: User = Depends(require_writer),
 ) -> Response:
     sheet = require_model(db, DrawingSheet, sheet_id)
-    drawing = _load_drawing(db, sheet.drawing_id)
+    drawing = _lock_drawing_for_update(db, sheet.drawing_id)
     _ensure_editable(drawing)
     if len(drawing.sheets) <= 1:
         raise HTTPException(status_code=409, detail="A drawing must keep at least one sheet")
@@ -436,7 +456,7 @@ def create_revision(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> DrawingRevision:
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
     _ensure_editable(drawing)
     sequence = max((rev.sequence for rev in drawing.revisions), default=0) + 1
     revision = DrawingRevision(
@@ -466,7 +486,7 @@ def update_revision(
     user: User = Depends(require_writer),
 ) -> DrawingRevision:
     revision = require_model(db, DrawingRevision, revision_id)
-    drawing = require_model(db, Drawing, revision.drawing_id)
+    drawing = _lock_drawing_for_update(db, revision.drawing_id)
     _ensure_editable(drawing)
     if revision.status == "released":
         raise HTTPException(
@@ -515,7 +535,9 @@ def submit_drawing(
     user: User = Depends(require_writer),
 ) -> Drawing:
     """Submit the current revision for review (draft -> in_review)."""
-    drawing = _load_drawing(db, drawing_id)
+    # Lock before the status gate so a concurrent release cannot finish and then
+    # be overwritten back to in_review (leaving a snapshot on an unlocked drawing).
+    drawing = _lock_drawing_for_update(db, drawing_id)
     if drawing.status != "draft":
         raise _workflow_conflict(drawing, "submitting for review", "draft")
     revision = _current_revision(db, drawing)
@@ -542,7 +564,9 @@ def withdraw_drawing(
     user: User = Depends(require_writer),
 ) -> Drawing:
     """Return a drawing under review to draft (in_review -> draft)."""
-    drawing = _load_drawing(db, drawing_id)
+    # Lock before the status gate so a concurrent release cannot finish and then
+    # be unlocked by this writer overwriting status back to draft.
+    drawing = _lock_drawing_for_update(db, drawing_id)
     if drawing.status != "in_review":
         raise _workflow_conflict(drawing, "withdrawing from review", "in_review")
     revision = _current_revision(db, drawing)
@@ -571,8 +595,11 @@ def release_drawing(
     Refused with 409 while any sheet's index/DRC is stale or has open DRC errors;
     `detail.reasons` lists each blocker. Stamps the approver from the session and
     stores an immutable snapshot of every sheet on the revision.
+
+    Locks the drawing before the status gate so a concurrent withdraw/submit
+    cannot overwrite `released` back to draft/in_review after this commits.
     """
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
     if drawing.status == "released":
         raise HTTPException(
             status_code=409,
@@ -615,7 +642,7 @@ def revise_drawing(
     user: User = Depends(require_writer),
 ) -> Drawing:
     """Open the next revision of a released drawing (released -> draft)."""
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
     if drawing.status != "released":
         raise _workflow_conflict(drawing, "starting a new revision", "released")
     previous = drawing.current_revision
