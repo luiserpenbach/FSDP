@@ -2,8 +2,10 @@
 
 import csv
 import io
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.main import app
@@ -182,6 +184,8 @@ def test_submit_withdraw_and_release_from_review(client: TestClient) -> None:
     assert body["revisions"][-1] == revision
     assert client.post(f"/drawings/{drawing_id}/release").status_code == 409
     assert client.post(f"/drawings/{drawing_id}/submit").status_code == 409
+    assert client.post(f"/drawings/{drawing_id}/withdraw").status_code == 409
+    assert client.get(f"/drawings/{drawing_id}").json()["status"] == "released"
 
     actions = {
         (change["action"], change["actor"])
@@ -190,6 +194,114 @@ def test_submit_withdraw_and_release_from_review(client: TestClient) -> None:
     }
     assert {("submitted", "engineer@fsdp.test"), ("withdrawn", "engineer@fsdp.test")} <= actions
     assert ("released", "engineer@fsdp.test") in actions
+
+
+def _peer_release(session_factory: sessionmaker[Session], drawing_id: str) -> None:
+    """Commit a release on a separate session (survives the request txn rollback)."""
+    from app.models import Drawing, DrawingRevision
+
+    with session_factory() as peer:
+        drawing = peer.get(Drawing, drawing_id)
+        assert drawing is not None
+        drawing.status = "released"
+        revision = peer.scalar(
+            select(DrawingRevision)
+            .where(DrawingRevision.drawing_id == drawing_id)
+            .order_by(DrawingRevision.sequence.desc())
+        )
+        assert revision is not None
+        revision.status = "released"
+        revision.snapshot = {"drawing_id": drawing_id, "sheets": []}
+        peer.commit()
+
+
+def _revision_snapshot(
+    session_factory: sessionmaker[Session], drawing_id: str
+) -> dict | None:
+    from app.models import DrawingRevision
+
+    with session_factory() as db:
+        revision = db.scalar(
+            select(DrawingRevision)
+            .where(DrawingRevision.drawing_id == drawing_id)
+            .order_by(DrawingRevision.sequence.desc())
+        )
+        assert revision is not None
+        return revision.snapshot
+
+
+def test_withdraw_refuses_when_lock_sees_released(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Do not unlock a drawing that a concurrent release already committed.
+
+    Simulates release∩withdraw under READ COMMITTED: withdraw's unlocked read
+    saw `in_review`, but by the time it acquires the row lock the peer release
+    has committed. Without re-checking under `FOR UPDATE`, withdraw would set
+    status back to `draft` while leaving the immutable snapshot in place —
+    `_ensure_editable` would then allow sheet edits on a "released" baseline.
+    """
+    from app.api import drawing_routes
+
+    drawing = _drawing(client, _project(client), "hv")
+    drawing_id = drawing["id"]
+    _save(client, drawing["sheets"][0]["id"])
+    assert client.post(f"/drawings/{drawing_id}/submit").status_code == 200
+
+    real_lock = drawing_routes._lock_drawing_for_update
+
+    def lock_after_peer_release(db: Session, locked_id: str):
+        _peer_release(session_factory, locked_id)
+        db.expire_all()
+        locked = real_lock(db, locked_id)
+        assert locked.status == "released"
+        return locked
+
+    with patch.object(
+        drawing_routes, "_lock_drawing_for_update", side_effect=lock_after_peer_release
+    ):
+        refused = client.post(f"/drawings/{drawing_id}/withdraw")
+
+    assert refused.status_code == 409, refused.text
+    assert "withdrawing from review" in refused.json()["detail"]
+    body = client.get(f"/drawings/{drawing_id}").json()
+    assert body["status"] == "released"
+    assert body["current_revision"]["status"] == "released"
+    assert _revision_snapshot(session_factory, drawing_id) == {
+        "drawing_id": drawing_id,
+        "sheets": [],
+    }
+    # Still locked for editors.
+    assert client.put(f"/drawings/{drawing_id}", json={"title": "Nope"}).status_code == 409
+
+
+def test_create_sheet_refuses_when_lock_sees_released(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Do not add a sheet that would sit outside a concurrent release snapshot."""
+    from app.api import drawing_routes
+
+    drawing = _drawing(client, _project(client), "hv")
+    drawing_id = drawing["id"]
+    _save(client, drawing["sheets"][0]["id"])
+
+    real_lock = drawing_routes._lock_drawing_for_update
+
+    def lock_after_peer_release(db: Session, locked_id: str):
+        _peer_release(session_factory, locked_id)
+        db.expire_all()
+        locked = real_lock(db, locked_id)
+        assert locked.status == "released"
+        return locked
+
+    with patch.object(
+        drawing_routes, "_lock_drawing_for_update", side_effect=lock_after_peer_release
+    ):
+        refused = client.post(f"/drawings/{drawing_id}/sheets", json={})
+
+    assert refused.status_code == 409, refused.text
+    assert "is released" in refused.json()["detail"]
+    assert len(client.get(f"/drawings/{drawing_id}").json()["sheets"]) == 1
 
 
 def test_release_refused_for_stale_index_and_open_drc_errors(client: TestClient) -> None:
