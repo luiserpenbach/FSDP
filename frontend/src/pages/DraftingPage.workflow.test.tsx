@@ -260,6 +260,39 @@ describe("DraftingPage release workflow", () => {
     expect(sent).toBe(102.5);
   });
 
+  it("queues a second save so an older in-flight PUT cannot overwrite newer edits", async () => {
+    const resolvers: Array<(value: DrawingSheet) => void> = [];
+    apiMock.updateSheet.mockImplementation(
+      () =>
+        new Promise<DrawingSheet>((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+    renderPage();
+    const canvas = await openCanvas();
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    fireEvent.click(await screen.findByRole("button", { name: "Save" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+    const firstX = (apiMock.updateSheet.mock.calls[0][1] as { document: { items: Array<{ position: { x: number } }> } }).document
+      .items[0].position.x;
+    // Mid-save edit, then Save again while the first PUT is still open.
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    // Without serialization the second PUT would start immediately with the newer doc;
+    // an older completion could still win last-write-wins. The queue waits.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(apiMock.updateSheet).toHaveBeenCalledTimes(1);
+    resolvers[0](sheets.sh1);
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(2));
+    const secondX = (apiMock.updateSheet.mock.calls[1][1] as { document: { items: Array<{ position: { x: number } }> } }).document
+      .items[0].position.x;
+    expect(secondX).toBeGreaterThan(firstX);
+    resolvers[1](sheets.sh1);
+    await waitFor(() => expect(screen.getByText("Saved", { selector: ".draftingStatus span" })).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+  });
+
   it("locks a released drawing: read-only canvas and inspector, banner, and a new revision unlocks it", async () => {
     apiMock.listDrawings.mockResolvedValue([releasedDrawing()]);
     workflowMock.reviseDrawing.mockResolvedValue(makeDrawing({ status: "draft" }));

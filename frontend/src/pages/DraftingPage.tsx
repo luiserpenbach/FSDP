@@ -369,6 +369,14 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   const touchSheet = useCallback((id: string) => {
     sheetTouches.current.set(id, (sheetTouches.current.get(id) ?? 0) + 1);
   }, []);
+  /**
+   * Serializes sheet saves. The API PUT is last-write-wins with no OCC: overlapping
+   * saves that each capture `doc` before `await` can let an older in-flight PUT
+   * overwrite a newer successful save (and clear dirty in the gap so navigate
+   * skips discard). Each run captures the document only after the previous PUT finishes.
+   */
+  const saveChainRef = useRef(Promise.resolve());
+
 
   /** Record that the server holds a fresh index for a sheet (after a save or a re-index). */
   const markSheetIndexed = useCallback((targetDrawingId: string, targetSheetId: string, drcErrors?: number) => {
@@ -609,40 +617,51 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     [drawing, sheetSummary, projectName, systemName]
   );
 
-  const save = useCallback(async (): Promise<boolean> => {
-    // `editor` is only set while it holds `sheetId`'s document (see `session`).
-    if (!editor || !sheetId || !drawing || !canEdit) return false;
-    try {
-      const sheetNo = sheetSummary?.sheet_no ?? 1;
-      // Capture the document and its version together: edits made while the
-      // request is in flight are not in this save and must stay dirty.
-      const version = editor.store.version;
-      const doc = editor.store.doc;
-      // The index rows and the DRC (open and waived findings, requirement checks) travel with the
-      // document so lists, BoM, where-used, and release read the saved state.
-      const { index, drc, payload } = deriveSheetData({
-        doc,
-        sheetId,
-        sheetNo,
-        otherSheets,
-        registry,
-        connectivity: editor.connectivity,
-        tagScheme,
-        parts: partMap,
-        requirements: requirementRefs,
-        waivers
-      });
-      touchSheet(sheetId);
-      await api.updateSheet(sheetId, { document: doc, ...payload });
-      editor.store.markSaved(version);
-      markSheetIndexed(drawing.id, sheetId, drc.counts.error);
-      const drcSummary = drc.counts.error || drc.counts.warning ? `; DRC: ${drc.counts.error} error(s), ${drc.counts.warning} warning(s)` : "; DRC clean";
-      notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed${drcSummary}).`);
-      return true;
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "Save failed.", true);
-      return false;
-    }
+  const save = useCallback((): Promise<boolean> => {
+    const run = async (): Promise<boolean> => {
+      // `editor` is only set while it holds `sheetId`'s document (see `session`).
+      // Re-check after waiting on the chain: a prior save may have cleared dirty,
+      // or the session may have moved on.
+      if (!editor || !sheetId || !drawing || !canEdit) return false;
+      if (!editor.store.dirty) return true;
+      try {
+        const sheetNo = sheetSummary?.sheet_no ?? 1;
+        // Capture the document and its version together: edits made while the
+        // request is in flight are not in this save and must stay dirty.
+        const version = editor.store.version;
+        const doc = editor.store.doc;
+        // The index rows and the DRC (open and waived findings, requirement checks) travel with the
+        // document so lists, BoM, where-used, and release read the saved state.
+        const { index, drc, payload } = deriveSheetData({
+          doc,
+          sheetId,
+          sheetNo,
+          otherSheets,
+          registry,
+          connectivity: editor.connectivity,
+          tagScheme,
+          parts: partMap,
+          requirements: requirementRefs,
+          waivers
+        });
+        touchSheet(sheetId);
+        await api.updateSheet(sheetId, { document: doc, ...payload });
+        editor.store.markSaved(version);
+        markSheetIndexed(drawing.id, sheetId, drc.counts.error);
+        const drcSummary = drc.counts.error || drc.counts.warning ? `; DRC: ${drc.counts.error} error(s), ${drc.counts.warning} warning(s)` : "; DRC clean";
+        notify(`Saved ${drawing.number} sheet ${sheetNo} (${index.items.length} items, ${index.lines.length} lines indexed${drcSummary}).`);
+        return true;
+      } catch (error) {
+        notify(error instanceof Error ? error.message : "Save failed.", true);
+        return false;
+      }
+    };
+    const queued = saveChainRef.current.then(run, run);
+    saveChainRef.current = queued.then(
+      () => undefined,
+      () => undefined
+    );
+    return queued;
   }, [editor, sheetId, drawing, canEdit, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify, touchSheet, markSheetIndexed]);
 
   // Inputs of the background re-index, read when each sheet's turn comes.
