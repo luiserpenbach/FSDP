@@ -2,7 +2,7 @@
  * Project tag scheme editor (Settings page): simple `HV-12` or structured
  * `PT 3222` tags with system and class digit tables and function letters.
  */
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../api";
 import { FormError, Panel } from "../components/ui";
 import { DEFAULT_TAG_SCHEME, REFERENCE_TAG_SCHEME, normalizeScheme, type TagScheme } from "../engine/tags";
@@ -32,6 +32,15 @@ export function TagSchemePanel({ project, canWrite }: { project: Project | null;
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  // The project whose scheme is currently shown. Save is refused until this
+  // matches the live selection so a workspace switch cannot PUT project A's
+  // form into project B (same class as Requirements ImportWizard #54).
+  const [readyProjectId, setReadyProjectId] = useState<string | null>(null);
+  const projectId = project?.id ?? "";
+  const projectRef = useRef(projectId);
+  useEffect(() => {
+    projectRef.current = projectId;
+  }, [projectId]);
 
   function load(next: TagScheme) {
     setScheme(next);
@@ -41,18 +50,34 @@ export function TagSchemePanel({ project, canWrite }: { project: Project | null;
   }
 
   useEffect(() => {
-    if (!project) return;
     setStatus("");
     setError("");
+    setReadyProjectId(null);
+    // Drop the previous project's fields immediately so the title for B cannot
+    // still show A's scheme while getTagScheme(B) is in flight.
+    load(DEFAULT_TAG_SCHEME);
+    if (!projectId) return;
+    let cancelled = false;
     void api
-      .getTagScheme(project.id)
-      .then((read) => load(normalizeScheme(read.scheme)))
-      .catch((caught) => setError(caught instanceof Error ? caught.message : "Could not load the tag scheme."));
-  }, [project]);
+      .getTagScheme(projectId)
+      .then((read) => {
+        if (cancelled || projectRef.current !== projectId) return;
+        load(normalizeScheme(read.scheme));
+        setReadyProjectId(projectId);
+      })
+      .catch((caught) => {
+        if (cancelled || projectRef.current !== projectId) return;
+        setError(caught instanceof Error ? caught.message : "Could not load the tag scheme.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!project) return;
+    if (!projectId || readyProjectId !== projectId) return;
+    const targetId = projectId;
     setBusy(true);
     setError("");
     try {
@@ -62,13 +87,16 @@ export function TagSchemePanel({ project, canWrite }: { project: Project | null;
         classes: linesToPairs(classesText).map(([digit, name]) => ({ digit, name })),
         functionLetters: linesToPairs(lettersText).map(([letters, description]) => ({ letters: letters.toUpperCase(), description }))
       };
-      const saved = await api.updateTagScheme(project.id, next);
+      const saved = await api.updateTagScheme(targetId, next);
+      if (projectRef.current !== targetId) return;
       load(normalizeScheme(saved.scheme));
+      setReadyProjectId(targetId);
       setStatus("Tag scheme saved.");
     } catch (caught) {
+      if (projectRef.current !== targetId) return;
       setError(caught instanceof Error ? caught.message : "Could not save the tag scheme.");
     } finally {
-      setBusy(false);
+      if (projectRef.current === targetId) setBusy(false);
     }
   }
 
@@ -80,6 +108,7 @@ export function TagSchemePanel({ project, canWrite }: { project: Project | null;
     );
   }
 
+  const ready = readyProjectId === projectId;
   const example = scheme.kind === "structured" ? `PT${scheme.separator}${scheme.systems[0]?.digit ?? "3"}${scheme.classes[0]?.digit ?? "2"}${"1".padStart(scheme.sequenceLength, "0")}` : `HV${scheme.separator}${"1".padStart(scheme.sequenceLength, "0")}`;
 
   return (
@@ -87,7 +116,7 @@ export function TagSchemePanel({ project, canWrite }: { project: Project | null;
       <form onSubmit={(event) => void submit(event)}>
         <label>
           Structure
-          <select value={scheme.kind} onChange={(event) => setScheme({ ...scheme, kind: event.target.value as TagScheme["kind"] })} disabled={!canWrite}>
+          <select value={scheme.kind} onChange={(event) => setScheme({ ...scheme, kind: event.target.value as TagScheme["kind"] })} disabled={!canWrite || !ready}>
             <option value="simple">Simple: letters + sequence (HV-12)</option>
             <option value="structured">Structured: letters + system digit + class digit + sequence (PT 3222)</option>
           </select>
@@ -95,7 +124,7 @@ export function TagSchemePanel({ project, canWrite }: { project: Project | null;
         <div className="fieldRow">
           <label>
             Separator
-            <select value={scheme.separator} onChange={(event) => setScheme({ ...scheme, separator: event.target.value })} disabled={!canWrite}>
+            <select value={scheme.separator} onChange={(event) => setScheme({ ...scheme, separator: event.target.value })} disabled={!canWrite || !ready}>
               <option value="-">Hyphen (HV-12)</option>
               <option value=" ">Space (HV 12)</option>
               <option value="">None (HV12)</option>
@@ -103,41 +132,41 @@ export function TagSchemePanel({ project, canWrite }: { project: Project | null;
           </label>
           <label>
             Sequence digits
-            <input type="number" min={1} max={6} value={scheme.sequenceLength} onChange={(event) => setScheme({ ...scheme, sequenceLength: Math.max(1, Math.min(6, Number(event.target.value) || 1)) })} disabled={!canWrite} />
+            <input type="number" min={1} max={6} value={scheme.sequenceLength} onChange={(event) => setScheme({ ...scheme, sequenceLength: Math.max(1, Math.min(6, Number(event.target.value) || 1)) })} disabled={!canWrite || !ready} />
           </label>
         </div>
         <label className="checkRow">
-          <input type="checkbox" checked={scheme.strictLetters} onChange={(event) => setScheme({ ...scheme, strictLetters: event.target.checked })} disabled={!canWrite} />
+          <input type="checkbox" checked={scheme.strictLetters} onChange={(event) => setScheme({ ...scheme, strictLetters: event.target.checked })} disabled={!canWrite || !ready} />
           <span>Only allow function letters from the table below</span>
         </label>
         {scheme.kind === "structured" && (
           <div className="fieldRow">
             <label>
               System digits (digit=name per line)
-              <textarea value={systemsText} onChange={(event) => setSystemsText(event.target.value)} rows={4} disabled={!canWrite} />
+              <textarea value={systemsText} onChange={(event) => setSystemsText(event.target.value)} rows={4} disabled={!canWrite || !ready} />
             </label>
             <label>
               Class digits (digit=name per line)
-              <textarea value={classesText} onChange={(event) => setClassesText(event.target.value)} rows={4} disabled={!canWrite} />
+              <textarea value={classesText} onChange={(event) => setClassesText(event.target.value)} rows={4} disabled={!canWrite || !ready} />
             </label>
           </div>
         )}
         <label>
           Function letters (LETTERS=description per line)
-          <textarea value={lettersText} onChange={(event) => setLettersText(event.target.value)} rows={6} disabled={!canWrite} />
+          <textarea value={lettersText} onChange={(event) => setLettersText(event.target.value)} rows={6} disabled={!canWrite || !ready} />
         </label>
         <p className="hint">
           Example tag: <span className="mono">{example}</span>
         </p>
         <FormError message={error} />
         <div className="buttonRow">
-          <button type="submit" className="primary" disabled={!canWrite || busy}>
+          <button type="submit" className="primary" disabled={!canWrite || !ready || busy}>
             Save tag scheme
           </button>
-          <button type="button" disabled={!canWrite} onClick={() => load(REFERENCE_TAG_SCHEME)}>
+          <button type="button" disabled={!canWrite || !ready} onClick={() => load(REFERENCE_TAG_SCHEME)}>
             Load reference scheme (PT 3222)
           </button>
-          <button type="button" disabled={!canWrite} onClick={() => load(DEFAULT_TAG_SCHEME)}>
+          <button type="button" disabled={!canWrite || !ready} onClick={() => load(DEFAULT_TAG_SCHEME)}>
             Reset to simple
           </button>
         </div>
