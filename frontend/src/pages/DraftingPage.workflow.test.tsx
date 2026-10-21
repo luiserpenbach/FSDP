@@ -222,10 +222,13 @@ describe("DraftingPage release workflow", () => {
     expect(screen.getByRole("tab", { name: "1" }).className).toContain("stale");
     fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
     fireEvent.keyDown(canvas, { key: "ArrowRight" });
-    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+    // Save stays disabled until the project's tag scheme (and line classes) are ready,
+    // so a mid-load Save cannot freeze the wrong DRC into the sheet.
+    expect(await screen.findByRole("button", { name: "Save" })).toBeDisabled();
     expect(apiMock.updateSheet).not.toHaveBeenCalled();
 
     resolveScheme({ project_id: "p1", scheme: null });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
     await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
     const [indexedId, body] = apiMock.updateSheet.mock.calls[0] as [string, { document: unknown; index: unknown; drc: unknown }];
     expect(indexedId).toBe("sh2");

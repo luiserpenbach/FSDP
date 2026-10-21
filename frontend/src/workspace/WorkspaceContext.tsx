@@ -72,6 +72,12 @@ export type WorkspaceContextValue = {
   confirmDiscard: (selection: UnsavedScope) => boolean;
 
   requirements: Requirement[];
+  /**
+   * False while systems/requirements for `selectedProjectId` are loading (or
+   * cleared on switch). Drafting waits on this so Save/reindex never run DRC
+   * against the previous project's requirements.
+   */
+  projectDetailsReady: boolean;
   refreshRequirements: (projectId: string) => Promise<Requirement[]>;
   selectedRequirementId: string;
   setSelectedRequirementId: (requirementId: string) => void;
@@ -111,6 +117,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
   const [selectedSystemId, setSelectedSystemId] = useState("");
   const [selectedRequirementId, setSelectedRequirementId] = useState("");
   const [selectedPartId, setSelectedPartId] = useState("");
+  const [projectDetailsReady, setProjectDetailsReady] = useState(true);
 
   // Current selections for async work: a response for a previous selection
   // must not overwrite what is on screen now.
@@ -233,13 +240,32 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       projectLoadGeneration.current += 1;
       setSystems([]);
       setRequirements([]);
+      setProjectDetailsReady(true);
       return;
     }
     writeStored(PROJECT_KEY, selectedProjectId);
     const projectId = selectedProjectId;
     const generation = ++projectLoadGeneration.current;
+    // Drop the previous project's systems/requirements immediately so Drafting
+    // and other pages cannot Save/reindex against stale constraints mid-switch.
+    setSystems([]);
+    setRequirements([]);
+    setSelectedRequirementId("");
+    setProjectDetailsReady(false);
     void runAction("Loaded project details.", async () => {
-      const [nextSystems, nextRequirements] = await Promise.all([api.listSystems(projectId), api.listRequirements(projectId)]);
+      let nextSystems: FluidSystem[] = [];
+      let nextRequirements: Requirement[] = [];
+      try {
+        [nextSystems, nextRequirements] = await Promise.all([api.listSystems(projectId), api.listRequirements(projectId)]);
+      } catch (error) {
+        if (generation === projectLoadGeneration.current) {
+          setSystems([]);
+          setRequirements([]);
+          setSelectedRequirementId("");
+          setProjectDetailsReady(true);
+        }
+        throw error;
+      }
       if (generation !== projectLoadGeneration.current) return;
       setSystems(nextSystems);
       setRequirements(nextRequirements);
@@ -249,7 +275,8 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
         if (nextSystems.some((system) => system.id === stored)) return stored;
         return nextSystems[0]?.id || "";
       });
-      setSelectedRequirementId((current) => (nextRequirements.some((requirement) => requirement.id === current) ? current : nextRequirements[0]?.id || ""));
+      setSelectedRequirementId(nextRequirements[0]?.id || "");
+      setProjectDetailsReady(true);
     });
   }, [selectedProjectId, runAction]);
 
@@ -284,6 +311,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       selectSystem,
       confirmDiscard,
       requirements,
+      projectDetailsReady,
       refreshRequirements,
       selectedRequirementId,
       setSelectedRequirementId,
@@ -315,6 +343,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       selectSystem,
       confirmDiscard,
       requirements,
+      projectDetailsReady,
       refreshRequirements,
       selectedRequirementId,
       parts,

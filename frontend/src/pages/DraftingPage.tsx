@@ -58,6 +58,11 @@ type Props = {
   parts?: Part[];
   /** Project requirements; those with a constraint are checked by the DRC. */
   requirements?: Requirement[];
+  /**
+   * False while workspace systems/requirements for this project are still
+   * loading after a switch. Defaults to true for unit tests that pass requirements directly.
+   */
+  projectDetailsReady?: boolean;
   user: User;
   canWrite: boolean;
   notify: (message: string, error?: boolean) => void;
@@ -277,7 +282,7 @@ function DrawingCanvas({
   return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} readOnly={readOnly} onCursor={onCursor} onViewport={onViewport} />;
 }
 
-export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify, target = null }: Props) {
+export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], projectDetailsReady = true, user, canWrite, notify, target = null }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
@@ -311,6 +316,9 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   const [waivers, setWaivers] = useState<DrcWaiver[]>([]);
   const [exportFindings, setExportFindings] = useState(false);
   const [tagSchemeReady, setTagSchemeReady] = useState(false);
+  const [lineClassesReady, setLineClassesReady] = useState(false);
+  /** Tag scheme, line classes, and workspace requirements all match `projectId`. */
+  const projectConfigReady = tagSchemeReady && lineClassesReady && projectDetailsReady;
   const [workflowBusy, setWorkflowBusy] = useState(false);
   /** Reasons the last release attempt was refused. */
   const [blockers, setBlockers] = useState<ReleaseBlocker[]>([]);
@@ -447,8 +455,10 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   // Project tag scheme (defaults when none is stored).
   useEffect(() => {
     let cancelled = false;
+    // Drop the previous project's scheme immediately so Save/reindex cannot
+    // derive DRC under the wrong rules while the new project's GET is in flight.
+    setTagScheme(DEFAULT_TAG_SCHEME);
     if (!projectId) {
-      setTagScheme(DEFAULT_TAG_SCHEME);
       setTagSchemeReady(true);
       return;
     }
@@ -479,13 +489,17 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     editor?.setReservedTags(tagsOf(otherSheets.filter((sheet) => sheet.sheetId !== sheetId).map((sheet) => sheet.doc)));
   }, [editor, otherSheets, sheetId]);
 
-  // Project line classes for the line inspector.
+  // Project line classes for the line inspector and lists write-back.
   useEffect(() => {
     let cancelled = false;
+    // Clear immediately on switch (same idea as Settings LineClassPanel) so the
+    // inspector cannot assign the previous project's class names into this sheet.
+    setLineClasses([]);
     if (!projectId) {
-      setLineClasses([]);
+      setLineClassesReady(true);
       return;
     }
+    setLineClassesReady(false);
     api
       .listLineClasses(projectId)
       .then((list) => {
@@ -493,6 +507,9 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       })
       .catch(() => {
         if (!cancelled) setLineClasses([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLineClassesReady(true);
       });
     return () => {
       cancelled = true;
@@ -612,6 +629,13 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   const save = useCallback(async (): Promise<boolean> => {
     // `editor` is only set while it holds `sheetId`'s document (see `session`).
     if (!editor || !sheetId || !drawing || !canEdit) return false;
+    // Refuse until tag scheme, line classes, and workspace requirements match
+    // this project — otherwise the indexed DRC (and any line-class write-back)
+    // can freeze the previous project's rules into this sheet.
+    if (!projectConfigReady) {
+      notify("Still loading this project's tag scheme, line classes, or requirements; try Save again in a moment.", true);
+      return false;
+    }
     try {
       const sheetNo = sheetSummary?.sheet_no ?? 1;
       // Capture the document and its version together: edits made while the
@@ -643,7 +667,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       notify(error instanceof Error ? error.message : "Save failed.", true);
       return false;
     }
-  }, [editor, sheetId, drawing, canEdit, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify, touchSheet, markSheetIndexed]);
+  }, [editor, sheetId, drawing, canEdit, projectConfigReady, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify, touchSheet, markSheetIndexed]);
 
   // Inputs of the background re-index, read when each sheet's turn comes.
   const reindexInputs = useRef({ drawing, registry, tagScheme, partMap, requirementRefs });
@@ -698,7 +722,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   const { status: reindexStatus, reindexNow } = useStaleReindex({
     drawingId: drawing?.id ?? null,
     staleSheetIds,
-    enabled: Boolean(drawing) && canEdit && tagSchemeReady,
+    enabled: Boolean(drawing) && canEdit && projectConfigReady,
     reindex: reindexSheet
   });
 
@@ -715,6 +739,18 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   const listEditQueue = useRef<Promise<unknown>>(Promise.resolve());
   const commitListEdits = useCallback(
     (edits: SheetFieldEdit[]): Promise<SheetEditResult> => {
+      if (!projectConfigReady) {
+        return Promise.resolve({
+          applied: 0,
+          savedSheetIds: [],
+          errors: edits.map((edit) => ({
+            sheetId: edit.sheetId,
+            itemId: edit.itemId,
+            field: edit.field,
+            message: "Still loading this project's configuration."
+          }))
+        });
+      }
       const latestDrawing = drawing;
       const run = () =>
         commitSheetEdits(
@@ -748,7 +784,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       listEditQueue.current = next.catch(() => undefined);
       return next;
     },
-    [drawing, locked, canWrite, editor, sheetId, registry, tagScheme, lineClasses, partMap, requirementRefs, touchSheet, markSheetIndexed]
+    [drawing, locked, canWrite, editor, sheetId, projectConfigReady, registry, tagScheme, lineClasses, partMap, requirementRefs, touchSheet, markSheetIndexed]
   );
 
   /** "Re-index now": the open sheet with unsaved edits is saved; the others re-index in the background. */
@@ -1252,7 +1288,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                   <span>DRC page</span>
                 </label>
               </div>
-              <SaveButton editor={editor} canWrite={canEdit} onSave={() => void save()} />
+              <SaveButton editor={editor} canWrite={canEdit && projectConfigReady} onSave={() => void save()} />
             </>
           )}
         </div>
@@ -2651,7 +2687,7 @@ function StatusBar({ editor, cursor, viewport, drcInputs }: { editor: Editor; cu
  * linked project and opens the drawing there.
  */
 export function DraftingRoutePage() {
-  const { user, canWrite, notify, projects, selectedProjectId, selectProject, selectedProject, systems, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  const { user, canWrite, notify, projects, selectedProjectId, selectProject, selectedProject, systems, selectedSystemId, customSymbols, refreshSymbols, parts, requirements, projectDetailsReady } = useWorkspace();
   const [searchParams] = useSearchParams();
   const [target] = useState(() => parseDraftingTarget(searchParams));
   useEffect(() => {
@@ -2670,6 +2706,7 @@ export function DraftingRoutePage() {
       refreshSymbols={refreshSymbols}
       parts={parts}
       requirements={requirements}
+      projectDetailsReady={projectDetailsReady}
       user={user}
       canWrite={canWrite}
       notify={notify}
