@@ -815,4 +815,109 @@ describe("DraftingPage", () => {
     expect(screen.getByLabelText("Drawing")).toHaveValue("dw2");
     expect(screen.queryByRole("option", { name: /AMB2-9003/ })).not.toBeInTheDocument();
   });
+
+  it("clears the previous project's line classes as soon as the workspace project changes", async () => {
+    const classA = {
+      id: "lc-a",
+      project_id: "p1",
+      name: "Steam-A",
+      material: "CS",
+      rating: null,
+      wall: null,
+      sizes: ['1"'],
+      insulation: null,
+      description: null,
+      notes: null,
+      created_at: "",
+      updated_at: ""
+    };
+    const classB = { ...classA, id: "lc-b", project_id: "p2", name: "Coolant-B", material: "SS" };
+    const drawingB: Drawing = {
+      ...drawing,
+      id: "dw-b",
+      project_id: "p2",
+      number: "PROJ-B-1",
+      sheets: [{ id: "sh-b", sheet_no: 1, title: null, source_diagram_id: null }]
+    };
+    const lineDoc = {
+      ...sheet.document,
+      items: [{ id: "line1", kind: "line", layer: "process", points: [{ x: 50, y: 100 }, { x: 150, y: 100 }], lineType: "process", lineNumber: "3101", fields: {} }]
+    };
+    let resolveP2!: (value: typeof classA[]) => void;
+    apiMock.listLineClasses.mockImplementation((projectId: string) =>
+      projectId === "p1" ? Promise.resolve([classA]) : new Promise((resolve) => (resolveP2 = resolve))
+    );
+    apiMock.listDrawings.mockImplementation((projectId: string) => Promise.resolve(projectId === "p1" ? [drawing] : [drawingB]));
+    apiMock.getSheet.mockImplementation(async (id: string) =>
+      id === "sh-b" ? { ...sheet, id: "sh-b", sheet_no: 1, document: lineDoc } : { ...sheet, document: lineDoc }
+    );
+    const page = (projectId: string) => (
+      <MemoryRouter>
+        <DraftingPage projectId={projectId} projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} parts={parts} user={user} canWrite notify={vi.fn()} />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page("p1"));
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="line1"]')).not.toBeNull());
+    fireEvent.change(screen.getByLabelText("Find") as HTMLInputElement, { target: { value: "3101" } });
+    fireEvent.keyDown(screen.getByLabelText("Find"), { key: "Enter" });
+    const classSelect = (await screen.findByLabelText("Line class")) as HTMLSelectElement;
+    expect(within(classSelect).getByRole("option", { name: /Steam-A/ })).toBeInTheDocument();
+
+    rerender(page("p2"));
+    const canvasB = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvasB.querySelector('[data-id="line1"]')).not.toBeNull());
+    const findB = await screen.findByLabelText("Find");
+    fireEvent.change(findB, { target: { value: "3101" } });
+    fireEvent.keyDown(findB, { key: "Enter" });
+    const midSelect = (await screen.findByLabelText("Line class")) as HTMLSelectElement;
+    expect(within(midSelect).queryByRole("option", { name: /Steam-A/ })).toBeNull();
+
+    resolveP2([classB]);
+    await waitFor(() => expect(within(screen.getByLabelText("Line class") as HTMLSelectElement).getByRole("option", { name: /Coolant-B/ })).toBeInTheDocument());
+  });
+
+  it("keeps Save disabled and skips background reindex until project details are ready", async () => {
+    const staleDrawing: Drawing = {
+      ...drawing,
+      sheets: [
+        { id: "sh1", sheet_no: 1, title: null, source_diagram_id: null, index_stale: true, indexed_at: null },
+        { id: "sh2", sheet_no: 2, title: "Vent", source_diagram_id: null, index_stale: true, indexed_at: null }
+      ]
+    };
+    apiMock.listDrawings.mockResolvedValue([staleDrawing]);
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? { ...sheet, id: "sh2", sheet_no: 2 } : sheet));
+    const page = (ready: boolean) => (
+      <MemoryRouter>
+        <DraftingPage
+          projectId="p1"
+          projectName="AMB2"
+          systems={systems}
+          selectedSystemId="s1"
+          customSymbols={[]}
+          parts={parts}
+          projectDetailsReady={ready}
+          user={user}
+          canWrite
+          notify={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+    const { rerender } = render(page(false));
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    const tagInput = (await screen.findByLabelText("Tag")) as HTMLInputElement;
+    fireEvent.change(tagInput, { target: { value: "PT-9999" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeDisabled());
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(apiMock.updateSheet).not.toHaveBeenCalled();
+
+    rerender(page(true));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    // Background reindex may write the other stale sheet; open dirty sheet stays unsaved until Save.
+    await waitFor(() => expect(apiMock.updateSheet.mock.calls.some((call) => call[0] === "sh2")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(apiMock.updateSheet.mock.calls.some((call) => call[0] === "sh1")).toBe(true));
+  });
 });
