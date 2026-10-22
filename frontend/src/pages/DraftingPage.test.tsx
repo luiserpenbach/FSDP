@@ -663,6 +663,109 @@ describe("DraftingPage", () => {
     expect(body.drc.checks).toEqual([{ requirementId: "r1", itemId: "hv", subject: "PT-3222", zone: expect.any(String), status: "fail", message: "AMB2-003 material brass is not one of 316L" }]);
   });
 
+  it("does not yank back to the host drawing after Add sheet when the user switched and edited elsewhere mid-await", async () => {
+    const other: Drawing = {
+      ...drawing,
+      id: "dw2",
+      number: "AMB2-9004",
+      title: "VENT\nP&ID",
+      sheets: [{ id: "sh9", sheet_no: 1, title: null, source_diagram_id: null }]
+    };
+    const otherSheet: DrawingSheet = {
+      ...sheet,
+      id: "sh9",
+      drawing_id: "dw2",
+      sheet_no: 1,
+      document: { ...sheet.document, items: [{ id: "xv", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 40, y: 40 }, rotation: 0, tag: "HV-9", fields: {} }] }
+    };
+    apiMock.listDrawings.mockResolvedValue([drawing, other]);
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh9" ? otherSheet : sheet));
+
+    let finishCreate: (sheet: DrawingSheet) => void = () => undefined;
+    const createPending = new Promise<DrawingSheet>((resolve) => {
+      finishCreate = resolve;
+    });
+    apiMock.createSheet.mockReturnValue(createPending);
+
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+
+    fireEvent.click(screen.getByTitle("Add sheet"));
+    expect(apiMock.createSheet).toHaveBeenCalledWith("dw1", {});
+
+    // While createSheet is in flight, open the other drawing and edit it.
+    fireEvent.change(screen.getByLabelText("Drawing"), { target: { value: "dw2" } });
+    const otherCanvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(otherCanvas.querySelector('[data-id="xv"]')).not.toBeNull());
+    fireEvent.keyDown(otherCanvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(otherCanvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    const added: DrawingSheet = { ...sheet, id: "sh-new", sheet_no: 3, title: null, document: { ...sheet.document, items: [] } };
+    const hostWithNewSheet: Drawing = {
+      ...drawing,
+      sheets: [...drawing.sheets, { id: "sh-new", sheet_no: 3, title: null, source_diagram_id: null }]
+    };
+    apiMock.listDrawings.mockResolvedValue([hostWithNewSheet, other]);
+    finishCreate(added);
+
+    // Stay on the edited drawing: forced re-select of dw1 would discard without confirm.
+    await waitFor(() => expect(apiMock.listDrawings).toHaveBeenCalled());
+    expect(screen.getByLabelText("Drawing")).toHaveValue("dw2");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.queryByRole("tab", { name: "3" })).not.toBeInTheDocument();
+  });
+
+  it("does not clear another drawing's dirty editor when Delete drawing finishes after a mid-await switch", async () => {
+    const other: Drawing = {
+      ...drawing,
+      id: "dw2",
+      number: "AMB2-9004",
+      title: "VENT\nP&ID",
+      sheets: [{ id: "sh9", sheet_no: 1, title: null, source_diagram_id: null }]
+    };
+    const otherSheet: DrawingSheet = {
+      ...sheet,
+      id: "sh9",
+      drawing_id: "dw2",
+      sheet_no: 1,
+      document: { ...sheet.document, items: [{ id: "xv", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 40, y: 40 }, rotation: 0, tag: "HV-9", fields: {} }] }
+    };
+    apiMock.listDrawings.mockResolvedValue([drawing, other]);
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh9" ? otherSheet : sheet));
+
+    let finishDelete: () => void = () => undefined;
+    const deletePending = new Promise<void>((resolve) => {
+      finishDelete = resolve;
+    });
+    apiMock.deleteDrawing.mockReturnValue(deletePending);
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    await screen.findByTestId("schematic-canvas");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete drawing" }));
+    expect(confirm).toHaveBeenCalledWith("Delete drawing AMB2-9003 and all of its sheets?");
+    expect(apiMock.deleteDrawing).toHaveBeenCalledWith("dw1");
+
+    fireEvent.change(screen.getByLabelText("Drawing"), { target: { value: "dw2" } });
+    const otherCanvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(otherCanvas.querySelector('[data-id="xv"]')).not.toBeNull());
+    fireEvent.keyDown(otherCanvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(otherCanvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    apiMock.listDrawings.mockResolvedValue([other]);
+    finishDelete();
+
+    await waitFor(() => expect(apiMock.listDrawings).toHaveBeenCalled());
+    expect(screen.getByLabelText("Drawing")).toHaveValue("dw2");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    confirm.mockRestore();
+  });
+
   it("binds the editor to its sheet so nothing can save the old document into the sheet being opened", async () => {
     const sheet2: DrawingSheet = { ...sheet, id: "sh2", sheet_no: 2, title: "Vent", document: { ...sheet.document, items: [] } };
     const pendingSheet2: Array<(value: DrawingSheet) => void> = [];
