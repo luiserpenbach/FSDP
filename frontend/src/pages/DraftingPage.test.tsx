@@ -211,6 +211,76 @@ describe("DraftingPage", () => {
     expect(notify).toHaveBeenCalledWith("Saved AMB2-9003 sheet 1 (1 items, 0 lines indexed; DRC: 0 error(s), 1 warning(s)).");
   });
 
+  it("merges legacy component parts onto an early-drafting schematic that lacks partId", async () => {
+    // Phase 0 Drafting saved diagrams.schematic without partId; parts stayed in component_instances.
+    const earlySchematic = {
+      schemaVersion: 1,
+      sheet: { size: "A3", orientation: "landscape", frame: { kind: "basic", columns: 4, rows: 3, margin: 10 } },
+      layers: [],
+      items: [
+        {
+          id: "v1",
+          kind: "symbol",
+          layer: "symbols",
+          symbol: { library: "fsdp", key: "valve", version: 1 },
+          position: { x: 80, y: 60 },
+          rotation: 0,
+          tag: "HV-1",
+          label: "HV-7: AMPH-SV-001",
+          fields: {}
+        },
+        {
+          id: "s1",
+          kind: "symbol",
+          layer: "symbols",
+          symbol: { library: "fsdp", key: "instrument", version: 1 },
+          position: { x: 140, y: 60 },
+          rotation: 0,
+          tag: "PT-2",
+          fields: {}
+        }
+      ],
+      meta: { grid: 2.5, convertedFrom: "reactflow", title: "Helium panel" }
+    };
+    const converted: Drawing = {
+      ...drawing,
+      id: "dw2",
+      number: "AMB2-0002",
+      title: "Helium panel",
+      sheets: [{ id: "sh5", sheet_no: 1, title: null, source_diagram_id: "d1" }]
+    };
+    apiMock.listProjectDiagrams.mockResolvedValue([summaryOf(legacyDiagram)]);
+    apiMock.getSchematic.mockResolvedValue({ diagram_id: "d1", revision: 3, document: earlySchematic });
+    apiMock.listComponents.mockResolvedValue([
+      { id: "c1", diagram_id: "d1", node_external_id: "v1", tag: "HV-7", part_id: "part-valve", quantity: 1 },
+      { id: "c2", diagram_id: "d1", node_external_id: "s1", tag: "PT-9", part_id: "part-sensor", quantity: 1 }
+    ]);
+    apiMock.createDrawing.mockResolvedValue(converted);
+    apiMock.listDrawings.mockResolvedValueOnce([drawing]).mockResolvedValue([drawing, converted]);
+    const notify = vi.fn();
+    render(
+      <MemoryRouter>
+        <DraftingPage projectId="p1" projectName="AMB2" systems={systems} selectedSystemId="s1" customSymbols={[]} parts={parts} user={user} canWrite notify={notify} />
+      </MemoryRouter>
+    );
+    await screen.findByTestId("schematic-canvas");
+    const hint = await screen.findByRole("status", { name: "Unconverted legacy diagrams" });
+    fireEvent.click(within(hint).getByRole("button", { name: "Convert diagram…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Convert" }));
+    await waitFor(() => expect(apiMock.createDrawing).toHaveBeenCalledTimes(1));
+    expect(apiMock.getDiagram).not.toHaveBeenCalled();
+    expect(apiMock.listComponents).toHaveBeenCalledWith("d1");
+    const body = apiMock.createDrawing.mock.calls[0][1] as {
+      first_sheet: { document: { items: Array<{ id: string; tag?: string; partId?: string; label?: string }> }; source_diagram_id: string };
+    };
+    expect(body.first_sheet.source_diagram_id).toBe("d1");
+    const byId = Object.fromEntries(body.first_sheet.document.items.map((item) => [item.id, item]));
+    expect(byId.v1).toMatchObject({ tag: "HV-7", partId: "part-valve" });
+    // Caption that only repeated the component tag is dropped, same as graph convert.
+    expect(byId.v1.label).toBeUndefined();
+    expect(byId.s1).toMatchObject({ tag: "PT-9", partId: "part-sensor" });
+  });
+
   it("converts any legacy diagram of the project, grouped by system, and marks converted ones", async () => {
     const oxidizer = { id: "s2", project_id: "p1", name: "Oxidizer", fluid: "LOX", description: "" } as FluidSystem;
     const loxFeed: DiagramSummary = { id: "d2", system_id: "s2", name: "LOX feed", diagram_type: "pid", revision: 1 };

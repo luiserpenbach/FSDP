@@ -21,7 +21,7 @@ import { commitSheetEdits, type SheetEditResult, type SheetFieldEdit } from "../
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
 import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
 import { useStaleReindex, type ReindexOutcome } from "../components/schematic/useStaleReindex";
-import { convertLegacyGraph } from "../engine/convert";
+import { applyLegacyComponents, convertLegacyGraph } from "../engine/convert";
 import { deriveSheetData } from "../engine/derived";
 import { Editor, READ_ONLY_TOOLS, type AlignMode, type ToolId } from "../engine/editor";
 import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
@@ -1054,12 +1054,18 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
         const source = legacyDiagrams.find((entry) => entry.id === form.diagramId);
         if (!source) throw new Error("Choose a diagram to convert.");
         const stored = await api.getSchematic(source.id);
-        const converted = stored.document
-          ? (stored.document as unknown as SchematicDocument)
-          : convertLegacyGraph((await api.getDiagram(source.id)).graph ?? {}, registry, {
-              title: source.name,
-              components: await api.listComponents(source.id)
-            });
+        // Parts/tags live in component_instances. Early drafting saved schematics
+        // without partId; always merge the table, even when a schematic document exists.
+        const components = await api.listComponents(source.id);
+        const converted = applyLegacyComponents(
+          stored.document
+            ? (stored.document as unknown as SchematicDocument)
+            : convertLegacyGraph((await api.getDiagram(source.id)).graph ?? {}, registry, {
+                title: source.name,
+                components
+              }),
+          components
+        );
         // The chosen paper size wins over the converter's best-fit guess.
         const document: SchematicDocument = {
           ...converted,

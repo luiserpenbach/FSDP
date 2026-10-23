@@ -15,6 +15,7 @@ from app.core.security import require_writer
 from app.db import get_db
 from app.models import (
     BomSnapshot,
+    ComponentInstance,
     Diagram,
     Drawing,
     DrawingRevision,
@@ -159,6 +160,64 @@ def _document_for_size(document: dict | None, size: str) -> dict:
     return {**EMPTY_DOCUMENT, "sheet": sheet}
 
 
+def _apply_legacy_components(db: Session, diagram: Diagram, document: dict) -> dict:
+    """Copy component_instances tags/parts onto matching schematic items.
+
+    Early drafting builds saved diagrams.schematic without partId; the API-only
+    convert path (source_diagram_id, no client document) must still apply them.
+    """
+    components = list(
+        db.scalars(
+            select(ComponentInstance)
+            .where(ComponentInstance.diagram_id == diagram.id)
+            .options(selectinload(ComponentInstance.node))
+        )
+    )
+    by_node = {
+        component.node.external_id: component
+        for component in components
+        if component.node is not None
+    }
+    if not by_node:
+        return document
+    items = document.get("items")
+    if not isinstance(items, list):
+        return document
+    merged_items: list = []
+    changed = False
+    for item in items:
+        if not isinstance(item, dict):
+            merged_items.append(item)
+            continue
+        if item.get("kind") not in {"symbol", "equipment"}:
+            merged_items.append(item)
+            continue
+        component = by_node.get(item.get("id"))
+        if component is None:
+            merged_items.append(item)
+            continue
+        next_item = dict(item)
+        next_item["tag"] = component.tag or item.get("tag")
+        # Prefer the component table; keep a schematic partId when the row has none.
+        if component.part_id is not None:
+            next_item["partId"] = component.part_id
+        label = item.get("label")
+        tag = next_item.get("tag")
+        if (
+            item.get("kind") == "symbol"
+            and isinstance(label, str)
+            and tag
+            and (label == tag or label.startswith(f"{tag}:"))
+        ):
+            next_item.pop("label", None)
+        if next_item != item:
+            changed = True
+        merged_items.append(next_item)
+    if not changed:
+        return document
+    return {**document, "items": merged_items}
+
+
 def _sheet_source_document(
     db: Session, sheet_in: DrawingSheetCreate | None, size: str
 ) -> tuple[dict, str | None]:
@@ -169,7 +228,7 @@ def _sheet_source_document(
     if sheet_in.source_diagram_id:
         diagram = require_model(db, Diagram, sheet_in.source_diagram_id)
         if diagram.schematic:
-            return diagram.schematic, diagram.id
+            return _apply_legacy_components(db, diagram, diagram.schematic), diagram.id
         raise HTTPException(
             status_code=422,
             detail="Diagram has no schematic document yet; convert it in the browser first",

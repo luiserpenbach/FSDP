@@ -144,6 +144,49 @@ function lineTypeFor(edge: LegacyEdge): LineType {
 /** A part placed on a legacy diagram node (from GET /diagrams/{id}/components). */
 export type LegacyComponent = { node_external_id?: string | null; tag: string; part_id?: string | null };
 
+/** Index legacy components by the graph node id conversion matches on. */
+export function legacyComponentsByNode(components: readonly LegacyComponent[] | undefined): Map<string, LegacyComponent> {
+  return new Map(
+    (components ?? []).filter((component) => component.node_external_id).map((component) => [component.node_external_id as string, component])
+  );
+}
+
+/**
+ * Copy legacy component tags and part ids onto matching symbols/equipment.
+ *
+ * Early drafting builds saved `diagrams.schematic` without `partId` (parts lived
+ * only in `component_instances`). Convert must still apply the table when that
+ * document is reused, not only when converting from the React Flow graph.
+ */
+export function applyLegacyComponents(doc: SchematicDocument, components: readonly LegacyComponent[] | undefined): SchematicDocument {
+  const componentByNode = legacyComponentsByNode(components);
+  if (!componentByNode.size) return doc;
+  let changed = false;
+  const items = doc.items.map((item) => {
+    if (item.kind !== "symbol" && item.kind !== "equipment") return item;
+    const component = componentByNode.get(item.id);
+    if (!component) return item;
+    const tag = component.tag || item.tag;
+    // Prefer the component table; keep a schematic partId when the row has none.
+    const partId = component.part_id ?? item.partId ?? undefined;
+    const label =
+      item.kind === "symbol" && item.label && tag && (item.label === tag || item.label.startsWith(`${tag}:`))
+        ? undefined
+        : item.kind === "symbol"
+          ? item.label
+          : undefined;
+    if (item.kind === "symbol") {
+      if (item.tag === tag && item.partId === partId && item.label === label) return item;
+      changed = true;
+      return { ...item, tag, partId, label };
+    }
+    if (item.tag === tag && item.partId === partId) return item;
+    changed = true;
+    return { ...item, tag, partId };
+  });
+  return changed ? { ...doc, items } : doc;
+}
+
 export function convertLegacyGraph(
   graph: LegacyGraph,
   registry: SymbolRegistry,
@@ -151,9 +194,7 @@ export function convertLegacyGraph(
 ): SchematicDocument {
   const nodes = graph.nodes ?? [];
   // Placed parts live in the component table, not the graph; the node label only showed "TAG: PART".
-  const componentByNode = new Map(
-    (options.components ?? []).filter((component) => component.node_external_id).map((component) => [component.node_external_id as string, component])
-  );
+  const componentByNode = legacyComponentsByNode(options.components);
   const edges = graph.edges ?? [];
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const grid = DEFAULT_GRID_MM;
