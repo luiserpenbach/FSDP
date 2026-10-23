@@ -652,9 +652,11 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   }, [drawing, registry, tagScheme, partMap, requirementRefs]);
 
   /**
-   * Re-derive one stale sheet from its stored document, exactly as a save would
-   * (same index and DRC inputs), and store it. The open sheet is left alone
-   * while it has unsaved edits: its save indexes it.
+   * Re-derive one stale sheet's index and DRC from its stored document (same
+   * inputs as a save) and store them. Does not rewrite the document: a
+   * concurrent lists write-back may have saved field edits after our GET, and
+   * putting the older document back would wipe them. The open sheet is left
+   * alone while it has unsaved edits: its save indexes it.
    */
   const reindexSheet = useCallback(
     async (targetId: string, isCancelled: () => boolean): Promise<ReindexOutcome> => {
@@ -662,6 +664,8 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
         const open = sessionRef.current;
         return Boolean(open && open.sheetId === targetId && open.editor.store.dirty);
       };
+      const abandoned = (touched: number) =>
+        isCancelled() || !canEditRef.current || openWithEdits() || (sheetTouches.current.get(targetId) ?? 0) !== touched;
       const current = reindexInputs.current;
       const target = current.drawing?.sheets.find((entry) => entry.id === targetId);
       if (!current.drawing || !target || openWithEdits()) return "skipped";
@@ -670,7 +674,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       for (const entry of current.drawing.sheets) sheets.push(await api.getSheet(entry.id));
       const stored = await api.getSheetDrc(targetId);
       // Stand down if the drawing changed, the sheet was saved meanwhile, or it now has unsaved edits.
-      if (isCancelled() || !canEditRef.current || openWithEdits() || (sheetTouches.current.get(targetId) ?? 0) !== touched) return "skipped";
+      if (abandoned(touched)) return "skipped";
       const { drawing: latestDrawing, registry: latestRegistry, tagScheme: latestScheme, partMap: latestParts, requirementRefs: latestRequirements } = reindexInputs.current;
       if (!latestDrawing) return "skipped";
       const own = sheets.find((entry) => entry.id === targetId);
@@ -687,7 +691,14 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
         requirements: latestRequirements,
         waivers: stored.waivers.map((waiver) => ({ key: waiver.key, reason: waiver.reason, by: waiver.waived_by, at: waiver.created_at }))
       });
-      await api.updateSheet(targetId, { document: doc, ...payload });
+      // Re-check and re-read before writing: a lists write-back can save field
+      // edits after our first GET. Skip so we neither wipe those edits (we no
+      // longer put `document`) nor overwrite their fresh index with ours.
+      if (abandoned(touched)) return "skipped";
+      const latest = await api.getSheet(targetId);
+      if (abandoned(touched)) return "skipped";
+      if (JSON.stringify(latest.document) !== JSON.stringify(own.document)) return "skipped";
+      await api.updateSheet(targetId, payload);
       markSheetIndexed(latestDrawing.id, targetId, drc.counts.error);
       return "indexed";
     },
