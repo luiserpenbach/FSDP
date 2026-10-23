@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computeConnectivity } from "./connectivity";
-import { convertLegacyGraph, type LegacyEdge as Edge, type LegacyNode as Node } from "./convert";
+import { applyLegacyComponents, convertLegacyGraph, type LegacyEdge as Edge, type LegacyNode as Node } from "./convert";
 import { SymbolRegistry } from "./library";
 import { frameRect } from "./sheet";
 
@@ -108,5 +108,27 @@ describe("legacy graph converter", () => {
     const doc = convertLegacyGraph({}, registry);
     expect(doc.items).toEqual([]);
     expect(doc.sheet.size).toBe("A3");
+  });
+
+  it("applies legacy components onto an existing schematic that lacks partId", () => {
+    // Early drafting builds wrote diagrams.schematic without merging the component table.
+    const bare = convertLegacyGraph(legacyGraph(), registry, { title: "Demo" });
+    expect(bare.items.find((item) => item.id === "v1")).toMatchObject({ tag: "HV-1" });
+    expect((bare.items.find((item) => item.id === "v1") as { partId?: string }).partId).toBeUndefined();
+
+    const merged = applyLegacyComponents(bare, [
+      { node_external_id: "v1", tag: "HV-7", part_id: "part-valve" },
+      { node_external_id: "s1", tag: "PT-9", part_id: "part-sensor" },
+      { node_external_id: null, tag: "LOOSE", part_id: "part-x" }
+    ]);
+    const symbol = (id: string) => {
+      const item = merged.items.find((entry) => entry.id === id);
+      return item && item.kind === "symbol" ? item : null;
+    };
+    expect(symbol("v1")).toMatchObject({ tag: "HV-7", partId: "part-valve" });
+    expect(symbol("s1")).toMatchObject({ tag: "PT-9", partId: "part-sensor" });
+    // Geometry and non-component items are untouched.
+    expect(merged.items.map((item) => item.id)).toEqual(bare.items.map((item) => item.id));
+    expect(merged.items.find((item) => item.id === "e1")).toEqual(bare.items.find((item) => item.id === "e1"));
   });
 });

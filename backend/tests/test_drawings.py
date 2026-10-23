@@ -6,6 +6,7 @@ import zlib
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.models import ComponentInstance, DiagramNode, Part
 from tests.legacy import add_legacy_diagram
 
 SVG = (
@@ -186,6 +187,63 @@ def test_convert_diagram_into_first_sheet(
     sheet = created.json()["sheets"][0]
     assert sheet["source_diagram_id"] == diagram["id"]
     assert client.get(f"/sheets/{sheet['id']}").json()["document"]["items"][0]["id"] == "v1"
+
+
+def test_convert_schematic_merges_legacy_component_parts(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """API-only convert must apply component_instances onto early schematics without partId."""
+    project_id = _project(client)
+    system = client.post(f"/projects/{project_id}/systems", json={"name": "GHe"}).json()
+    part = client.post(
+        "/parts",
+        json={
+            "part_number": "AMB2-VALVE",
+            "description": "Ball valve",
+            "part_type": "valve",
+            "material": "316L",
+        },
+    ).json()
+    schematic = _document()
+    assert "partId" not in schematic["items"][0]
+    diagram = add_legacy_diagram(session_factory, system["id"], "Early draft", schematic=schematic)
+    with session_factory() as db:
+        node = DiagramNode(
+            diagram_id=diagram.id,
+            external_id="v1",
+            node_type="valve",
+            label="HV-1: AMPH-SV-001",
+            position={"x": 0, "y": 0},
+        )
+        db.add(node)
+        db.flush()
+        db.add(
+            ComponentInstance(
+                diagram_id=diagram.id,
+                node_id=node.id,
+                part_id=part["id"],
+                tag="HV-7",
+                quantity=1,
+            )
+        )
+        db.commit()
+        assert db.get(Part, part["id"]) is not None
+
+    created = client.post(
+        f"/projects/{project_id}/drawings",
+        json={
+            "title": "From early schematic",
+            "system_id": system["id"],
+            "first_sheet": {"source_diagram_id": diagram.id},
+        },
+    )
+    assert created.status_code == 201, created.text
+    sheet_id = created.json()["sheets"][0]["id"]
+    item = client.get(f"/sheets/{sheet_id}").json()["document"]["items"][0]
+    assert item["id"] == "v1"
+    assert item["tag"] == "HV-7"
+    assert item["partId"] == part["id"]
+    assert "label" not in item or item.get("label") in (None, "")
 
 
 def test_sheet_export_pdf_png_and_svg(client: TestClient) -> None:
