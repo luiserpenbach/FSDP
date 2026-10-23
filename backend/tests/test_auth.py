@@ -201,6 +201,41 @@ def test_cannot_remove_last_active_admin(client: TestClient) -> None:
     assert still["is_active"] is True
 
 
+def test_role_update_serializes_active_admin_guard(client: TestClient) -> None:
+    """Exercise the FOR UPDATE path used to prevent concurrent cross-demotion.
+
+    Production Postgres locks active admin rows before the count check so two
+    admins cannot each demote the other under READ COMMITTED. SQLite ignores
+    FOR UPDATE; this still verifies demote/name updates through that code path.
+    """
+    me = client.get("/auth/me").json()
+    other = client.post(
+        "/auth/users",
+        json={
+            "email": "peer-admin@fsdp.test",
+            "name": "Peer Admin",
+            "password": "peer-admin-pass",
+            "role": "admin",
+        },
+    ).json()
+
+    # Name-only update skips the admin-row lock; must still succeed.
+    renamed = client.put(f"/auth/users/{other['id']}", json={"name": "Peer Admin Renamed"})
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Peer Admin Renamed"
+    assert renamed.json()["role"] == "admin"
+
+    # Demoting one of two admins takes the lock path and must succeed.
+    demoted = client.put(f"/auth/users/{other['id']}", json={"role": "engineer"})
+    assert demoted.status_code == 200
+    assert demoted.json()["role"] == "engineer"
+
+    users = client.get("/auth/users").json()
+    admins = [u for u in users if u["role"] == "admin" and u["is_active"]]
+    assert len(admins) == 1
+    assert admins[0]["id"] == me["id"]
+
+
 def test_deletes_are_audited_with_actor(client: TestClient) -> None:
     project = client.post("/projects", json={"name": "Audit Me"}).json()
     client.delete(f"/projects/{project['id']}")

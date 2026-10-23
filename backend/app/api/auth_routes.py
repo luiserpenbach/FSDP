@@ -121,6 +121,15 @@ def update_user(
         raise HTTPException(status_code=400, detail="You cannot demote your own admin role")
 
     data = payload.model_dump(exclude_unset=True)
+    # Serialize concurrent role/active mutations so two admins cannot each
+    # demote or deactivate the other and both pass the last-admin count check
+    # under READ COMMITTED (Postgres). SQLite ignores FOR UPDATE in tests.
+    if "role" in data or "is_active" in data:
+        db.scalars(
+            select(User)
+            .where(User.role == "admin", User.is_active.is_(True))
+            .with_for_update()
+        ).all()
     password = data.pop("password", None)
     if password:
         user.password_hash = hash_password(password)
