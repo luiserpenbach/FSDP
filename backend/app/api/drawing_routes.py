@@ -198,7 +198,9 @@ def _apply_legacy_components(db: Session, diagram: Diagram, document: dict) -> d
             continue
         next_item = dict(item)
         next_item["tag"] = component.tag or item.get("tag")
-        next_item["partId"] = component.part_id
+        # Prefer the component table; keep a schematic partId when the row has none.
+        if component.part_id is not None:
+            next_item["partId"] = component.part_id
         label = item.get("label")
         tag = next_item.get("tag")
         if (

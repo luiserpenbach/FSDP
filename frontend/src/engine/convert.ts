@@ -167,7 +167,8 @@ export function applyLegacyComponents(doc: SchematicDocument, components: readon
     const component = componentByNode.get(item.id);
     if (!component) return item;
     const tag = component.tag || item.tag;
-    const partId = component.part_id ?? undefined;
+    // Prefer the component table; keep a schematic partId when the row has none.
+    const partId = component.part_id ?? item.partId ?? undefined;
     const label =
       item.kind === "symbol" && item.label && tag && (item.label === tag || item.label.startsWith(`${tag}:`))
         ? undefined

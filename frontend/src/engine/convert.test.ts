@@ -131,4 +131,19 @@ describe("legacy graph converter", () => {
     expect(merged.items.map((item) => item.id)).toEqual(bare.items.map((item) => item.id));
     expect(merged.items.find((item) => item.id === "e1")).toEqual(bare.items.find((item) => item.id === "e1"));
   });
+
+  it("does not clear a schematic partId when the matching component has none", () => {
+    const withPart = applyLegacyComponents(
+      {
+        ...convertLegacyGraph(legacyGraph(), registry),
+        items: convertLegacyGraph(legacyGraph(), registry).items.map((item) =>
+          item.id === "v1" && item.kind === "symbol" ? { ...item, partId: "schematic-part" } : item
+        )
+      },
+      [{ node_external_id: "v1", tag: "HV-7", part_id: null }]
+    );
+    const valve = withPart.items.find((item) => item.id === "v1");
+    expect(valve && valve.kind === "symbol" ? valve.partId : null).toBe("schematic-part");
+    expect(valve && valve.kind === "symbol" ? valve.tag : null).toBe("HV-7");
+  });
 });
