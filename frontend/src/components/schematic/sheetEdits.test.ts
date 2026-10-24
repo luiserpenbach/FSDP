@@ -141,4 +141,18 @@ describe("commitSheetEdits", () => {
     expect(result.errors.map((error) => error.sheetId)).toEqual(["sh2"]);
     expect(saveSheet).not.toHaveBeenCalled();
   });
+
+  it("loads missing siblings and ignores foreign otherSheets when deriving a write-back", async () => {
+    const foreign = createEmptyDocument();
+    foreign.items = [symbolAt("alien", "hand_valve", { x: 10, y: 10 }, { tag: "HV-9" })];
+    const { context, saveSheet } = setup({
+      // Empty cache after a sheet switch, plus a leftover sheet from another drawing.
+      otherSheets: [{ sheetId: "foreign", sheetNo: 99, doc: foreign }]
+    });
+    const result = await commitSheetEdits(context, [{ sheetId: "sh2", itemId: "hv10", field: "tag", value: "HV-3201" }]);
+    // HV-3201 is on the open sheet (loaded editor doc), not the foreign leftover.
+    expect(result.errors).toEqual([{ sheetId: "sh2", itemId: "hv10", field: "tag", message: expect.stringContaining("already used on another sheet") }]);
+    expect(context.loadSheet).toHaveBeenCalledWith("sh2");
+    expect(saveSheet).not.toHaveBeenCalled();
+  });
 });

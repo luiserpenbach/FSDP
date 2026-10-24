@@ -81,11 +81,21 @@ export async function commitSheetEdits(context: SheetEditContext, edits: readonl
     else groups.set(edit.sheetId, [edit]);
   }
 
-  // Latest documents of every sheet: reserved tags for each sheet come from the others.
-  const docs = new Map<string, SchematicDocument>();
-  for (const sheet of context.otherSheets) if (sheet.sheetId) docs.set(sheet.sheetId, sheet.doc);
-  if (editor) docs.set(context.openSheetId, editor.store.doc);
+  // Latest documents of every sheet of *this* drawing only. Ignore foreign
+  // entries left in `otherSheets` after a drawing switch, and load any sibling
+  // the cache has not caught up with yet (sheet switch mid-flight).
   const sheetNos = new Map(drawing.sheets.map((sheet) => [sheet.id, sheet.sheet_no]));
+  const docs = new Map<string, SchematicDocument>();
+  if (editor) docs.set(context.openSheetId, editor.store.doc);
+  for (const sheet of context.otherSheets) {
+    if (sheet.sheetId && sheetNos.has(sheet.sheetId)) docs.set(sheet.sheetId, sheet.doc);
+  }
+  for (const sheet of drawing.sheets) {
+    if (docs.has(sheet.id)) continue;
+    const stored = await context.loadSheet(sheet.id);
+    const raw = stored.document as unknown as SchematicDocument;
+    docs.set(sheet.id, context.prepareDocument ? context.prepareDocument(raw) : raw);
+  }
   const optionsFor = (sheetId: string): FieldEditOptions => ({
     tagScheme: context.tagScheme,
     lineClasses: context.lineClasses,

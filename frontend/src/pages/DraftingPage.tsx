@@ -36,7 +36,7 @@ import { LINE_TYPE_LABELS, renderDocumentSvg, type PartBadge } from "../engine/r
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
 import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, tagsOf, validateTag, type TagScheme } from "../engine/tags";
-import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
+import { otherSheetsMatchSiblings, resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
 import type { BomReadiness, BomSnapshot, DiagramSummary, Drawing, DrawingRead, DrawingRevision, DrawingSheet, FluidSystem, LineClass, Part, PidSymbolDef, ReleaseBlocker, ReleaseSnapshotSheet, Requirement, RevisionSnapshot, User } from "../types";
@@ -517,14 +517,14 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     };
   }, [sheetId]);
 
-  // Other sheets of the drawing, for off-page connector references.
+  // Other sheets of the drawing, for off-page connector references and reserved tags.
+  // Clear immediately on sheet/drawing change so a prior drawing's docs cannot
+  // linger into Save / live DRC while the reload is in flight.
   useEffect(() => {
     let cancelled = false;
     const others = drawing?.sheets.filter((entry) => entry.id !== sheetId) ?? [];
-    if (!others.length) {
-      setOtherSheets([]);
-      return;
-    }
+    setOtherSheets([]);
+    if (!others.length) return;
     Promise.all(others.map((entry) => api.getSheet(entry.id).then((sheet) => ({ sheetNo: sheet.sheet_no, sheetId: sheet.id, doc: sheet.document as unknown as SchematicDocument }))))
       .then((docs) => {
         if (!cancelled) setOtherSheets(docs);
@@ -618,13 +618,31 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       // request is in flight are not in this save and must stay dirty.
       const version = editor.store.version;
       const doc = editor.store.doc;
+      // Sibling docs drive reserved tags and connector targets in the stored
+      // index/DRC. After a sheet or drawing switch the cache can still hold the
+      // previous set (or be empty while reloading); refetch so Save/Release
+      // cannot freeze a false-clean or cross-drawing DRC.
+      const siblingIds = drawing.sheets.map((entry) => entry.id).filter((id) => id !== sheetId);
+      let sheetsForDerive = otherSheets.filter((entry) => entry.sheetId && siblingIds.includes(entry.sheetId));
+      if (!otherSheetsMatchSiblings(sheetsForDerive, siblingIds)) {
+        sheetsForDerive = await Promise.all(
+          siblingIds.map((id) =>
+            api.getSheet(id).then((sheet) => ({
+              sheetNo: sheet.sheet_no,
+              sheetId: sheet.id,
+              doc: sheet.document as unknown as SchematicDocument
+            }))
+          )
+        );
+        setOtherSheets(sheetsForDerive);
+      }
       // The index rows and the DRC (open and waived findings, requirement checks) travel with the
       // document so lists, BoM, where-used, and release read the saved state.
       const { index, drc, payload } = deriveSheetData({
         doc,
         sheetId,
         sheetNo,
-        otherSheets,
+        otherSheets: sheetsForDerive,
         registry,
         connectivity: editor.connectivity,
         tagScheme,

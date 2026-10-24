@@ -287,6 +287,46 @@ describe("DraftingPage", () => {
     expect(await screen.findByLabelText("Tag")).toHaveValue("HV-7");
   });
 
+  it("refetches sibling sheets on Save when otherSheets has not loaded yet", async () => {
+    // Both sheets carry HV-1. While the sibling fetch is gated, Save must still
+    // see sheet 2 and persist the cross-sheet duplicate_tag finding — otherwise
+    // Release can freeze a false-clean DRC.
+    const sheet1Doc = {
+      ...sheet.document,
+      items: [{ id: "hv1", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 60 }, rotation: 0, tag: "HV-1", fields: {} }]
+    };
+    const sheet2Doc = {
+      ...sheet.document,
+      items: [{ id: "hv2", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 60, y: 60 }, rotation: 0, tag: "HV-1", fields: {} }]
+    };
+    let releaseSh2: (value: DrawingSheet) => void = () => undefined;
+    const firstSh2 = new Promise<DrawingSheet>((resolve) => {
+      releaseSh2 = resolve;
+    });
+    let sh2Loads = 0;
+    apiMock.getSheet.mockImplementation(async (id: string) => {
+      if (id === "sh2") {
+        sh2Loads += 1;
+        if (sh2Loads === 1) return firstSh2;
+        return { ...sheet, id: "sh2", sheet_no: 2, document: sheet2Doc };
+      }
+      return { ...sheet, id: "sh1", sheet_no: 1, document: sheet1Doc };
+    });
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="hv1"]')).not.toBeNull());
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.click(await screen.findByLabelText("Do not populate (DNP)"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+    const [, body] = apiMock.updateSheet.mock.calls[0] as [string, { drc: { findings: Array<{ rule: string; subject?: string }> } }];
+    expect(body.drc.findings.some((finding) => finding.rule === "duplicate_tag" && finding.subject === "HV-1")).toBe(true);
+    expect(sh2Loads).toBeGreaterThanOrEqual(2);
+    // Unblock the background sibling effect so the test does not leave a hanging promise.
+    releaseSh2({ ...sheet, id: "sh2", sheet_no: 2, document: sheet2Doc });
+  });
+
   it("shows the legacy diagram hint once per project", async () => {
     apiMock.listProjectDiagrams.mockResolvedValue([summaryOf(legacyDiagram)]);
     const first = renderPage();
