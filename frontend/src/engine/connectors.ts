@@ -8,6 +8,23 @@ import type { SchematicDocument, SymbolItem } from "./types";
 
 export type SheetDoc = { sheetNo: number; doc: SchematicDocument; sheetId?: string };
 
+/**
+ * True when `otherSheets` is exactly the set of sibling sheet ids (no missing
+ * sheets, no duplicates, no sheets from another drawing). Used before Save /
+ * lists write-back so a mid-flight sheet or drawing switch cannot feed stale
+ * reserved tags or connector targets into the stored index and DRC.
+ */
+export function otherSheetsMatchSiblings(otherSheets: readonly SheetDoc[], siblingIds: readonly string[]): boolean {
+  if (otherSheets.length !== siblingIds.length) return false;
+  const expected = new Set(siblingIds);
+  const seen = new Set<string>();
+  for (const sheet of otherSheets) {
+    if (!sheet.sheetId || !expected.has(sheet.sheetId) || seen.has(sheet.sheetId)) return false;
+    seen.add(sheet.sheetId);
+  }
+  return seen.size === expected.size;
+}
+
 export function connectorRef(item: SymbolItem): string | null {
   const ref = item.fields?.ref;
   return typeof ref === "string" && ref.trim() ? ref.trim().toUpperCase() : null;
