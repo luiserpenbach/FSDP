@@ -17,7 +17,7 @@ import { PanelResizer, useStoredWidth } from "../components/resizable";
 import { LibraryPanel } from "../components/schematic/LibraryPanel";
 import { ListsDrawer, type DrawerTab, type ListScope, type LocateTarget } from "../components/schematic/ListsDrawer";
 import { SelectionBulkEdit } from "../components/schematic/SelectionBulkEdit";
-import { commitSheetEdits, type SheetEditResult, type SheetFieldEdit } from "../components/schematic/sheetEdits";
+import { commitSheetEdits, liveEditorForListEdits, type SheetEditResult, type SheetFieldEdit } from "../components/schematic/sheetEdits";
 import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Viewport } from "../components/schematic/SchematicCanvas";
 import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
 import { useStaleReindex, type ReindexOutcome } from "../components/schematic/useStaleReindex";
@@ -716,14 +716,20 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   const commitListEdits = useCallback(
     (edits: SheetFieldEdit[]): Promise<SheetEditResult> => {
       const latestDrawing = drawing;
-      const run = () =>
-        commitSheetEdits(
+      // Capture the session this commit was queued against. When it runs (possibly
+      // after an other-sheet PUT), the open editor may already have been disposed
+      // by a sheet/drawing switch — resolve against sessionRef so those edits PUT
+      // instead of dispatching into a dead in-memory store.
+      const enqueued = { sheetId, editor };
+      const run = () => {
+        const liveEditor = liveEditorForListEdits(sessionRef.current, enqueued);
+        return commitSheetEdits(
           {
             drawing: latestDrawing,
             locked,
             canWrite,
-            editor,
-            openSheetId: sheetId,
+            editor: liveEditor,
+            openSheetId: enqueued.sheetId,
             otherSheets: otherSheetsRef.current,
             registry,
             tagScheme,
@@ -744,6 +750,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
           },
           edits
         );
+      };
       const next = listEditQueue.current.then(run, run);
       listEditQueue.current = next.catch(() => undefined);
       return next;

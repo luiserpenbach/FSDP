@@ -62,6 +62,23 @@ export type SheetEditContext = {
 
 export class SheetEditRefused extends Error {}
 
+/**
+ * Editor to use for a queued lists commit.
+ *
+ * `commitListEdits` serializes commits: an open-sheet edit can sit behind an
+ * other-sheet PUT. If the user switches sheet/drawing while it waits, the
+ * enqueue-time editor is disposed and in-memory dispatch would never reach a
+ * Save. Return null so the commit falls through to load → edit → PUT instead.
+ */
+export function liveEditorForListEdits(
+  live: { sheetId: string; editor: Editor } | null | undefined,
+  enqueued: { sheetId: string; editor: Editor | null }
+): Editor | null {
+  if (!live || !enqueued.editor) return null;
+  if (live.sheetId !== enqueued.sheetId || live.editor !== enqueued.editor) return null;
+  return live.editor;
+}
+
 function editError(sheetId: string, edit: FieldEdit, message: string): SheetFieldEditError {
   return { sheetId, itemId: edit.itemId, field: edit.field, message };
 }
