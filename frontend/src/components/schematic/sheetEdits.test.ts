@@ -7,7 +7,7 @@ import type { PartLike } from "../../engine/parts";
 import { DocumentStore } from "../../engine/store";
 import { DEFAULT_TAG_SCHEME } from "../../engine/tags";
 import { createEmptyDocument, type SchematicDocument, type SymbolItem } from "../../engine/types";
-import { commitSheetEdits, SheetEditRefused, type SheetEditContext } from "./sheetEdits";
+import { commitSheetEdits, liveEditorForListEdits, SheetEditRefused, type SheetEditContext } from "./sheetEdits";
 
 const registry = SymbolRegistry.withBuiltins();
 const parts = new Map<string, PartLike>([["p1", { id: "p1", part_number: "AMB2-001", lifecycle_status: "active", qualification_status: "qualified", pressure_rating_bar: 200, material: "316L" }]]);
@@ -140,5 +140,44 @@ describe("commitSheetEdits", () => {
     // The open sheet goes first and claims the tag.
     expect(result.errors.map((error) => error.sheetId)).toEqual(["sh2"]);
     expect(saveSheet).not.toHaveBeenCalled();
+  });
+
+  it("PUTs former open-sheet edits when the enqueue-time editor is no longer live", async () => {
+    // Queued behind an other-sheet write: the user switched sheets before this
+    // commit ran, so the editor was disposed. Falling through to load→PUT keeps
+    // the field edit instead of dispatching into a dead store.
+    const openDoc = smallPanelDocument();
+    const loadSheet = vi.fn(async (id: string) => {
+      if (id === "sh1") return { sheet_no: 1, document: openDoc };
+      return { sheet_no: 2, document: otherDoc() };
+    });
+    const { context, saveSheet, editor } = setup({
+      editor: null,
+      loadSheet
+    });
+    editor.dispose();
+    const result = await commitSheetEdits(context, [{ sheetId: "sh1", itemId: "hv", field: "partId", value: "p1" }]);
+    expect(result).toEqual({ errors: [], applied: 1, savedSheetIds: ["sh1"] });
+    expect(loadSheet).toHaveBeenCalledWith("sh1");
+    expect(saveSheet).toHaveBeenCalledTimes(1);
+    const [id, body] = saveSheet.mock.calls[0] as unknown as [string, { document: SchematicDocument }];
+    expect(id).toBe("sh1");
+    expect((body.document.items.find((entry) => entry.id === "hv") as SymbolItem).partId).toBe("p1");
+  });
+});
+
+describe("liveEditorForListEdits", () => {
+  it("returns the live editor only while the enqueue-time session is still open", () => {
+    const registry = SymbolRegistry.withBuiltins();
+    const first = new Editor(new DocumentStore(smallPanelDocument()), registry, { tagScheme: DEFAULT_TAG_SCHEME });
+    const second = new Editor(new DocumentStore(smallPanelDocument()), registry, { tagScheme: DEFAULT_TAG_SCHEME });
+    const enqueued = { sheetId: "sh1", editor: first };
+
+    expect(liveEditorForListEdits({ sheetId: "sh1", editor: first }, enqueued)).toBe(first);
+    expect(liveEditorForListEdits({ sheetId: "sh2", editor: second }, enqueued)).toBeNull();
+    expect(liveEditorForListEdits({ sheetId: "sh1", editor: second }, enqueued)).toBeNull();
+    expect(liveEditorForListEdits(null, enqueued)).toBeNull();
+    first.dispose();
+    second.dispose();
   });
 });
