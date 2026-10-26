@@ -436,8 +436,16 @@ def create_revision(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> DrawingRevision:
+    """Add a revision row on a draft drawing (title-block history before first release).
+
+    Refused while the drawing is in review: a new current revision would orphan the
+    submitted one, and POST /release would stamp the never-reviewed row instead.
+    After release, open the next revision with POST /drawings/{id}/revise.
+    """
     drawing = _load_drawing(db, drawing_id)
     _ensure_editable(drawing)
+    if drawing.status != "draft":
+        raise _workflow_conflict(drawing, "adding a revision row", "draft")
     sequence = max((rev.sequence for rev in drawing.revisions), default=0) + 1
     revision = DrawingRevision(
         drawing_id=drawing.id,
