@@ -302,8 +302,41 @@ def delete_drawing(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> Response:
+    """Delete a drawing and its sheets.
+
+    Refused while the drawing is released (``_ensure_editable``), and also while
+    any prior released revision snapshot or released BoM still belongs to it.
+    Those rows CASCADE with the drawing, so deleting after revise (or after a
+    BoM-only release on a draft drawing) would silently destroy immutable
+    baselines that the release gates promise to keep.
+    """
     drawing = _load_drawing(db, drawing_id)
     _ensure_editable(drawing)
+    released_revisions = sum(1 for revision in drawing.revisions if revision.status == "released")
+    released_boms = db.scalar(
+        select(func.count())
+        .select_from(BomSnapshot)
+        .where(BomSnapshot.drawing_id == drawing.id, BomSnapshot.status == "released")
+    ) or 0
+    if released_revisions or released_boms:
+        parts: list[str] = []
+        if released_revisions:
+            parts.append(
+                f"{released_revisions} released revision"
+                f"{'s' if released_revisions != 1 else ''}"
+            )
+        if released_boms:
+            parts.append(
+                f"{released_boms} released BoM"
+                f"{'s' if released_boms != 1 else ''}"
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Drawing {drawing.number} still has {' and '.join(parts)}; "
+                "delete is refused so those immutable baselines are not destroyed."
+            ),
+        )
     delete_trace_links_for_many(db, drawing_trace_endpoints(db, [drawing.id]))
     record_change(
         db, "drawing", drawing.id, "deleted", f"Deleted drawing {drawing.number}", actor=user.email
