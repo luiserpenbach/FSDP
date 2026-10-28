@@ -415,6 +415,25 @@ def test_released_drawings_stay_current_until_revised(client: TestClient) -> Non
     assert _sheet_stale(client, drawing["id"]) == [True]
 
 
+def test_delete_drawing_refused_while_released_revision_exists(client: TestClient) -> None:
+    """Revise unlocks the drawing, but CASCADE would still destroy the released snapshot."""
+    project_id = _project(client)
+    drawing = _released(client, project_id)
+    drawing_id = drawing["id"]
+    released_rev = drawing["current_revision"]["id"]
+
+    assert client.post(f"/drawings/{drawing_id}/revise").status_code == 200
+    assert client.get(f"/drawings/{drawing_id}").json()["status"] == "draft"
+    assert client.get(f"/revisions/{released_rev}/snapshot").status_code == 200
+
+    refused = client.delete(f"/drawings/{drawing_id}")
+    assert refused.status_code == 409, refused.text
+    assert "released revision" in refused.json()["detail"]
+    assert "immutable baselines" in refused.json()["detail"]
+    assert client.get(f"/revisions/{released_rev}/snapshot").status_code == 200
+    assert client.get(f"/drawings/{drawing_id}").status_code == 200
+
+
 def test_requirement_constraint_changes_mark_project_sheets_stale(client: TestClient) -> None:
     project_id = _project(client)
     other_project = _project(client, "Other")

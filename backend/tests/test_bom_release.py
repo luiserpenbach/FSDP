@@ -123,6 +123,25 @@ def test_released_bom_is_immutable(client: TestClient) -> None:
     ]
 
 
+def test_delete_drawing_refused_while_released_bom_exists(client: TestClient) -> None:
+    """A draft drawing can hold a released BoM; CASCADE must not wipe that baseline."""
+    good = _part(client, "AMB2-001")
+    setup = _drawing_with_bom(client, good["id"])
+    drawing_id = setup["drawing"]["id"]
+    snapshot_id = setup["snapshot"]["id"]
+
+    released = client.put(f"/bom/{snapshot_id}/status", json={"status": "released"})
+    assert released.status_code == 200, released.text
+    assert client.get(f"/drawings/{drawing_id}").json()["status"] == "draft"
+
+    refused = client.delete(f"/drawings/{drawing_id}")
+    assert refused.status_code == 409, refused.text
+    assert "released BoM" in refused.json()["detail"]
+    assert "immutable baselines" in refused.json()["detail"]
+    assert client.get(f"/bom/{snapshot_id}/readiness").status_code == 200
+    assert client.get(f"/drawings/{drawing_id}/bom").json()[0]["status"] == "released"
+
+
 def test_bom_xlsx_export_has_header_block(client: TestClient) -> None:
     good = _part(client, "=AMB2-001")
     setup = _drawing_with_bom(client, good["id"])
