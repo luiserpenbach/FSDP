@@ -6,6 +6,7 @@ import zlib
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.drawing_routes import _lock_drawing_for_update
 from tests.legacy import add_legacy_diagram
 
 SVG = (
@@ -248,3 +249,36 @@ def test_deleting_first_sheet_renumbers_remaining_sheets(client: TestClient) -> 
             (second_id, 1),
             (third_id, 2),
         ]
+
+
+def test_delete_sheet_rechecks_count_after_drawing_lock(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """After the drawing lock, sheet count must reflect a sibling delete that already committed.
+
+    Models the critical section of DELETE /sheets/{id} once FOR UPDATE has been
+    granted (on Postgres the loser waits; here the winner commits first). Without
+    the post-lock expire+recount, two sessions that both observed two sheets can
+    each delete one and leave the drawing empty.
+    """
+    project_id = _project(client)
+    drawing = client.post(f"/projects/{project_id}/drawings", json={"title": "Two sheets"}).json()
+    drawing_id = drawing["id"]
+    first_id = drawing["sheets"][0]["id"]
+    second_id = client.post(f"/drawings/{drawing_id}/sheets", json={}).json()["id"]
+
+    # Winner: concurrent delete of the first sheet has already committed.
+    assert client.delete(f"/sheets/{first_id}").status_code == 204
+
+    with session_factory() as db:
+        locked = _lock_drawing_for_update(db, drawing_id)
+        db.expire(locked, ["sheets"])
+        live_ids = {entry.id for entry in locked.sheets}
+        assert live_ids == {second_id}
+        # Loser must refuse: deleting the remaining sheet would empty the drawing.
+        assert len(live_ids) <= 1
+
+    # API path through the same gate (FOR UPDATE + expire is exercised on every delete).
+    refused = client.delete(f"/sheets/{second_id}")
+    assert refused.status_code == 409, refused.text
+    assert client.get(f"/drawings/{drawing_id}").json()["sheets"][0]["id"] == second_id

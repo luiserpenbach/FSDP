@@ -117,6 +117,25 @@ def _load_drawing(db: Session, drawing_id: str) -> Drawing:
     return drawing
 
 
+def _lock_drawing_for_update(db: Session, drawing_id: str) -> Drawing:
+    """Load a drawing with `SELECT … FOR UPDATE` so sheet mutators serialize.
+
+    Production Postgres holds the row lock across the count check and delete so
+    two concurrent `DELETE /sheets/{id}` calls on a two-sheet drawing cannot
+    both pass the "keep at least one sheet" gate under READ COMMITTED. SQLite
+    accepts `FOR UPDATE` but does not enforce row locks in the test suite.
+    """
+    drawing = db.scalar(
+        select(Drawing)
+        .where(Drawing.id == drawing_id)
+        .with_for_update()
+        .options(*DRAWING_LOAD_OPTIONS)
+    )
+    if drawing is None:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    return drawing
+
+
 def _ensure_editable(drawing: Drawing) -> None:
     """Released drawings are locked: changes go into a new revision (POST .../revise)."""
     if drawing.status == "released":
@@ -399,9 +418,17 @@ def delete_sheet(
     user: User = Depends(require_writer),
 ) -> Response:
     sheet = require_model(db, DrawingSheet, sheet_id)
-    drawing = _load_drawing(db, sheet.drawing_id)
+    # Lock before the count check: without it, two sessions can each see two
+    # sheets, both pass, and leave the drawing with zero sheets.
+    drawing = _lock_drawing_for_update(db, sheet.drawing_id)
     _ensure_editable(drawing)
-    if len(drawing.sheets) <= 1:
+    # Re-read sheets after the lock so a delete that committed while we waited
+    # is visible (READ COMMITTED). Also exercises the FOR UPDATE path on SQLite.
+    db.expire(drawing, ["sheets"])
+    live_ids = {entry.id for entry in drawing.sheets}
+    if sheet_id not in live_ids:
+        raise HTTPException(status_code=404, detail="Sheet not found")
+    if len(live_ids) <= 1:
         raise HTTPException(status_code=409, detail="A drawing must keep at least one sheet")
     removed_no = sheet.sheet_no
     delete_trace_links_for_many(db, sheet_trace_endpoints(db, [sheet.id]))
