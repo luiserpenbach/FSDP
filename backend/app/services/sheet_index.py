@@ -128,6 +128,27 @@ def mark_sheets_stale_for_part(db: Session, part_id: str) -> None:
     )
 
 
+def mark_sheets_stale_for_symbol(db: Session, symbol_id: str) -> None:
+    """Flag every unreleased sheet whose index places the custom symbol.
+
+    Port geometry, category, and tag prefix are resolved from the live catalog at
+    DRC time. Without this, a Symbol Editor save (or delete) leaves stored DRC
+    findings looking clean while live connectivity would raise dangling_line /
+    open_port / port_size_mismatch errors — and release would freeze that false
+    baseline.
+    """
+    sheet_ids = select(SheetItem.sheet_id).where(SheetItem.symbol_key == symbol_id)
+    db.execute(
+        update(DrawingSheet)
+        .where(
+            DrawingSheet.id.in_(sheet_ids),
+            DrawingSheet.drawing_id.in_(_unreleased_drawing_ids()),
+        )
+        .values(index_stale=True)
+        .execution_options(synchronize_session=False)
+    )
+
+
 def mark_project_sheets_stale(db: Session, project_id: str) -> None:
     """Flag every unreleased sheet of a project, e.g. after a requirement constraint changed."""
     drawing_ids = _unreleased_drawing_ids().where(Drawing.project_id == project_id)
