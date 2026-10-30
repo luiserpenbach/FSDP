@@ -83,6 +83,7 @@ from app.services.lists import rows_to_xlsx, spreadsheet_safe
 from app.services.sheet_index import (
     mark_project_sheets_stale,
     mark_sheets_stale_for_part,
+    mark_sheets_stale_for_symbol,
     stale_sheets_note,
 )
 from app.services.traceability import (
@@ -439,11 +440,15 @@ def update_symbol(
         if existing:
             raise HTTPException(status_code=409, detail="Symbol name already exists")
 
+    before = PidSymbolRead.model_validate(symbol).model_dump(exclude={"updated_at"})
     updates = payload.model_dump(exclude_unset=True)
     if "ports" in updates and updates["ports"] is not None:
         updates["ports"] = [port.model_dump() for port in payload.ports or []]
     for field, value in updates.items():
         setattr(symbol, field, value)
+    if PidSymbolRead.model_validate(symbol).model_dump(exclude={"updated_at"}) != before:
+        # Ports, category, and tag prefix feed browser DRC connectivity checks.
+        mark_sheets_stale_for_symbol(db, symbol.id)
     record_change(
         db, "symbol", symbol.id, "updated", f"Updated P&ID symbol {symbol.name}", actor=user.email
     )
@@ -459,6 +464,8 @@ def delete_symbol(
     user: User = Depends(require_writer),
 ) -> Response:
     symbol = require_model(db, PidSymbolDef, symbol_id)
+    # Placed sheets must re-run DRC: missing catalog ports become dangling/open.
+    mark_sheets_stale_for_symbol(db, symbol.id)
     record_change(
         db, "symbol", symbol.id, "deleted", f"Deleted P&ID symbol {symbol.name}", actor=user.email
     )
