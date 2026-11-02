@@ -357,6 +357,18 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     projectIdRef.current = projectId;
   }, [projectId]);
 
+  // Latest drawing/sheet ids for async create/delete/add-sheet: a forced
+  // re-select after await must not yank the user off a drawing or sheet they
+  // switched to (and may have dirtied) while the mutation was in flight.
+  const drawingIdRef = useRef(drawingId);
+  const sheetIdRef = useRef(sheetId);
+  useEffect(() => {
+    drawingIdRef.current = drawingId;
+  }, [drawingId]);
+  useEffect(() => {
+    sheetIdRef.current = sheetId;
+  }, [sheetId]);
+
   // Latest values for async work (sheet loads, background re-indexing).
   const canEditRef = useRef(canEdit);
   const sessionRef = useRef(session);
@@ -384,9 +396,15 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     setBlockers((current) => current.filter((blocker) => blocker.sheet_id !== targetSheetId || (blocker.code === "drc_errors" && drcErrors !== 0)));
   }, []);
 
-  /** Reload the drawing list; resolves null (and changes nothing) if the project changed meanwhile. */
+  /**
+   * Reload the drawing list; resolves null (and changes nothing) if the project
+   * changed meanwhile. `selectId` is applied only when the user is still on
+   * `onlyIfDrawingId` (the drawing that started the mutation). Navigating to
+   * another drawing during the await keeps that selection — and any unsaved
+   * edits — instead of being forced back without a discard confirm.
+   */
   const refreshDrawings = useCallback(
-    async (selectId?: string): Promise<Drawing[] | null> => {
+    async (selectId?: string, onlyIfDrawingId?: string): Promise<Drawing[] | null> => {
       if (!projectId) {
         setDrawings([]);
         return [];
@@ -394,7 +412,9 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       const list = await api.listDrawings(projectId);
       if (projectIdRef.current !== projectId) return null;
       setDrawings(list);
-      if (selectId) setDrawingId(selectId);
+      if (selectId && (onlyIfDrawingId === undefined || drawingIdRef.current === onlyIfDrawingId)) {
+        setDrawingId(selectId);
+      }
       return list;
     },
     [projectId]
@@ -1033,6 +1053,17 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     return !editor?.store.dirty || window.confirm("Discard unsaved drafting changes?");
   }
 
+  /**
+   * Discard check for work that resumes after an await. Click-time `confirmDiscard`
+   * closes over that render's `editor`; mid-await edits live on the current
+   * session, so read `sessionRef` / `sheetIdRef` instead.
+   */
+  function confirmDiscardLive(): boolean {
+    const open = sessionRef.current;
+    const dirty = Boolean(open && open.sheetId === sheetIdRef.current && open.editor.store.dirty);
+    return !dirty || window.confirm("Discard unsaved drafting changes?");
+  }
+
   function switchDrawing(nextId: string) {
     if (!confirmDiscard()) return;
     setDrawingId(nextId);
@@ -1046,6 +1077,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   async function createDrawing(form: NewDrawingForm) {
     // The created drawing opens in place of the current sheet.
     if (!confirmDiscard()) return;
+    const hostDrawingId = drawingIdRef.current;
     try {
       let firstSheet: { document?: unknown; source_diagram_id?: string | null } | undefined;
       let title = form.title;
@@ -1079,7 +1111,14 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
         fields: { company: form.company, scale: "NO SCALE" },
         first_sheet: firstSheet
       });
-      await refreshDrawings(created.id);
+      // Open the new drawing only when still on the host and mid-await edits are
+      // clean or the user confirms discard (#60 covers cross-drawing yank; the
+      // live confirm covers same-drawing edits made while create was in flight).
+      if (drawingIdRef.current === hostDrawingId && confirmDiscardLive()) {
+        await refreshDrawings(created.id, hostDrawingId);
+      } else {
+        await refreshDrawings();
+      }
       setCreating(null);
       notify(`Created drawing ${created.number}.`);
     } catch (error) {
@@ -1090,10 +1129,13 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   async function addSheet() {
     // The new sheet opens in place of this one.
     if (!drawing || !confirmDiscard()) return;
+    const hostDrawingId = drawing.id;
     try {
-      const sheet = await api.createSheet(drawing.id, {});
-      await refreshDrawings(drawing.id);
-      setSheetId(sheet.id);
+      const sheet = await api.createSheet(hostDrawingId, {});
+      await refreshDrawings(hostDrawingId, hostDrawingId);
+      // Stay put when the user left the drawing, or when mid-await edits on this
+      // drawing would be discarded without a confirm (beyond #60's drawing gate).
+      if (drawingIdRef.current === hostDrawingId && confirmDiscardLive()) setSheetId(sheet.id);
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not add a sheet.", true);
     }
@@ -1102,10 +1144,16 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   async function removeSheet() {
     if (!drawing || !sheetSummary || drawing.sheets.length <= 1) return;
     if (!window.confirm(`Delete sheet ${sheetSummary.sheet_no} of ${drawing.number}?`)) return;
+    const hostDrawingId = drawing.id;
+    const deletedSheetId = sheetSummary.id;
     try {
-      await api.deleteSheet(sheetSummary.id);
-      setSheetId("");
-      await refreshDrawings(drawing.id);
+      await api.deleteSheet(deletedSheetId);
+      await refreshDrawings(hostDrawingId, hostDrawingId);
+      if (drawingIdRef.current !== hostDrawingId) return;
+      // Only clear selection when still on the deleted sheet. A mid-await switch
+      // to another sheet of this drawing (with possible unsaved edits) must be
+      // left alone — #60's drawingId gate alone still called setSheetId("").
+      if (sheetIdRef.current === deletedSheetId) setSheetId("");
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not delete the sheet.", true);
     }
@@ -1113,11 +1161,16 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
 
   async function removeDrawing() {
     if (!drawing || !window.confirm(`Delete drawing ${drawing.number} and all of its sheets?`)) return;
+    const deletedId = drawing.id;
     try {
-      await api.deleteDrawing(drawing.id);
-      setSession(null);
+      await api.deleteDrawing(deletedId);
       const list = await refreshDrawings();
-      if (list) setDrawingId(list[0]?.id ?? "");
+      // Only move selection if the user is still on the deleted drawing. A
+      // mid-await switch (with possible unsaved edits) must be left alone.
+      if (list && drawingIdRef.current === deletedId) {
+        setSession(null);
+        setDrawingId(list[0]?.id ?? "");
+      }
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not delete the drawing.", true);
     }
