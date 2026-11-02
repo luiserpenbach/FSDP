@@ -65,3 +65,51 @@ def test_line_class_csv_import(client: TestClient) -> None:
 
     bad = client.post(f"/projects/{project_id}/line-classes/import", json={"csv": "foo,bar\n1,2\n"})
     assert bad.status_code == 422
+
+
+def test_line_class_csv_import_preserves_omitted_and_blank_fields(client: TestClient) -> None:
+    """A partial upsert must not null out fields the CSV never mentioned (or left blank)."""
+    project_id = client.post("/projects", json={"name": "AMB2"}).json()["id"]
+    created = client.post(
+        f"/projects/{project_id}/line-classes",
+        json={
+            "name": "A1A",
+            "material": "316L SS tube",
+            "rating": "3000 psig",
+            "wall": '0.035"',
+            "sizes": ['1/4"', '1/2"'],
+            "insulation": "foam",
+            "description": "instrument air",
+            "notes": "keep me",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    # Only material in the header — every other stored field must survive.
+    partial = client.post(
+        f"/projects/{project_id}/line-classes/import",
+        json={"csv": "name,material\nA1A,304SS\n"},
+    )
+    assert partial.status_code == 200, partial.text
+    assert partial.json() == {"created": 0, "updated": 1, "errors": []}
+    after_partial = client.get(f"/projects/{project_id}/line-classes").json()[0]
+    assert after_partial["material"] == "304SS"
+    assert after_partial["rating"] == "3000 psig"
+    assert after_partial["wall"] == '0.035"'
+    assert after_partial["sizes"] == ['1/4"', '1/2"']
+    assert after_partial["insulation"] == "foam"
+    assert after_partial["description"] == "instrument air"
+    assert after_partial["notes"] == "keep me"
+
+    # Blank cells in present columns also leave the stored value alone (parts import parity).
+    blanks = client.post(
+        f"/projects/{project_id}/line-classes/import",
+        json={"csv": "name,material,rating,notes,sizes\nA1A,316L,,,\n"},
+    )
+    assert blanks.status_code == 200, blanks.text
+    assert blanks.json()["updated"] == 1
+    after_blanks = client.get(f"/projects/{project_id}/line-classes").json()[0]
+    assert after_blanks["material"] == "316L"
+    assert after_blanks["rating"] == "3000 psig"
+    assert after_blanks["notes"] == "keep me"
+    assert after_blanks["sizes"] == ['1/4"', '1/2"']
