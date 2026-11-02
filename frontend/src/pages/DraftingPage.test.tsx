@@ -693,6 +693,95 @@ describe("DraftingPage", () => {
     confirm.mockRestore();
   });
 
+  it("does not open a newly added sheet when mid-await edits on the same drawing are kept", async () => {
+    // Beyond #60: staying on the host drawing and editing during createSheet still
+    // used to force setSheetId(new) with no second discard confirm.
+    let finishCreate: (created: DrawingSheet) => void = () => undefined;
+    const createPending = new Promise<DrawingSheet>((resolve) => {
+      finishCreate = resolve;
+    });
+    apiMock.createSheet.mockReturnValue(createPending);
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    renderPage();
+    const canvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(canvas.querySelector('[data-id="pt"]')).not.toBeNull());
+
+    fireEvent.click(screen.getByTitle("Add sheet"));
+    expect(apiMock.createSheet).toHaveBeenCalledWith("dw1", {});
+
+    // While createSheet is in flight, dirty the open sheet.
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    const added: DrawingSheet = { ...sheet, id: "sh-new", sheet_no: 3, title: null, document: { ...sheet.document, items: [] } };
+    const hostWithNewSheet: Drawing = {
+      ...drawing,
+      sheets: [...drawing.sheets, { id: "sh-new", sheet_no: 3, title: null, source_diagram_id: null }]
+    };
+    apiMock.listDrawings.mockResolvedValue([hostWithNewSheet]);
+    finishCreate(added);
+
+    await waitFor(() => expect(apiMock.listDrawings).toHaveBeenCalled());
+    expect(confirm).toHaveBeenCalledWith("Discard unsaved drafting changes?");
+    // Kept the dirty sheet 1 editor instead of opening sheet 3.
+    expect(screen.getByRole("tab", { name: "1" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.queryByRole("tab", { name: "3" })).toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it("does not clear another sheet's dirty editor when Delete sheet finishes after a mid-await switch", async () => {
+    // Beyond #60: drawingIdRef still matched the host, so setSheetId("") ran and
+    // discarded edits on the sheet the user switched to during deleteSheet.
+    const sheet2: DrawingSheet = {
+      ...sheet,
+      id: "sh2",
+      sheet_no: 2,
+      title: "Vent",
+      document: {
+        ...sheet.document,
+        items: [{ id: "hv", kind: "symbol", layer: "symbols", symbol: { library: "fsdp", key: "hand_valve", version: 1 }, position: { x: 80, y: 80 }, rotation: 0, tag: "HV-2", fields: {} }]
+      }
+    };
+    apiMock.getSheet.mockImplementation(async (id: string) => (id === "sh2" ? sheet2 : sheet));
+
+    let finishDelete: () => void = () => undefined;
+    const deletePending = new Promise<void>((resolve) => {
+      finishDelete = resolve;
+    });
+    apiMock.deleteSheet.mockReturnValue(deletePending);
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderPage();
+    await screen.findByTestId("schematic-canvas");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete sheet" }));
+    expect(confirm).toHaveBeenCalledWith("Delete sheet 1 of AMB2-9003?");
+    expect(apiMock.deleteSheet).toHaveBeenCalledWith("sh1");
+
+    // While delete is in flight, open sheet 2 and edit it.
+    fireEvent.click(screen.getByRole("tab", { name: "2" }));
+    const otherCanvas = await screen.findByTestId("schematic-canvas");
+    await waitFor(() => expect(otherCanvas.querySelector('[data-id="hv"]')).not.toBeNull());
+    fireEvent.keyDown(otherCanvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(otherCanvas, { key: "ArrowRight" });
+    expect(await screen.findByRole("button", { name: "Save" })).toBeEnabled();
+
+    const afterDelete: Drawing = { ...drawing, sheets: [{ id: "sh2", sheet_no: 1, title: "Vent", source_diagram_id: null }] };
+    apiMock.listDrawings.mockResolvedValue([afterDelete]);
+    finishDelete();
+
+    await waitFor(() => expect(apiMock.listDrawings).toHaveBeenCalled());
+    expect(screen.getByRole("tab", { name: "1" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    const stillOpen = screen.getByTestId("schematic-canvas");
+    expect(stillOpen.querySelector('[data-id="hv"]')).not.toBeNull();
+    confirm.mockRestore();
+  });
+
   it("keeps the open sheet and its unsaved edits when custom symbol metadata changes", async () => {
     const setRegistry = vi.spyOn(Editor.prototype, "setRegistry");
     const widget: PidSymbolDef = { id: "cs1", name: "Widget", view_box: "0 0 20 20", svg: "<rect width='20' height='20'/>", ports: [], category: "custom", legend: "WIDGET", tag_prefix: "W" };
