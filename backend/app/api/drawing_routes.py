@@ -1084,11 +1084,18 @@ def import_line_classes(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> dict:
-    """Upsert line classes from CSV (header: name, material, rating, wall, sizes, ...)."""
+    """Upsert line classes from CSV (header: name, material, rating, wall, sizes, ...).
+
+    Like parts/requirements import: only columns present in the header participate, and
+    blank cells leave existing values alone on update (defaults on create). A partial
+    CSV must not null out rating/wall/sizes/notes that the file simply did not mention.
+    """
     require_model(db, Project, project_id)
     reader = csv.DictReader(io.StringIO(payload.csv.strip()))
-    if not reader.fieldnames or "name" not in [name.strip().lower() for name in reader.fieldnames]:
+    headers = {(name or "").strip().lower() for name in (reader.fieldnames or []) if name}
+    if "name" not in headers:
         raise HTTPException(status_code=422, detail="CSV needs a header row with a 'name' column")
+    text_fields = ("description", "material", "rating", "wall", "insulation", "notes")
     existing = {
         row.name: row
         for row in db.scalars(select(LineClass).where(LineClass.project_id == project_id))
@@ -1106,23 +1113,30 @@ def import_line_classes(
         if not name:
             errors.append(f"row {index}: missing name")
             continue
-        sizes = [part.strip() for part in row.get("sizes", "").split(";") if part.strip()]
-        values = {
-            "description": row.get("description") or None,
-            "material": row.get("material") or None,
-            "rating": row.get("rating") or None,
-            "wall": row.get("wall") or None,
-            "sizes": sizes,
-            "insulation": row.get("insulation") or None,
-            "notes": row.get("notes") or None,
-        }
+        # Only non-blank cells from columns that appear in the header.
+        provided: dict = {}
+        for field in text_fields:
+            if field not in headers:
+                continue
+            value = row.get(field, "")
+            if value:
+                provided[field] = value
+        if "sizes" in headers:
+            sizes_raw = row.get("sizes", "")
+            if sizes_raw:
+                provided["sizes"] = [
+                    part.strip() for part in sizes_raw.split(";") if part.strip()
+                ]
         target = existing.get(name)
         if target:
-            for field, value in values.items():
+            for field, value in provided.items():
                 setattr(target, field, value)
             updated += 1
         else:
-            target = LineClass(project_id=project_id, name=name, **values)
+            create_values = {field: None for field in text_fields}
+            create_values["sizes"] = []
+            create_values.update(provided)
+            target = LineClass(project_id=project_id, name=name, **create_values)
             db.add(target)
             existing[name] = target
             created += 1
