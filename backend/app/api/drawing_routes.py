@@ -415,6 +415,10 @@ def delete_sheet(
         if entry.sheet_no != index:
             entry.sheet_no = index
             db.flush()
+    # Off-page connector targets and cross-sheet DRC in the remaining sheets'
+    # stored index were computed against the pre-delete sheet set / numbers.
+    # Flag them stale so release cannot freeze those rows into a baseline.
+    mark_drawing_sheets_stale(db, drawing.id)
     record_change(
         db,
         "drawing",
