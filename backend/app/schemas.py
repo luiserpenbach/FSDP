@@ -679,6 +679,44 @@ class TagSchemeRead(BaseModel):
 SCHEMATIC_SCHEMA_VERSION = 1
 
 
+def normalize_schematic_document(value: dict[str, Any]) -> dict[str, Any]:
+    """Coerce null/missing layers and meta so Drafting can open the document.
+
+    ``SchematicDocumentIn`` historically only required schemaVersion/sheet/items.
+    Explicit JSON null (or omission) for layers/meta was stored as-is; Editor and
+    render then crash on ``doc.meta.grid`` / ``doc.layers.filter``.
+    """
+    layers = value.get("layers")
+    meta = value.get("meta")
+    if layers is None:
+        layers = []
+    elif not isinstance(layers, list):
+        raise ValueError("layers must be a list")
+    if meta is None:
+        meta = {}
+    elif not isinstance(meta, dict):
+        raise ValueError("meta must be an object")
+    if value.get("layers") is layers and value.get("meta") is meta:
+        return value
+    return {**value, "layers": layers, "meta": meta}
+
+
+def heal_schematic_document(value: Any) -> Any:
+    """Heal already-persisted null/non-object layers or meta on read."""
+    if not isinstance(value, dict):
+        return value
+    layers = value.get("layers")
+    meta = value.get("meta")
+    if isinstance(layers, list) and isinstance(meta, dict):
+        return value
+    healed = dict(value)
+    if not isinstance(layers, list):
+        healed["layers"] = []
+    if not isinstance(meta, dict):
+        healed["meta"] = {}
+    return healed
+
+
 class SchematicDocumentIn(BaseModel):
     document: dict[str, Any]
 
@@ -701,13 +739,18 @@ class SchematicDocumentIn(BaseModel):
             seen.add(item["id"])
             if not isinstance(item.get("kind"), str):
                 raise ValueError(f"item {item['id']} has no kind")
-        return value
+        return normalize_schematic_document(value)
 
 
 class SchematicRead(BaseModel):
     diagram_id: str
     revision: int
     document: dict[str, Any] | None
+
+    @field_validator("document", mode="before")
+    @classmethod
+    def _heal_document(cls, value: Any) -> Any:
+        return heal_schematic_document(value)
 
 
 VALID_SHEET_SIZES = {"A4", "A3", "A2", "A1", "A0", "ANSI_A", "ANSI_B", "ANSI_C", "ANSI_D", "ANSI_E"}
@@ -1119,6 +1162,12 @@ class DrawingSheetRead(OrmModel):
     indexed_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+    @field_validator("document", mode="before")
+    @classmethod
+    def _heal_document(cls, value: Any) -> Any:
+        # Already-corrupt NULL layers/meta must not crash Drafting on open.
+        return heal_schematic_document(value)
 
 
 class DrawingSheetSummary(OrmModel):

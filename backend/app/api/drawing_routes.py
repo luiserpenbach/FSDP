@@ -57,6 +57,7 @@ from app.schemas import (
     TagSchemeIn,
     TagSchemeRead,
     VerificationMatrixRead,
+    normalize_schematic_document,
 )
 from app.services.bom import generate_drawing_bom_snapshot
 from app.services.drc import drawing_drc, replace_sheet_drc, sheet_drc, verification_matrix
@@ -165,11 +166,13 @@ def _sheet_source_document(
     if sheet_in is None:
         return _document_for_size(None, size), None
     if sheet_in.document is not None:
+        # DrawingSheetCreate already ran SchematicDocumentIn (normalized).
         return sheet_in.document, sheet_in.source_diagram_id
     if sheet_in.source_diagram_id:
         diagram = require_model(db, Diagram, sheet_in.source_diagram_id)
         if diagram.schematic:
-            return diagram.schematic, diagram.id
+            # Stored schematics skip SchematicDocumentIn; heal null layers/meta.
+            return normalize_schematic_document(diagram.schematic), diagram.id
         raise HTTPException(
             status_code=422,
             detail="Diagram has no schematic document yet; convert it in the browser first",
