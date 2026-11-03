@@ -248,3 +248,6 @@ def test_deleting_first_sheet_renumbers_remaining_sheets(client: TestClient) -> 
             (second_id, 1),
             (third_id, 2),
         ]
+        # Remaining sheets' stored index/DRC still describe the pre-delete sheet
+        # set (connector targets, cross-sheet tags); they must be re-saved.
+        assert [sheet["index_stale"] for sheet in sheets] == [True, True]

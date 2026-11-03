@@ -399,6 +399,75 @@ def test_part_changes_mark_sheets_using_it_stale(client: TestClient) -> None:
     assert _sheet_stale(client, unrelated["id"]) == [False]
 
 
+def test_delete_sheet_marks_remaining_stale_so_release_cannot_freeze_old_targets(
+    client: TestClient,
+) -> None:
+    """Deleting a sheet renumbers siblings and invalidates their stored index.
+
+    Without the stale flag, release would freeze pre-delete off-page connector
+    targets (e.g. "SHT 3") into the immutable revision snapshot.
+    """
+    drawing = _drawing(client, _project(client), "c1")
+    drawing_id = drawing["id"]
+    first_id = drawing["sheets"][0]["id"]
+    second_id = client.post(
+        f"/drawings/{drawing_id}/sheets", json={"document": _document("c2")}
+    ).json()["id"]
+    third_id = client.post(
+        f"/drawings/{drawing_id}/sheets", json={"document": _document("c3")}
+    ).json()["id"]
+
+    def save_with_target(sheet_id: str, item_id: str, target: str) -> None:
+        saved = client.put(
+            f"/sheets/{sheet_id}",
+            json={
+                "document": _document(item_id),
+                "index": {
+                    "items": [
+                        {
+                            "item_id": item_id,
+                            "kind": "symbol",
+                            "category": "connector",
+                            "symbol_key": "off_page_connector",
+                            "fields": {"ref": "A", "target": target},
+                        }
+                    ],
+                    "lines": [],
+                },
+                "drc": {"findings": [], "checks": []},
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+    save_with_target(first_id, "c1", "SHT 3 / A-1")
+    save_with_target(second_id, "c2", "SHT 1 / A-1")
+    save_with_target(third_id, "c3", "SHT 1 / A-1")
+    assert _sheet_stale(client, drawing_id) == [False, False, False]
+
+    assert client.delete(f"/sheets/{second_id}").status_code == 204
+    assert _sheet_stale(client, drawing_id) == [True, True]
+
+    refused = client.post(f"/drawings/{drawing_id}/release")
+    assert refused.status_code == 409
+    assert [(reason["code"], reason["sheet_no"]) for reason in refused.json()["detail"]["reasons"]] == [
+        ("index_stale", 1),
+        ("index_stale", 2),
+    ]
+
+    # Re-index against the post-delete sheet numbers, then release.
+    save_with_target(first_id, "c1", "SHT 2 / A-1")
+    save_with_target(third_id, "c3", "SHT 1 / A-1")
+    released = client.post(f"/drawings/{drawing_id}/release")
+    assert released.status_code == 200, released.text
+    snapshot = client.get(
+        f"/revisions/{released.json()['current_revision']['id']}/snapshot"
+    ).json()["snapshot"]
+    assert [(sheet["sheet_no"], sheet["items"][0]["fields"]["target"]) for sheet in snapshot["sheets"]] == [
+        (1, "SHT 2 / A-1"),
+        (2, "SHT 1 / A-1"),
+    ]
+
+
 def test_released_drawings_stay_current_until_revised(client: TestClient) -> None:
     project_id = _project(client)
     part = _part(client)
