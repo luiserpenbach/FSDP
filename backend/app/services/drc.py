@@ -22,6 +22,21 @@ from app.schemas import DrcIn
 from app.services.sheet_index import stale_sheets
 
 
+def clear_requirement_waivers(db: Session, requirement_id: str) -> int:
+    """Drop stored waivers for a requirement so a constraint edit cannot keep silencing new failures.
+
+    Finding keys are `requirement:{requirement_id}:…`; any waiver whose key starts with that
+    prefix belonged to a prior finding under this requirement.
+    """
+    prefix = f"requirement:{requirement_id}:"
+    waivers = list(db.scalars(select(DrcWaiver).where(DrcWaiver.key.like(f"{prefix}%"))))
+    for waiver in waivers:
+        db.delete(waiver)
+    if waivers:
+        db.flush()
+    return len(waivers)
+
+
 def replace_sheet_drc(db: Session, sheet: DrawingSheet, drc: DrcIn) -> None:
     """Replace the stored findings and requirement checks of a sheet."""
     for existing in db.scalars(select(DrcResult).where(DrcResult.sheet_id == sheet.id)):

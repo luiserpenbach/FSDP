@@ -21,7 +21,7 @@ import type { EquipmentItem, Item, LineItem, SchematicDocument, SymbolItem } fro
 export type DrcSeverity = "error" | "warning" | "info";
 
 export type DrcFinding = {
-  /** Stable identity for waivers: `${rule}:${subject}`. */
+  /** Stable identity for waivers: `${rule}:${subject}`. Subject must fingerprint the finding's semantics (constraint kind/values, part id/status, etc.) so a waiver cannot silence a different successor error. */
   key: string;
   rule: string;
   severity: DrcSeverity;
@@ -116,6 +116,28 @@ const RELIEF_KEYS = new Set(["relief_valve", "safety_valve", "rupture_disc"]);
 const OPEN_KEYS = new Set(["vent_atmosphere", "drain"]);
 const PROCESS_LINE_TYPES = new Set(["process", "vacuum", "capillary"]);
 const STUB_MM = 25;
+
+/** Canonical constraint fingerprint for requirement waiver keys. */
+export function requirementConstraintKey(constraint: RequirementConstraint): string {
+  const values = constraint.values
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+  return `${constraint.kind}:${values.join(",")}`;
+}
+
+/** Subject key for part_status findings: item + part + status that made it an error/warning. */
+export function partStatusSubjectKey(itemId: string, part: PartLike): string {
+  const lifecycle = part.lifecycle_status ?? "unknown";
+  if (lifecycle === "obsolete" || lifecycle === "restricted") {
+    return `${itemId}:${part.id}:${lifecycle}`;
+  }
+  if (lifecycle === "draft") {
+    return `${itemId}:${part.id}:draft`;
+  }
+  const qualification = part.qualification_status ?? "unknown";
+  return `${itemId}:${part.id}:unqualified:${qualification}:${part.preferred ? "1" : "0"}`;
+}
 
 function caption(item: Item | undefined): string | null {
   if (!item) return null;
@@ -352,9 +374,9 @@ export function runDrc(input: DrcInput): DrcResult {
       continue;
     }
     if (part.lifecycle_status === "obsolete" || part.lifecycle_status === "restricted") {
-      add("part_status", "error", item, `${describe(item)} uses ${part.part_number}, which is ${part.lifecycle_status}`);
+      add("part_status", "error", item, `${describe(item)} uses ${part.part_number}, which is ${part.lifecycle_status}`, partStatusSubjectKey(item.id, part));
     } else if (part.lifecycle_status === "draft" || (!part.preferred && part.qualification_status !== "qualified")) {
-      add("part_status", "warning", item, `${describe(item)} uses ${part.part_number}, which is ${part.lifecycle_status === "draft" ? "a draft" : "not qualified"}`);
+      add("part_status", "warning", item, `${describe(item)} uses ${part.part_number}, which is ${part.lifecycle_status === "draft" ? "a draft" : "not qualified"}`, partStatusSubjectKey(item.id, part));
     }
     const rating = partWarnings(part, linesByItem.get(item.id) ?? []).find((warning) => warning.startsWith("Rated"));
     if (rating) add("part_rating", "warning", item, `${describe(item)} uses ${part.part_number}: ${rating}`);
@@ -389,9 +411,19 @@ export function runDrc(input: DrcInput): DrcResult {
     const constraint = requirement.constraint;
     if (!constraint) continue;
     const label = `${requirement.key} (${requirement.title})`;
+    const constraintKey = requirementConstraintKey(constraint);
     const check = (item: Item, status: "pass" | "fail", message: string, subject?: string) => {
       requirementChecks.push({ requirementId: requirement.id, itemId: item.id, subject: subject ?? caption(item), zone: zoneOf(item), status, message });
-      if (status === "fail") add("requirement", "error", item, `${label}: ${message}`, `${requirement.id}:${item.id}`, { requirementId: requirement.id });
+      if (status === "fail") {
+        add(
+          "requirement",
+          "error",
+          item,
+          `${label}: ${message}`,
+          `${requirement.id}:${item.id}:${constraintKey}`,
+          { requirementId: requirement.id }
+        );
+      }
     };
     const values = constraint.values.map((value) => value.trim()).filter(Boolean);
     const lower = values.map((value) => value.toLowerCase());

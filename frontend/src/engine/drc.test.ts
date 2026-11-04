@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isolableVolumes, runDrc, type RequirementRef } from "./drc";
+import { isolableVolumes, partStatusSubjectKey, requirementConstraintKey, runDrc, type RequirementRef } from "./drc";
 import { findingsDocument, renderFindingsSheet } from "./drcSheet";
 import { lineThrough, symbolAt } from "./fixtures";
 import { SymbolRegistry } from "./library";
@@ -13,7 +13,9 @@ const registry = SymbolRegistry.withBuiltins();
 const parts = new Map([
   ["p-316", { id: "p-316", part_number: "AMB2-001", material: "316L SS", pressure_rating_bar: 400, lifecycle_status: "active", qualification_status: "qualified", preferred: true }],
   ["p-brass", { id: "p-brass", part_number: "AMB2-003", material: "Brass", pressure_rating_bar: 100, lifecycle_status: "active", qualification_status: "qualified", preferred: false }],
-  ["p-draft", { id: "p-draft", part_number: "AMB2-004", material: "316L", pressure_rating_bar: 50, lifecycle_status: "draft", qualification_status: "unqualified", preferred: false }]
+  ["p-draft", { id: "p-draft", part_number: "AMB2-004", material: "316L", pressure_rating_bar: 50, lifecycle_status: "draft", qualification_status: "unqualified", preferred: false }],
+  ["p-obsolete", { id: "p-obsolete", part_number: "AMB2-OLD", material: "316L", pressure_rating_bar: 400, lifecycle_status: "obsolete", qualification_status: "qualified", preferred: false }],
+  ["p-restricted", { id: "p-restricted", part_number: "AMB2-RST", material: "316L", pressure_rating_bar: 400, lifecycle_status: "restricted", qualification_status: "qualified", preferred: false }]
 ]);
 
 /** A clean helium fill slice: every isolable volume relieved, every line numbered and sized. */
@@ -161,7 +163,12 @@ describe("design rule checks", () => {
     const result = runDrc({ doc, registry, tagScheme: DEFAULT_TAG_SCHEME, parts, requirements });
     const failures = result.findings.filter((finding) => finding.rule === "requirement");
     expect(failures).toHaveLength(1);
-    expect(failures[0]).toMatchObject({ key: "requirement:r1:hv", severity: "error", requirementId: "r1", subject: "HV-3201" });
+    expect(failures[0]).toMatchObject({
+      key: `requirement:r1:hv:${requirementConstraintKey({ kind: "material_in", values: ["316L"] })}`,
+      severity: "error",
+      requirementId: "r1",
+      subject: "HV-3201"
+    });
     expect(failures[0].message).toBe("REQ-7 (316L wetted): AMB2-003 material Brass is not one of 316L");
     const checks = result.requirementChecks;
     expect(checks.filter((check) => check.requirementId === "r1").map((check) => [check.subject, check.status])).toEqual([["HV-3201", "fail"], ["PCV-3202", "pass"]]);
@@ -180,6 +187,74 @@ describe("design rule checks", () => {
     expect(result.waived).toHaveLength(1);
     expect(result.waived[0].waiver.reason).toBe("stub between valve and regulator");
     expect(result.counts.waived).toBe(1);
+  });
+
+  it("does not let a material waiver silence a later pressure-rating failure on the same item", () => {
+    const doc = cleanDocument();
+    const material: RequirementRef = {
+      id: "r1",
+      key: "REQ-7",
+      title: "316L wetted",
+      constraint: { kind: "material_in", values: ["316L"], scope: { services: ["GHe"] } }
+    };
+    const materialKey = `requirement:r1:hv:${requirementConstraintKey(material.constraint!)}`;
+    const waived = runDrc({
+      doc,
+      registry,
+      tagScheme: DEFAULT_TAG_SCHEME,
+      parts,
+      requirements: [material],
+      waivers: [{ key: materialKey, reason: "Brass accepted for bottle valve" }]
+    });
+    expect(waived.counts).toMatchObject({ error: 0, waived: 1 });
+    expect(waived.waived[0].key).toBe(materialKey);
+
+    const pressure: RequirementRef = {
+      id: "r1",
+      key: "REQ-7",
+      title: "316L wetted",
+      constraint: { kind: "pressure_rating_min", values: ["999"], scope: { services: ["GHe"] } }
+    };
+    const after = runDrc({
+      doc,
+      registry,
+      tagScheme: DEFAULT_TAG_SCHEME,
+      parts,
+      requirements: [pressure],
+      waivers: [{ key: materialKey, reason: "Brass accepted for bottle valve" }]
+    });
+    const failure = after.findings.find((finding) => finding.rule === "requirement");
+    expect(failure?.key).toBe(`requirement:r1:hv:${requirementConstraintKey(pressure.constraint!)}`);
+    expect(failure?.key).not.toBe(materialKey);
+    expect(after.counts.error).toBeGreaterThanOrEqual(1);
+    expect(after.waived).toHaveLength(0);
+  });
+
+  it("does not let a part_status waiver follow a reassigned restricted part", () => {
+    const doc = cleanDocument();
+    item<SymbolItem>(doc, "hv").partId = "p-obsolete";
+    const obsoleteKey = `part_status:${partStatusSubjectKey("hv", parts.get("p-obsolete")!)}`;
+    const waived = runDrc({
+      doc,
+      registry,
+      tagScheme: DEFAULT_TAG_SCHEME,
+      parts,
+      waivers: [{ key: obsoleteKey, reason: "legacy bottle valve until spares arrive" }]
+    });
+    expect(waived.counts).toMatchObject({ error: 0, waived: 1 });
+
+    item<SymbolItem>(doc, "hv").partId = "p-restricted";
+    const after = runDrc({
+      doc,
+      registry,
+      tagScheme: DEFAULT_TAG_SCHEME,
+      parts,
+      waivers: [{ key: obsoleteKey, reason: "legacy bottle valve until spares arrive" }]
+    });
+    const failure = after.findings.find((finding) => finding.rule === "part_status");
+    expect(failure?.key).toBe(`part_status:${partStatusSubjectKey("hv", parts.get("p-restricted")!)}`);
+    expect(failure?.severity).toBe("error");
+    expect(after.waived).toHaveLength(0);
   });
 
   it("renders a findings page in the drawing frame", () => {

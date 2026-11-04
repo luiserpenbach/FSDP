@@ -79,6 +79,7 @@ from app.services.catalog import (
     sanitize_upload_filename,
 )
 from app.services.change_impact import get_change_impact
+from app.services.drc import clear_requirement_waivers
 from app.services.lists import rows_to_xlsx, spreadsheet_safe
 from app.services.sheet_index import (
     mark_project_sheets_stale,
@@ -963,9 +964,14 @@ def update_requirement(
             raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
     had_constraint = requirement.constraint is not None
+    prior_constraint = requirement.constraint
     apply_updates(requirement, payload)
+    constraint_changed = prior_constraint != requirement.constraint
     if had_constraint or requirement.constraint is not None:
         mark_project_sheets_stale(db, requirement.project_id)
+    if constraint_changed:
+        # Coarse legacy keys (and any prior fingerprint) must not silence the new constraint.
+        clear_requirement_waivers(db, requirement.id)
     record_change(
         db,
         "requirement",
@@ -989,6 +995,7 @@ def delete_requirement(
     delete_trace_links_for(db, "requirement", requirement.id)
     if requirement.constraint is not None:
         mark_project_sheets_stale(db, requirement.project_id)
+        clear_requirement_waivers(db, requirement.id)
     record_change(
         db,
         "requirement",
