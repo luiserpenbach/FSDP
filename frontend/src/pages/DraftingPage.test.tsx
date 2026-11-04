@@ -659,7 +659,7 @@ describe("DraftingPage", () => {
     await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
     const [, body] = apiMock.updateSheet.mock.calls[0] as [string, { drc: { findings: Array<{ key: string; requirementId?: string }>; checks: Array<{ requirementId: string; status: string; subject: string | null }> } }];
     expect(body.drc.findings.map((finding) => finding.key)).toContain("open_port:hv:in");
-    expect(body.drc.findings.find((finding) => finding.key === "requirement:r1:hv")?.requirementId).toBe("r1");
+    expect(body.drc.findings.find((finding) => finding.key.startsWith("requirement:r1:hv:"))?.requirementId).toBe("r1");
     expect(body.drc.checks).toEqual([{ requirementId: "r1", itemId: "hv", subject: "PT-3222", zone: expect.any(String), status: "fail", message: "AMB2-003 material brass is not one of 316L" }]);
   });
 

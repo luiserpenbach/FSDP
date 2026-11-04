@@ -158,6 +158,53 @@ def test_drc_results_are_replaced_on_save_and_waivers_survive(client: TestClient
     )
 
 
+def test_constraint_edit_clears_requirement_waivers(client: TestClient) -> None:
+    """A waived material finding must not keep silencing the sheet after the constraint changes."""
+    project_id = _project(client)
+    drawing = _drawing(client, project_id)
+    sheet_id = drawing["sheets"][0]["id"]
+    requirement = _requirement(
+        client, project_id, "REQ-7", {"kind": "material_in", "values": ["316L"]}
+    )
+    finding_key = f"requirement:{requirement['id']}:hv:material_in:316l"
+    assert (
+        client.put(
+            f"/sheets/{sheet_id}",
+            json={
+                "drc": {
+                    "findings": [
+                        {
+                            "key": finding_key,
+                            "rule": "requirement",
+                            "severity": "error",
+                            "message": "Brass not allowed",
+                            "itemId": "hv",
+                            "requirementId": requirement["id"],
+                        }
+                    ],
+                    "checks": [],
+                }
+            },
+        ).status_code
+        == 200
+    )
+    waived = client.put(
+        f"/sheets/{sheet_id}/drc/waivers",
+        json={"key": finding_key, "reason": "Brass accepted for bottle valve"},
+    )
+    assert waived.status_code == 201, waived.text
+    assert client.get(f"/sheets/{sheet_id}/drc").json()["counts"]["waived"] == 1
+
+    updated = client.put(
+        f"/requirements/{requirement['id']}",
+        json={"constraint": {"kind": "pressure_rating_min", "values": ["999"]}},
+    )
+    assert updated.status_code == 200, updated.text
+    drc = client.get(f"/sheets/{sheet_id}/drc").json()
+    assert drc["waivers"] == []
+    assert client.get(f"/sheets/{sheet_id}").json()["index_stale"] is True
+
+
 def test_requirement_constraints_are_validated_and_normalized(client: TestClient) -> None:
     project_id = _project(client)
     created = _requirement(
