@@ -250,14 +250,14 @@ def test_deleting_first_sheet_renumbers_remaining_sheets(client: TestClient) -> 
         ]
 
 
-def test_sheet_document_json_null_layers_or_meta_do_not_brick_open(
+def test_sheet_document_json_null_containers_do_not_brick_open(
     client: TestClient, session_factory: sessionmaker[Session]
 ) -> None:
-    """Explicit JSON null on document.layers/meta must not persist and crash Drafting.
+    """JSON null/omission on document containers must not persist and crash Drafting.
 
-    Before the fix, SchematicDocumentIn accepted layers:null / meta:null, PUT
-    returned 200, and Editor/render then threw on doc.meta.grid / doc.layers.filter
-    so the sheet could not be opened in the UI.
+    SchematicDocumentIn historically only required schemaVersion/sheet/items, so
+    layers/meta null (or omit), sheet.frame null, and item.fields null returned
+    200 and then crashed Editor/render/withFrameTemplate/buildSheetIndex.
     """
     project_id = _project(client)
     drawing = client.post(
@@ -266,6 +266,7 @@ def test_sheet_document_json_null_layers_or_meta_do_not_brick_open(
     ).json()
     sheet_id = drawing["sheets"][0]["id"]
     base = _document()
+    default_frame = {"kind": "basic", "columns": 4, "rows": 3, "margin": 10}
 
     for field, empty in (("layers", []), ("meta", {})):
         updated = client.put(f"/sheets/{sheet_id}", json={"document": {**base, field: None}})
@@ -277,17 +278,42 @@ def test_sheet_document_json_null_layers_or_meta_do_not_brick_open(
         assert listed.json()["document"][field] == empty
         assert listed.json()["document"]["items"][0]["tag"] == "HV-1"
 
-    # Omitting the fields must also normalize rather than store missing keys.
+    # Omitting layers/meta must also normalize rather than store missing keys.
     omitted = {key: value for key, value in base.items() if key not in {"layers", "meta"}}
     saved = client.put(f"/sheets/{sheet_id}", json={"document": omitted})
     assert saved.status_code == 200, saved.text
     assert saved.json()["document"]["layers"] == []
     assert saved.json()["document"]["meta"] == {}
 
+    # sheet.frame null → default frame (withFrameTemplate / zoneAt need .kind/.margin).
+    framed = client.put(
+        f"/sheets/{sheet_id}",
+        json={"document": {**base, "sheet": {**base["sheet"], "frame": None}}},
+    )
+    assert framed.status_code == 200, framed.text
+    assert framed.json()["document"]["sheet"]["frame"] == default_frame
+
+    # item.fields null → {} (buildSheetIndex reads item.fields.mounting).
+    item = {**base["items"][0], "fields": None}
+    fielded = client.put(f"/sheets/{sheet_id}", json={"document": {**base, "items": [item]}})
+    assert fielded.status_code == 200, fielded.text
+    assert fielded.json()["document"]["items"][0]["fields"] == {}
+    assert fielded.json()["document"]["items"][0]["tag"] == "HV-1"
+
     # Wrong types stay 422 (not silently wiped).
     for field, bad in (("layers", "x"), ("meta", [])):
         rejected = client.put(f"/sheets/{sheet_id}", json={"document": {**base, field: bad}})
         assert rejected.status_code == 422, rejected.text
+    rejected_frame = client.put(
+        f"/sheets/{sheet_id}",
+        json={"document": {**base, "sheet": {**base["sheet"], "frame": []}}},
+    )
+    assert rejected_frame.status_code == 422, rejected_frame.text
+    rejected_fields = client.put(
+        f"/sheets/{sheet_id}",
+        json={"document": {**base, "items": [{**base["items"][0], "fields": []}]}},
+    )
+    assert rejected_fields.status_code == 422, rejected_fields.text
 
     # Already-corrupt rows (pre-fix) heal on read so Drafting can open them.
     with session_factory() as db:
@@ -295,12 +321,20 @@ def test_sheet_document_json_null_layers_or_meta_do_not_brick_open(
 
         sheet = db.get(DrawingSheet, sheet_id)
         assert sheet is not None
-        sheet.document = {**base, "layers": None, "meta": None}
+        sheet.document = {
+            **base,
+            "layers": None,
+            "meta": None,
+            "sheet": {**base["sheet"], "frame": None},
+            "items": [{**base["items"][0], "fields": None}],
+        }
         db.commit()
 
     healed = client.get(f"/sheets/{sheet_id}")
     assert healed.status_code == 200, healed.text
     assert healed.json()["document"]["layers"] == []
     assert healed.json()["document"]["meta"] == {}
+    assert healed.json()["document"]["sheet"]["frame"] == default_frame
+    assert healed.json()["document"]["items"][0]["fields"] == {}
     assert healed.json()["document"]["items"][0]["tag"] == "HV-1"
 

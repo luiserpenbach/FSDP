@@ -678,13 +678,23 @@ class TagSchemeRead(BaseModel):
 
 SCHEMATIC_SCHEMA_VERSION = 1
 
+# Matches EMPTY_DOCUMENT's frame so Drafting's withFrameTemplate / zone math can run.
+_DEFAULT_SHEET_FRAME: dict[str, Any] = {
+    "kind": "basic",
+    "columns": 4,
+    "rows": 3,
+    "margin": 10,
+}
+
 
 def normalize_schematic_document(value: dict[str, Any]) -> dict[str, Any]:
-    """Coerce null/missing layers and meta so Drafting can open the document.
+    """Coerce null/missing document containers so Drafting can open the sheet.
 
     ``SchematicDocumentIn`` historically only required schemaVersion/sheet/items.
-    Explicit JSON null (or omission) for layers/meta was stored as-is; Editor and
-    render then crash on ``doc.meta.grid`` / ``doc.layers.filter``.
+    Explicit JSON null (or omission) for layers/meta/sheet.frame/item.fields was
+    stored as-is; Editor, render, withFrameTemplate, and buildSheetIndex then
+    crash on ``doc.meta.grid``, ``doc.layers.filter``, ``sheet.frame.*``, or
+    ``item.fields.*``.
     """
     layers = value.get("layers")
     meta = value.get("meta")
@@ -696,24 +706,74 @@ def normalize_schematic_document(value: dict[str, Any]) -> dict[str, Any]:
         meta = {}
     elif not isinstance(meta, dict):
         raise ValueError("meta must be an object")
-    if value.get("layers") is layers and value.get("meta") is meta:
+
+    sheet_in = value.get("sheet")
+    if not isinstance(sheet_in, dict):
+        raise ValueError("sheet is required")
+    frame = sheet_in.get("frame")
+    if frame is None:
+        frame = dict(_DEFAULT_SHEET_FRAME)
+    elif not isinstance(frame, dict):
+        raise ValueError("sheet.frame must be an object")
+    sheet = sheet_in if sheet_in.get("frame") is frame else {**sheet_in, "frame": frame}
+
+    items_in = value.get("items")
+    if not isinstance(items_in, list):
+        raise ValueError("items must be a list")
+    items: list[Any] = []
+    items_changed = False
+    for item in items_in:
+        if not isinstance(item, dict):
+            items.append(item)
+            continue
+        fields = item.get("fields")
+        if fields is None:
+            items.append({**item, "fields": {}})
+            items_changed = True
+        elif not isinstance(fields, dict):
+            raise ValueError(f"item {item.get('id', '?')} fields must be an object")
+        else:
+            items.append(item)
+
+    if (
+        value.get("layers") is layers
+        and value.get("meta") is meta
+        and value.get("sheet") is sheet
+        and not items_changed
+    ):
         return value
-    return {**value, "layers": layers, "meta": meta}
+    return {**value, "layers": layers, "meta": meta, "sheet": sheet, "items": items}
 
 
 def heal_schematic_document(value: Any) -> Any:
-    """Heal already-persisted null/non-object layers or meta on read."""
+    """Heal already-persisted null/non-object document containers on read."""
     if not isinstance(value, dict):
         return value
     layers = value.get("layers")
     meta = value.get("meta")
-    if isinstance(layers, list) and isinstance(meta, dict):
+    sheet_in = value.get("sheet")
+    items_in = value.get("items")
+    frame_ok = isinstance(sheet_in, dict) and isinstance(sheet_in.get("frame"), dict)
+
+    def _item_fields_ok(item: Any) -> bool:
+        # buildSheetIndex reads item.fields.mounting; null/missing both TypeError in JS.
+        return not isinstance(item, dict) or isinstance(item.get("fields"), dict)
+
+    items_ok = isinstance(items_in, list) and all(_item_fields_ok(item) for item in items_in)
+    if isinstance(layers, list) and isinstance(meta, dict) and frame_ok and items_ok:
         return value
     healed = dict(value)
     if not isinstance(layers, list):
         healed["layers"] = []
     if not isinstance(meta, dict):
         healed["meta"] = {}
+    if isinstance(sheet_in, dict) and not isinstance(sheet_in.get("frame"), dict):
+        healed["sheet"] = {**sheet_in, "frame": dict(_DEFAULT_SHEET_FRAME)}
+    if isinstance(items_in, list) and not items_ok:
+        healed["items"] = [
+            {**item, "fields": {}} if isinstance(item, dict) and not isinstance(item.get("fields"), dict) else item
+            for item in items_in
+        ]
     return healed
 
 
