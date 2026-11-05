@@ -360,7 +360,12 @@ def update_sheet(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> DrawingSheet:
-    sheet = require_model(db, DrawingSheet, sheet_id)
+    # Lock the sheet row before replacing index/DRC so a concurrent BoM/list
+    # read that holds `DrawingSheet` FOR UPDATE (see drawing_index_rows) cannot
+    # observe items from one index generation and lines from another.
+    sheet = db.scalar(select(DrawingSheet).where(DrawingSheet.id == sheet_id).with_for_update())
+    if sheet is None:
+        raise HTTPException(status_code=404, detail="DrawingSheet not found")
     drawing = _editable_sheet_drawing(db, sheet)
     data = payload.model_dump(exclude_unset=True)
     if "title" in data:

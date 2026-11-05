@@ -81,26 +81,83 @@ def _upsert(
         setattr(row, field, value)
 
 
+def _index_row_fingerprint(
+    items: list[ItemRow], lines: list[LineRow]
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    """Stable identity of the loaded index: (sheet_id, item_id/line_id) pairs.
+
+    Used to detect a torn read when a concurrent replace_sheet_index commits
+    between the items query and the lines query (Postgres READ COMMITTED).
+    """
+    item_keys = tuple(sorted((item.sheet_id, item.item_id) for item, _, _ in items))
+    line_keys = tuple(sorted((line.sheet_id, line.line_id) for line, _, _ in lines))
+    return item_keys, line_keys
+
+
+def _after_index_items_loaded(db: Session, drawing_ids: list[str]) -> None:
+    """Called between the items and lines queries of one index load.
+
+    Production no-op. Tests patch this to simulate a concurrent
+    `replace_sheet_index` committing under READ COMMITTED (SQLite has no
+    useful `FOR UPDATE`, so the fingerprint retry is what recovers).
+    """
+    return None
+
+
 def drawing_index_rows(db: Session, drawings: list[Drawing]) -> tuple[list[ItemRow], list[LineRow]]:
-    """All item and line rows of the given drawings joined with their sheet and drawing."""
+    """All item and line rows of the given drawings joined with their sheet and drawing.
+
+    Items and lines are loaded in two queries. Under Postgres READ COMMITTED a
+    concurrent sheet save can commit `replace_sheet_index` between them, so a
+    BoM or list export would mix two index generations (e.g. removed valves with
+    post-save tubing). Sheet row locks serialize against saves that bump
+    `index_stale`/`indexed_at` on the same `DrawingSheet` rows; a fingerprint
+    re-check retries when the index still changes mid-read (SQLite, where
+    `FOR UPDATE` is a no-op, and any writer that touches index rows without
+    updating the sheet row).
+    """
     drawing_ids = [drawing.id for drawing in drawings]
     if not drawing_ids:
         return [], []
-    items = db.execute(
-        select(SheetItem, DrawingSheet, Drawing)
-        .join(DrawingSheet, SheetItem.sheet_id == DrawingSheet.id)
-        .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
-        .where(Drawing.id.in_(drawing_ids))
-        .order_by(Drawing.number, DrawingSheet.sheet_no)
+    # Ordered locks avoid deadlocks with multi-sheet BoM/list reads.
+    db.scalars(
+        select(DrawingSheet)
+        .where(DrawingSheet.drawing_id.in_(drawing_ids))
+        .order_by(DrawingSheet.id)
+        .with_for_update()
     ).all()
-    lines = db.execute(
-        select(SheetLine, DrawingSheet, Drawing)
-        .join(DrawingSheet, SheetLine.sheet_id == DrawingSheet.id)
-        .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
-        .where(Drawing.id.in_(drawing_ids))
-        .order_by(Drawing.number, DrawingSheet.sheet_no)
-    ).all()
-    return [tuple(row) for row in items], [tuple(row) for row in lines]
+
+    def _load() -> tuple[list[ItemRow], list[LineRow]]:
+        items = db.execute(
+            select(SheetItem, DrawingSheet, Drawing)
+            .join(DrawingSheet, SheetItem.sheet_id == DrawingSheet.id)
+            .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+            .where(Drawing.id.in_(drawing_ids))
+            .order_by(Drawing.number, DrawingSheet.sheet_no)
+        ).all()
+        _after_index_items_loaded(db, drawing_ids)
+        lines = db.execute(
+            select(SheetLine, DrawingSheet, Drawing)
+            .join(DrawingSheet, SheetLine.sheet_id == DrawingSheet.id)
+            .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+            .where(Drawing.id.in_(drawing_ids))
+            .order_by(Drawing.number, DrawingSheet.sheet_no)
+        ).all()
+        return [tuple(row) for row in items], [tuple(row) for row in lines]
+
+    items, lines = _load()
+    # Postgres row locks close the race. SQLite treats FOR UPDATE as a no-op, so
+    # re-read and compare fingerprints (and retry) before returning a BoM/list.
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "sqlite":
+        for _ in range(2):
+            again_items, again_lines = _load()
+            if _index_row_fingerprint(items, lines) == _index_row_fingerprint(
+                again_items, again_lines
+            ):
+                return items, lines
+            items, lines = again_items, again_lines
+    return items, lines
 
 
 def document_needs_index(document: dict | None) -> bool:
