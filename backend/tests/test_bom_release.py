@@ -185,3 +185,89 @@ def test_readiness_loads_parts_in_one_query(client: TestClient) -> None:
     assert readiness["row_count"] == 5
     part_queries = [sql for sql in statements if "FROM parts" in sql]
     assert len(part_queries) == 1
+
+
+def test_bom_generate_retries_torn_index_read(client: TestClient) -> None:
+    """Refuse to persist a BoM that mixed two index generations mid-read.
+
+    Simulates the Postgres READ COMMITTED race: `replace_sheet_index` commits
+    between the sheet_items query and the sheet_lines query. Without the
+    fingerprint retry, generate would release a baseline that lists the old
+    valves together with the post-save tubing quantities — a procurement
+    snapshot that never matched any committed index. SQLite ignores
+    `FOR UPDATE`; the re-check is what recovers here.
+    """
+    from unittest.mock import patch
+
+    from app.models import DrawingSheet
+    from app.schemas import SheetIndexIn
+    from app.services import sheet_index as sheet_index_service
+
+    part = _part(client, "AMB2-TORN")
+    project_id = _project(client)
+    drawing = client.post(f"/projects/{project_id}/drawings", json={"title": "P&ID"}).json()
+    sheet_id = drawing["sheets"][0]["id"]
+    before = {
+        "items": [
+            {
+                "item_id": "hv1",
+                "kind": "symbol",
+                "category": "valve",
+                "symbol_key": "ball_valve",
+                "symbol_name": "Ball valve",
+                "tag": "HV-1",
+                "part_id": part["id"],
+            }
+        ],
+        "lines": [
+            {
+                "line_id": "l1",
+                "line_type": "process",
+                "size": '1/4"',
+                "line_class": "HE-1",
+                "length_m": 1.0,
+                "connection_count": 2,
+            }
+        ],
+    }
+    after = {
+        "items": [],
+        "lines": [
+            {
+                "line_id": "l1",
+                "line_type": "process",
+                "size": '1/4"',
+                "line_class": "HE-1",
+                "length_m": 9.0,
+                "connection_count": 2,
+            }
+        ],
+    }
+    saved = client.put(
+        f"/sheets/{sheet_id}", json={"index": before, "drc": {"findings": [], "checks": []}}
+    )
+    assert saved.status_code == 200, saved.text
+
+    flipped = {"done": False}
+
+    def concurrent_replace(db: Session, drawing_ids: list[str]) -> None:
+        if flipped["done"]:
+            return
+        flipped["done"] = True
+        sheet = db.get(DrawingSheet, sheet_id)
+        assert sheet is not None
+        sheet_index_service.replace_sheet_index(db, sheet, SheetIndexIn.model_validate(after))
+        db.flush()
+
+    with patch.object(sheet_index_service, "_after_index_items_loaded", concurrent_replace):
+        snapshot = client.post(f"/drawings/{drawing['id']}/bom")
+
+    assert snapshot.status_code == 201, snapshot.text
+    rows = snapshot.json()["rows"]
+    kinds = {row["kind"] for row in rows}
+    # Consistent post-replace index: no valves, 9 m of tube. A torn read would
+    # keep the valve row (quantity 1) alongside the new 9 m bulk line.
+    assert "part" not in kinds
+    bulk = next(row for row in rows if row["kind"] == "bulk" and row["unit"] == "m")
+    assert bulk["quantity"] == 9.0
+    assert flipped["done"] is True
