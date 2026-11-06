@@ -117,6 +117,24 @@ def _load_drawing(db: Session, drawing_id: str) -> Drawing:
     return drawing
 
 
+def _lock_drawing_for_update(db: Session, drawing_id: str) -> Drawing:
+    """Load a drawing with `SELECT … FOR UPDATE` so workflow writers serialize.
+
+    Postgres row locks close submit∩create_revision and release∩withdraw races under
+    READ COMMITTED. SQLite accepts `FOR UPDATE` but does not enforce row locks in the
+    test suite — callers still re-check status after this load.
+    """
+    drawing = db.scalar(
+        select(Drawing)
+        .where(Drawing.id == drawing_id)
+        .with_for_update()
+        .options(*DRAWING_LOAD_OPTIONS)
+    )
+    if drawing is None:
+        raise HTTPException(status_code=404, detail="Drawing not found")
+    return drawing
+
+
 def _ensure_editable(drawing: Drawing) -> None:
     """Released drawings are locked: changes go into a new revision (POST .../revise)."""
     if drawing.status == "released":
@@ -436,8 +454,17 @@ def create_revision(
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> DrawingRevision:
-    drawing = _load_drawing(db, drawing_id)
+    """Add a revision row on a draft drawing (title-block history before first release).
+
+    Refused while the drawing is in review: a new current revision would orphan the
+    submitted one, and POST /release would stamp the never-reviewed row instead.
+    Lock + re-check so a concurrent submit cannot lose that race either.
+    After release, open the next revision with POST /drawings/{id}/revise.
+    """
+    drawing = _lock_drawing_for_update(db, drawing_id)
     _ensure_editable(drawing)
+    if drawing.status != "draft":
+        raise _workflow_conflict(drawing, "adding a revision row", "draft")
     sequence = max((rev.sequence for rev in drawing.revisions), default=0) + 1
     revision = DrawingRevision(
         drawing_id=drawing.id,
@@ -508,6 +535,32 @@ def _current_revision(db: Session, drawing: Drawing) -> DrawingRevision:
     return revision
 
 
+def _revision_for_release(db: Session, drawing: Drawing) -> DrawingRevision:
+    """Revision release should stamp: the submitted row while in review, else current.
+
+    `current_revision` is highest sequence. A stray draft row created after submit
+    (or racing it) would otherwise become current and steal the release stamp,
+    leaving the submitted revision stuck `in_review` without a snapshot. Drop those
+    orphan drafts so the released row stays current after commit.
+    """
+    if drawing.status == "in_review":
+        submitted = next(
+            (revision for revision in reversed(drawing.revisions) if revision.status == "in_review"),
+            None,
+        )
+        if submitted is not None:
+            for orphan in [
+                revision
+                for revision in list(drawing.revisions)
+                if revision.sequence > submitted.sequence and revision.status == "draft"
+            ]:
+                db.delete(orphan)
+                drawing.revisions.remove(orphan)
+            db.flush()
+            return submitted
+    return _current_revision(db, drawing)
+
+
 @drawing_router.post("/drawings/{drawing_id}/submit", response_model=DrawingRead)
 def submit_drawing(
     drawing_id: str,
@@ -515,7 +568,10 @@ def submit_drawing(
     user: User = Depends(require_writer),
 ) -> Drawing:
     """Submit the current revision for review (draft -> in_review)."""
-    drawing = _load_drawing(db, drawing_id)
+    # Lock before the status gate so a concurrent create_revision cannot insert a
+    # newer current draft after this read and before commit (and so a concurrent
+    # release cannot be overwritten back to in_review).
+    drawing = _lock_drawing_for_update(db, drawing_id)
     if drawing.status != "draft":
         raise _workflow_conflict(drawing, "submitting for review", "draft")
     revision = _current_revision(db, drawing)
@@ -571,8 +627,12 @@ def release_drawing(
     Refused with 409 while any sheet's index/DRC is stale or has open DRC errors;
     `detail.reasons` lists each blocker. Stamps the approver from the session and
     stores an immutable snapshot of every sheet on the revision.
+
+    Locks the drawing so concurrent workflow writers serialize. While `in_review`,
+    stamps the submitted revision even if a newer draft row exists (so a raced
+    create_revision cannot steal the release baseline).
     """
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
     if drawing.status == "released":
         raise HTTPException(
             status_code=409,
@@ -587,7 +647,7 @@ def release_drawing(
                 "reasons": reasons,
             },
         )
-    revision = _current_revision(db, drawing)
+    revision = _revision_for_release(db, drawing)
     released_at = _now()
     drawing.status = "released"
     revision.status = "released"
@@ -615,7 +675,7 @@ def revise_drawing(
     user: User = Depends(require_writer),
 ) -> Drawing:
     """Open the next revision of a released drawing (released -> draft)."""
-    drawing = _load_drawing(db, drawing_id)
+    drawing = _lock_drawing_for_update(db, drawing_id)
     if drawing.status != "released":
         raise _workflow_conflict(drawing, "starting a new revision", "released")
     previous = drawing.current_revision

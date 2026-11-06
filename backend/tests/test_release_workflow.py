@@ -192,6 +192,95 @@ def test_submit_withdraw_and_release_from_review(client: TestClient) -> None:
     assert ("released", "engineer@fsdp.test") in actions
 
 
+def test_create_revision_refused_while_in_review(client: TestClient) -> None:
+    """Adding a revision row under review would orphan the submitted revision and let
+    release stamp a never-reviewed current revision (no submitted_by, no snapshot on
+    the reviewed row)."""
+    drawing = _drawing(client, _project(client), "hv")
+    drawing_id = drawing["id"]
+    _save(client, drawing["sheets"][0]["id"])
+    submitted = client.post(f"/drawings/{drawing_id}/submit").json()
+    submitted_id = submitted["current_revision"]["id"]
+    assert submitted["current_revision"]["submitted_by"] == "engineer@fsdp.test"
+
+    refused = client.post(
+        f"/drawings/{drawing_id}/revisions", json={"label": "A", "description": "sneak"}
+    )
+    assert refused.status_code == 409, refused.text
+    assert "in_review" in refused.json()["detail"]
+    assert "draft" in refused.json()["detail"]
+
+    body = client.get(f"/drawings/{drawing_id}").json()
+    assert body["current_revision"]["id"] == submitted_id
+    assert [rev["label"] for rev in body["revisions"]] == ["-"]
+
+    released = client.post(f"/drawings/{drawing_id}/release")
+    assert released.status_code == 200, released.text
+    revision = released.json()["current_revision"]
+    assert revision["id"] == submitted_id
+    assert revision["submitted_by"] == "engineer@fsdp.test"
+    assert revision["approved_by"] == "engineer@fsdp.test"
+    assert client.get(f"/revisions/{submitted_id}/snapshot").status_code == 200
+
+
+def test_release_stamps_submitted_revision_not_orphan_draft(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Defense for submit∩create_revision TOCTOU: a draft row inserted after submit
+    must not steal the release stamp. Tip e3b06ff released the orphan (submitted_by
+    None) and left the reviewed row stuck in_review without a snapshot. Open #64
+    (draft-only gate) and #56 (row locks) each leave that interleaving possible
+    alone; release must prefer the in_review revision and drop the orphan draft.
+    """
+    from app.models import Drawing, DrawingRevision
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    drawing = _drawing(client, _project(client), "hv")
+    drawing_id = drawing["id"]
+    _save(client, drawing["sheets"][0]["id"])
+    submitted = client.post(f"/drawings/{drawing_id}/submit").json()
+    submitted_id = submitted["current_revision"]["id"]
+
+    # Simulate the lost race: create_revision committed after submit without the
+    # draft gate / lock re-check (tip behaviour, or #64 without #56).
+    with session_factory() as db:
+        row = db.scalar(
+            select(Drawing)
+            .where(Drawing.id == drawing_id)
+            .options(selectinload(Drawing.revisions))
+        )
+        assert row is not None and row.status == "in_review"
+        db.add(
+            DrawingRevision(
+                drawing_id=drawing_id,
+                sequence=max(rev.sequence for rev in row.revisions) + 1,
+                label="X",
+                description="raced create_revision",
+                status="draft",
+                drawn_by="Racer",
+            )
+        )
+        db.commit()
+
+    before = client.get(f"/drawings/{drawing_id}").json()
+    assert before["status"] == "in_review"
+    assert before["current_revision"]["label"] == "X"
+    assert before["current_revision"]["submitted_by"] is None
+
+    released = client.post(f"/drawings/{drawing_id}/release")
+    assert released.status_code == 200, released.text
+    body = released.json()
+    stamped = body["current_revision"]
+    assert stamped["id"] == submitted_id
+    assert stamped["label"] == "-"
+    assert stamped["status"] == "released"
+    assert stamped["submitted_by"] == "engineer@fsdp.test"
+    assert stamped["approved_by"] == "engineer@fsdp.test"
+    assert [rev["label"] for rev in body["revisions"]] == ["-"]
+    assert client.get(f"/revisions/{submitted_id}/snapshot").status_code == 200
+
+
 def test_release_refused_for_stale_index_and_open_drc_errors(client: TestClient) -> None:
     drawing = _drawing(client, _project(client), "hv")
     drawing_id = drawing["id"]
