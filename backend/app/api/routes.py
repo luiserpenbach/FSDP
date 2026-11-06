@@ -1213,6 +1213,44 @@ def _bom_readiness(db: Session, snapshot: BomSnapshot) -> dict:
     }
 
 
+def _lock_bom_snapshot_for_update(db: Session, snapshot_id: str) -> BomSnapshot:
+    """Load a BoM snapshot with `SELECT … FOR UPDATE` so release serializes with itself.
+
+    Postgres row locks close concurrent status writers. SQLite treats `FOR UPDATE`
+    as a no-op; callers still re-check readiness immediately before stamping.
+    """
+    snapshot = db.scalar(select(BomSnapshot).where(BomSnapshot.id == snapshot_id).with_for_update())
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="BomSnapshot not found")
+    return snapshot
+
+
+def _lock_bom_parts_for_update(db: Session, snapshot: BomSnapshot) -> list[Part]:
+    """Lock catalog parts referenced by the snapshot so obsolete/lifecycle races wait.
+
+    Ordered by id to keep lock acquisition order stable across writers.
+    """
+    part_ids = sorted({row["part_id"] for row in snapshot.rows if row.get("part_id")})
+    if not part_ids:
+        return []
+    return list(
+        db.scalars(select(Part).where(Part.id.in_(part_ids)).order_by(Part.id).with_for_update())
+    )
+
+
+def _refuse_bom_release(snapshot: BomSnapshot, blocking: list[dict]) -> None:
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "message": (
+                f"BoM revision {snapshot.revision} has {len(blocking)} blocking "
+                "issue(s) and cannot be released."
+            ),
+            "issues": blocking,
+        },
+    )
+
+
 @router.put("/bom/{snapshot_id}/status", response_model=BomSnapshotRead)
 def update_bom_status(
     snapshot_id: str,
@@ -1224,8 +1262,13 @@ def update_bom_status(
 
     Release is refused (409) while readiness has blocking issues; `detail.issues`
     lists them. A released snapshot cannot return to draft: generate a new one.
+
+    The snapshot and its referenced parts are locked before readiness so a
+    concurrent obsolete / lifecycle change cannot pass the gate and then commit
+    under the release. Readiness is checked again immediately before stamping
+    (defense in depth; also covers SQLite where `FOR UPDATE` is a no-op).
     """
-    snapshot = require_model(db, BomSnapshot, snapshot_id)
+    snapshot = _lock_bom_snapshot_for_update(db, snapshot_id)
     if snapshot.diagram_id is not None:
         raise HTTPException(
             status_code=409,
@@ -1245,19 +1288,19 @@ def update_bom_status(
             ),
         )
     if payload.status == "released":
+        parts = _lock_bom_parts_for_update(db, snapshot)
         readiness = _bom_readiness(db, snapshot)
         blocking = [issue for issue in readiness["issues"] if issue["severity"] == "blocking"]
         if blocking:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": (
-                        f"BoM revision {snapshot.revision} has {len(blocking)} blocking "
-                        "issue(s) and cannot be released."
-                    ),
-                    "issues": blocking,
-                },
-            )
+            _refuse_bom_release(snapshot, blocking)
+        # Re-read parts so a concurrent obsolete that committed while we waited
+        # (or under SQLite) is visible before the immutable stamp.
+        for part in parts:
+            db.expire(part)
+        readiness = _bom_readiness(db, snapshot)
+        blocking = [issue for issue in readiness["issues"] if issue["severity"] == "blocking"]
+        if blocking:
+            _refuse_bom_release(snapshot, blocking)
         snapshot.released_by = user.email
         snapshot.released_at = datetime.now(UTC)
     snapshot.status = payload.status

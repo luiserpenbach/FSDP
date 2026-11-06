@@ -1,6 +1,7 @@
 """Drawing BoM release gate, immutability, XLSX export, and query batching."""
 
 import io
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db import get_db
 from app.main import app
+from app.models import Part
 from tests.legacy import add_legacy_bom, add_legacy_diagram
 
 
@@ -121,6 +123,57 @@ def test_released_bom_is_immutable(client: TestClient) -> None:
         (2, "draft"),
         (1, "released"),
     ]
+
+
+def test_bom_release_rechecks_readiness_before_stamp(client: TestClient) -> None:
+    """Refuse release when a part becomes obsolete after the first readiness check.
+
+    Simulates the release∩obsolete TOCTOU: a concurrent catalog writer marks a
+    referenced part obsolete after `_bom_readiness` first returns no blockers.
+    Without the pre-stamp re-check, release would 200 and freeze that obsolete
+    part into the immutable procurement baseline. Postgres part-row locks close
+    the real race; this covers the second gate on SQLite where `FOR UPDATE` is
+    a no-op.
+    """
+    from app.api import routes as routes_mod
+
+    good = _part(client, "AMB2-001")
+    setup = _drawing_with_bom(client, good["id"])
+    snapshot = setup["snapshot"]
+    part_id = good["id"]
+    calls = {"n": 0}
+    real_readiness = routes_mod._bom_readiness
+
+    def flaky_readiness(db: Session, locked_snapshot):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            part = db.get(Part, part_id)
+            assert part is not None
+            part.lifecycle_status = "obsolete"
+            db.flush()
+            return {
+                "snapshot_id": locked_snapshot.id,
+                "row_count": len(locked_snapshot.rows),
+                "issue_count": 0,
+                "blocking_count": 0,
+                "warning_count": 0,
+                "ready": True,
+                "issues": [],
+            }
+        return real_readiness(db, locked_snapshot)
+
+    with patch("app.api.routes._bom_readiness", side_effect=flaky_readiness):
+        refused = client.put(f"/bom/{snapshot['id']}/status", json={"status": "released"})
+
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert "blocking" in detail["message"]
+    assert [issue["code"] for issue in detail["issues"]] == ["part_obsolete"]
+    assert calls["n"] >= 2
+    history = client.get(f"/drawings/{setup['drawing']['id']}/bom").json()
+    assert [(entry["revision"], entry["status"]) for entry in history] == [(1, "draft")]
+    # The in-request obsolete flush rolls back with the refused release.
+    assert client.get(f"/parts/{part_id}").json()["lifecycle_status"] == "active"
 
 
 def test_bom_xlsx_export_has_header_block(client: TestClient) -> None:
