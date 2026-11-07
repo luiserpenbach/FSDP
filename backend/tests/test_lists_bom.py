@@ -476,3 +476,22 @@ def test_bom_diff_keys_bulk_rows_by_kind_and_compares_same_drawing_only(
     same_project = client.post(f"/drawings/{_drawing(client, project_id)['id']}/bom").json()
     cross = client.get(f"/bom/{same_project['id']}/diff", params={"against_id": first["id"]})
     assert cross.status_code == 400
+
+
+def test_bom_diff_compares_fractional_tube_meters(client: TestClient) -> None:
+    """Tube length is meters (often fractional); Compare must not 500 on float quantities."""
+    project_id = _project(client)
+    drawing = _drawing(client, project_id)
+    sheet_id = drawing["sheets"][0]["id"]
+    client.put(f"/sheets/{sheet_id}", json={"index": _tube_index(1.5)})
+    first = client.post(f"/drawings/{drawing['id']}/bom").json()
+    client.put(f"/sheets/{sheet_id}", json={"index": _tube_index(2.25)})
+    second = client.post(f"/drawings/{drawing['id']}/bom").json()
+
+    diff = client.get(f"/bom/{second['id']}/diff", params={"against_id": first["id"]})
+    assert diff.status_code == 200, diff.text
+    body = diff.json()
+    assert [
+        (change["description"], change["from_quantity"], change["to_quantity"])
+        for change in body["changed"]
+    ] == [('Tube 1/4" HE-1', 1.5, 2.25)]

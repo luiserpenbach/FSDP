@@ -1447,8 +1447,9 @@ class BomReadinessRead(BaseModel):
 class BomQuantityChange(BaseModel):
     part_number: str | None
     description: str | None
-    from_quantity: int
-    to_quantity: int
+    # Tube rows store length in meters (often fractional); piece parts stay whole counts.
+    from_quantity: float
+    to_quantity: float
 
 
 class BomDiffRead(BaseModel):
