@@ -52,8 +52,13 @@ type Props = {
   /** Default system of a new drawing. */
   selectedSystemId: string;
   customSymbols: PidSymbolDef[];
+  /**
+   * False until `/symbols` has loaded. Defaults true for tests that inject a finished
+   * catalog; the route passes the workspace flag so background reindex cannot race.
+   */
+  symbolsReady?: boolean;
   /** Reload custom symbols after their library metadata changes. */
-  refreshSymbols?: () => void;
+  refreshSymbols?: () => void | Promise<PidSymbolDef[]>;
   /** Catalog parts for assignment, badges, and list part numbers. */
   parts?: Part[];
   /** Project requirements; those with a constraint are checked by the DRC. */
@@ -277,7 +282,7 @@ function DrawingCanvas({
   return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} readOnly={readOnly} onCursor={onCursor} onViewport={onViewport} />;
 }
 
-export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify, target = null }: Props) {
+export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, symbolsReady = true, refreshSymbols, parts = [], requirements = [], user, canWrite, notify, target = null }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
@@ -613,6 +618,27 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     // `editor` is only set while it holds `sheetId`'s document (see `session`).
     if (!editor || !sheetId || !drawing || !canEdit) return false;
     try {
+      // Prefer the live registry; if /symbols has not landed yet, load it before
+      // deriving the index so custom symbols do not get `category: null`.
+      let indexRegistry = registry;
+      if (!symbolsReady) {
+        if (!refreshSymbols) {
+          notify("Symbol library is still loading; try saving again in a moment.", true);
+          return false;
+        }
+        try {
+          const list = await refreshSymbols();
+          indexRegistry = SymbolRegistry.withBuiltins(Array.isArray(list) ? list : customSymbols);
+        } catch (error) {
+          notify(
+            error instanceof Error
+              ? error.message
+              : "Symbol library failed to load; cannot save the sheet index yet.",
+            true
+          );
+          return false;
+        }
+      }
       const sheetNo = sheetSummary?.sheet_no ?? 1;
       // Capture the document and its version together: edits made while the
       // request is in flight are not in this save and must stay dirty.
@@ -625,7 +651,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
         sheetId,
         sheetNo,
         otherSheets,
-        registry,
+        registry: indexRegistry,
         connectivity: editor.connectivity,
         tagScheme,
         parts: partMap,
@@ -643,7 +669,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       notify(error instanceof Error ? error.message : "Save failed.", true);
       return false;
     }
-  }, [editor, sheetId, drawing, canEdit, sheetSummary, otherSheets, registry, tagScheme, partMap, requirementRefs, waivers, notify, touchSheet, markSheetIndexed]);
+  }, [editor, sheetId, drawing, canEdit, sheetSummary, otherSheets, registry, symbolsReady, refreshSymbols, customSymbols, tagScheme, partMap, requirementRefs, waivers, notify, touchSheet, markSheetIndexed]);
 
   // Inputs of the background re-index, read when each sheet's turn comes.
   const reindexInputs = useRef({ drawing, registry, tagScheme, partMap, requirementRefs });
@@ -695,10 +721,13 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   );
 
   const staleSheetIds = useMemo(() => staleSheets.map((entry) => entry.id), [staleSheets]);
+  // Wait for the custom-symbol catalog the same way we wait for the tag scheme:
+  // re-indexing with `customSymbols=[]` stores `category: null` for every placed
+  // custom symbol, and BoM / valve / instrument lists then drop those rows.
   const { status: reindexStatus, reindexNow } = useStaleReindex({
     drawingId: drawing?.id ?? null,
     staleSheetIds,
-    enabled: Boolean(drawing) && canEdit && tagSchemeReady,
+    enabled: Boolean(drawing) && canEdit && tagSchemeReady && symbolsReady,
     reindex: reindexSheet
   });
 
@@ -2651,7 +2680,7 @@ function StatusBar({ editor, cursor, viewport, drcInputs }: { editor: Editor; cu
  * linked project and opens the drawing there.
  */
 export function DraftingRoutePage() {
-  const { user, canWrite, notify, projects, selectedProjectId, selectProject, selectedProject, systems, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  const { user, canWrite, notify, projects, selectedProjectId, selectProject, selectedProject, systems, selectedSystemId, customSymbols, symbolsReady, refreshSymbols, parts, requirements } = useWorkspace();
   const [searchParams] = useSearchParams();
   const [target] = useState(() => parseDraftingTarget(searchParams));
   useEffect(() => {
@@ -2667,6 +2696,7 @@ export function DraftingRoutePage() {
       systems={systems}
       selectedSystemId={selectedSystemId}
       customSymbols={customSymbols}
+      symbolsReady={symbolsReady}
       refreshSymbols={refreshSymbols}
       parts={parts}
       requirements={requirements}

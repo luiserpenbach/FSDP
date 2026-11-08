@@ -82,7 +82,14 @@ export type WorkspaceContextValue = {
   setSelectedPartId: (partId: string) => void;
 
   customSymbols: PidSymbolDef[];
-  refreshSymbols: () => void;
+  /**
+   * True after `/symbols` has loaded at least once. Background sheet re-index
+   * and Save must wait for this: an empty catalog yields `category: null` for
+   * every custom symbol and BoM/lists then silently drop those rows.
+   */
+  symbolsReady: boolean;
+  /** Reload custom symbols; resolves with the list (rejects if the request fails before any successful load). */
+  refreshSymbols: () => Promise<PidSymbolDef[]>;
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -106,6 +113,9 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [parts, setParts] = useState<Part[]>([]);
   const [customSymbols, setCustomSymbols] = useState<PidSymbolDef[]>([]);
+  // Starts false so Drafting cannot re-index/save against `[]` while /symbols is in flight.
+  const [symbolsReady, setSymbolsReady] = useState(false);
+  const symbolsLoadedRef = useRef(false);
 
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedSystemId, setSelectedSystemId] = useState("");
@@ -175,11 +185,22 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
     return next;
   }, []);
 
-  const refreshSymbols = useCallback(() => {
-    api
+  const refreshSymbols = useCallback((): Promise<PidSymbolDef[]> => {
+    return api
       .listSymbols()
-      .then((list) => setCustomSymbols(Array.isArray(list) ? list : []))
-      .catch(() => undefined);
+      .then((list) => {
+        const next = Array.isArray(list) ? list : [];
+        setCustomSymbols(next);
+        symbolsLoadedRef.current = true;
+        setSymbolsReady(true);
+        return next;
+      })
+      .catch((error) => {
+        // Keep a previously loaded catalog usable; only the first failure leaves
+        // symbolsReady false so reindex cannot write null categories.
+        if (!symbolsLoadedRef.current) setSymbolsReady(false);
+        throw error;
+      });
   }, []);
 
   const confirmDiscard = useCallback(
@@ -225,7 +246,12 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
     void runAction("Loaded parts.", async () => {
       setParts(await api.listParts());
     });
-    refreshSymbols();
+    // First failure leaves symbolsReady false (reindex/Save gated); surface via status line.
+    void refreshSymbols().catch((caught) => {
+      const detail = caught instanceof Error ? caught.message : "Could not load the symbol library.";
+      setError(detail);
+      setMessage("Action failed.");
+    });
   }, [refreshSymbols, runAction]);
 
   useEffect(() => {
@@ -292,6 +318,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       selectedPartId,
       setSelectedPartId,
       customSymbols,
+      symbolsReady,
       refreshSymbols
     }),
     [
@@ -320,6 +347,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
       parts,
       selectedPartId,
       customSymbols,
+      symbolsReady,
       refreshSymbols
     ]
   );
