@@ -476,3 +476,63 @@ def test_bom_diff_keys_bulk_rows_by_kind_and_compares_same_drawing_only(
     same_project = client.post(f"/drawings/{_drawing(client, project_id)['id']}/bom").json()
     cross = client.get(f"/bom/{same_project['id']}/diff", params={"against_id": first["id"]})
     assert cross.status_code == 400
+
+
+def test_bom_and_valve_list_heal_null_category_from_custom_symbol(
+    client: TestClient,
+) -> None:
+    """Index rows left with category=null (reindex before /symbols loaded) still roll up.
+
+    Drafting used to background-reindex while customSymbols was still []; buildSheetIndex
+    then stored category null for every custom symbol, and BoM/lists dropped those rows.
+    """
+    project_id = _project(client)
+    drawing = _drawing(client, project_id)
+    sheet_id = drawing["sheets"][0]["id"]
+    part = _part(client, "AMB2-CUST-1")
+    symbol = client.post(
+        "/symbols",
+        json={
+            "name": "Custom Cryo Valve",
+            "category": "valve",
+            "view_box": "0 0 64 40",
+            "svg": '<path d="M12 10 L32 20 L12 30 Z" />',
+            "ports": [
+                {"id": "in", "x": 2, "y": 20, "side": "left"},
+                {"id": "out", "x": 62, "y": 20, "side": "right"},
+            ],
+        },
+    ).json()
+
+    # Corrupt index shape the incomplete-registry reindex used to write.
+    client.put(
+        f"/sheets/{sheet_id}",
+        json={
+            "index": {
+                "items": [
+                    {
+                        "item_id": "xv",
+                        "kind": "symbol",
+                        "category": None,
+                        "symbol_key": symbol["id"],
+                        "symbol_name": symbol["id"],
+                        "tag": "XV-9001",
+                        "part_id": part["id"],
+                        "fields": {},
+                    }
+                ],
+                "lines": [],
+            }
+        },
+    )
+
+    valves = client.get(f"/drawings/{drawing['id']}/lists/valve").json()
+    assert [row["tag"] for row in valves["rows"]] == ["XV-9001"]
+    assert valves["rows"][0]["part_number"] == "AMB2-CUST-1"
+
+    snapshot = client.post(f"/drawings/{drawing['id']}/bom").json()
+    rows = {row["part_number"]: row for row in snapshot["rows"] if row.get("part_number")}
+    assert "AMB2-CUST-1" in rows
+    assert rows["AMB2-CUST-1"]["quantity"] == 1
+    assert rows["AMB2-CUST-1"]["component_tags"] == ["XV-9001"]
+    assert rows["AMB2-CUST-1"]["category"] == "valve"

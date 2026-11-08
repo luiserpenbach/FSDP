@@ -16,15 +16,29 @@ from datetime import UTC, datetime
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Drawing, DrawingSheet, Part, Project, SheetItem, SheetLine
+from app.models import Drawing, DrawingSheet, Part, PidSymbolDef, Project, SheetItem, SheetLine
 from app.services.sheet_index import drawing_index_rows
 
 VALVE_CATEGORIES = {"valve", "regulator"}
 INSTRUMENT_CATEGORIES = {"instrument"}
 EQUIPMENT_CATEGORIES = {"equipment"}
 CONNECTOR_CATEGORIES = {"connector"}
+
+
+def _effective_category(item: SheetItem, symbols_by_id: dict[str, PidSymbolDef]) -> str:
+    """Index category, healed from the live custom-symbol row when the index left it null."""
+    category = (item.category or "").strip()
+    if category:
+        return category
+    if item.kind != "symbol" or not item.symbol_key:
+        return ""
+    symbol = symbols_by_id.get(item.symbol_key)
+    if symbol is None:
+        return ""
+    return (symbol.category or "custom").strip() or "custom"
 
 
 @dataclass(frozen=True)
@@ -139,8 +153,10 @@ def _tag_sort_key(value: str | None) -> tuple:
     return (0 if letters or digits else 1, letters, int(digits) if digits else 0, rest)
 
 
-def _item_matches(spec: ListSpec, item: SheetItem) -> bool:
-    category = item.category or ""
+def _item_matches(
+    spec: ListSpec, item: SheetItem, symbols_by_id: dict[str, PidSymbolDef] | None = None
+) -> bool:
+    category = _effective_category(item, symbols_by_id or {})
     if spec.kind == "instrument":
         return category in INSTRUMENT_CATEGORIES
     if spec.kind == "valve":
@@ -230,10 +246,23 @@ def list_rows(db: Session, kind: str, drawings: list[Drawing]) -> list[dict]:
     parts = (
         {part.id: part for part in db.query(Part).filter(Part.id.in_(part_ids))} if part_ids else {}
     )
+    symbol_keys = {
+        item.symbol_key
+        for item, _, _ in items
+        if item.kind == "symbol" and item.symbol_key and not (item.category or "").strip()
+    }
+    symbols_by_id = (
+        {
+            symbol.id: symbol
+            for symbol in db.scalars(select(PidSymbolDef).where(PidSymbolDef.id.in_(symbol_keys)))
+        }
+        if symbol_keys
+        else {}
+    )
     rows = [
         _item_row(item, sheet, drawing, parts.get(item.part_id) if item.part_id else None)
         for item, sheet, drawing in items
-        if _item_matches(spec, item)
+        if _item_matches(spec, item, symbols_by_id)
     ]
     rows.sort(key=lambda row: (row["drawing_number"], _tag_sort_key(row["tag"])))
     return rows
