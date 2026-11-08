@@ -80,6 +80,50 @@ describe("sheet index", () => {
     expect(lineLengthM({ ...line, lengthFactor: 0.01 })).toBe(1.5);
     expect(lineLengthM({ ...line, physicalLength: 2 })).toBe(2);
   });
+
+  it("stores category null for custom symbols missing from the registry", () => {
+    // Background reindex used to run while Workspace customSymbols was still [];
+    // that wrote category:null and BoM/lists then dropped the purchasable rows.
+    const doc = smallPanelDocument();
+    doc.items = [
+      {
+        id: "xv",
+        kind: "symbol",
+        layer: "equipment",
+        position: { x: 80, y: 80 },
+        symbol: { library: "custom", key: "sym-custom-1", version: 1 },
+        tag: "XV-9001",
+        partId: "part-x",
+        fields: {}
+      } as SymbolItem
+    ];
+    const emptyCustom = SymbolRegistry.withBuiltins([]);
+    const index = buildSheetIndex(doc, emptyCustom);
+    expect(index.items).toHaveLength(1);
+    expect(index.items[0]).toMatchObject({
+      item_id: "xv",
+      symbol_key: "sym-custom-1",
+      category: null,
+      tag: "XV-9001",
+      part_id: "part-x"
+    });
+
+    const withCustom = SymbolRegistry.withBuiltins([
+      {
+        id: "sym-custom-1",
+        name: "Custom Cryo Valve",
+        category: "valve",
+        view_box: "0 0 64 40",
+        svg: "<path d='M0 0'/>",
+        ports: [],
+        legend: null,
+        tag_prefix: null,
+        created_at: "",
+        updated_at: ""
+      }
+    ]);
+    expect(buildSheetIndex(doc, withCustom).items[0].category).toBe("valve");
+  });
 });
 
 describe("engineering lists", () => {

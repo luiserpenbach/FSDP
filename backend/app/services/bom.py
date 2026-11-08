@@ -3,13 +3,31 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import BomSnapshot, Drawing, Part
+from app.models import BomSnapshot, Drawing, Part, PidSymbolDef
 from app.services.sheet_index import drawing_index_rows, stale_sheets
 
 # Symbol categories that become BoM line items (connectors and actuators do not).
 BOM_ITEM_CATEGORIES = {"valve", "regulator", "inline", "instrument", "equipment", "custom"}
 # Line types that consume tubing and fittings.
 BULK_LINE_TYPES = {"process", "vacuum", "capillary"}
+
+
+def _category_for_item(item, symbols_by_id: dict[str, PidSymbolDef]) -> str:
+    """Sheet-index category, healed from the live custom-symbol catalog when null.
+
+    A Drafting re-index that ran before `/symbols` finished loading stored
+    `category: null` for every custom symbol. Look up `symbol_key` (the custom
+    symbol id) so BoM generate still rolls those parts up.
+    """
+    category = (item.category or "").strip()
+    if category:
+        return category
+    if item.kind != "symbol" or not item.symbol_key:
+        return ""
+    symbol = symbols_by_id.get(item.symbol_key)
+    if symbol is None:
+        return ""
+    return (symbol.category or "custom").strip() or "custom"
 
 
 def _part_row(part: Part | None, description: str) -> dict:
@@ -57,10 +75,24 @@ def drawing_bom_rows(db: Session, drawing: Drawing) -> list[dict]:
     items, lines = drawing_index_rows(db, [drawing])
     part_ids = {item.part_id for item, _, _ in items if item.part_id}
     parts = {part.id: part for part in db.scalars(select(Part).where(Part.id.in_(part_ids)))}
+    # Custom-symbol ids used when the stored index left category null (incomplete client registry).
+    symbol_keys = {
+        item.symbol_key
+        for item, _, _ in items
+        if item.kind == "symbol" and item.symbol_key and not (item.category or "").strip()
+    }
+    symbols_by_id = (
+        {
+            symbol.id: symbol
+            for symbol in db.scalars(select(PidSymbolDef).where(PidSymbolDef.id.in_(symbol_keys)))
+        }
+        if symbol_keys
+        else {}
+    )
 
     rows: dict[str, dict] = {}
     for item, sheet, _ in items:
-        category = item.category or ""
+        category = _category_for_item(item, symbols_by_id)
         if item.kind == "symbol" and category not in BOM_ITEM_CATEGORIES:
             continue
         if item.kind == "equipment" and not item.tag:
@@ -81,7 +113,7 @@ def drawing_bom_rows(db: Session, drawing: Drawing) -> list[dict]:
         )
         row = rows.setdefault(key, _part_row(part, description))
         row["symbol_key"] = item.symbol_key
-        row["category"] = item.category or item.kind
+        row["category"] = category or item.kind
         caption = item.tag or item.label or item.item_id
         if item.dnp:
             row["dnp_tags"].append(caption)
