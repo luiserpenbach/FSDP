@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { isolableVolumes, runDrc, type RequirementRef } from "./drc";
+import {
+  duplicateTagSubjectKey,
+  isolableVolumes,
+  portSizeMismatchSubjectKey,
+  runDrc,
+  type RequirementRef
+} from "./drc";
 import { findingsDocument, renderFindingsSheet } from "./drcSheet";
 import { lineThrough, symbolAt } from "./fixtures";
 import { SymbolRegistry } from "./library";
@@ -91,12 +97,75 @@ describe("design rule checks", () => {
     item<EquipmentItem>(doc, "vc").nozzles![0].size = '1/2"';
     const result = runDrc({ doc, registry, tagScheme: DEFAULT_TAG_SCHEME, parts });
     const keys = result.findings.filter((finding) => finding.severity !== "info").map((finding) => finding.key).sort();
-    expect(keys).toEqual(["dangling_line:l3:1", "duplicate_tag:pcv", "line_unnumbered:l2", "open_port:pt:process", "port_size_mismatch:l5:1"].sort());
+    expect(keys).toEqual(
+      [
+        "dangling_line:l3:1",
+        `duplicate_tag:${duplicateTagSubjectKey("pcv", "HV-3201")}`,
+        "line_unnumbered:l2",
+        "open_port:pt:process",
+        `port_size_mismatch:${portSizeMismatchSubjectKey("l5", 1, '1/4"', '1/2"')}`
+      ].sort()
+    );
     expect(result.counts).toEqual({ error: 3, warning: 2, info: 0, waived: 0 });
     const mismatch = result.findings.find((finding) => finding.rule === "port_size_mismatch")!;
     expect(mismatch.message).toContain('line 3104 (1/4") connects to VC-1 port N1 (1/2")');
     expect(mismatch.zone).toMatch(/^[A-Z]-\d$/);
     expect(result.findings.find((finding) => finding.rule === "duplicate_tag")!.message).toBe("HV-3201: Duplicate of HV-3201");
+  });
+
+  it("does not let a duplicate_tag waiver silence a later collision on a different tag", () => {
+    const doc = cleanDocument();
+    item<SymbolItem>(doc, "pcv").tag = "HV-3201";
+    const firstKey = `duplicate_tag:${duplicateTagSubjectKey("pcv", "HV-3201")}`;
+    const waived = runDrc({
+      doc,
+      registry,
+      tagScheme: DEFAULT_TAG_SCHEME,
+      parts,
+      waivers: [{ key: firstKey, reason: "temporary twin during layout" }]
+    });
+    expect(waived.waived.map((finding) => finding.key)).toEqual([firstKey]);
+    expect(waived.findings.some((finding) => finding.rule === "duplicate_tag")).toBe(false);
+
+    item<SymbolItem>(doc, "hv").tag = "HV-3300";
+    item<SymbolItem>(doc, "pcv").tag = "HV-3300";
+    const after = runDrc({
+      doc,
+      registry,
+      tagScheme: DEFAULT_TAG_SCHEME,
+      parts,
+      waivers: [{ key: firstKey, reason: "temporary twin during layout" }]
+    });
+    const failure = after.findings.find((finding) => finding.rule === "duplicate_tag" && finding.itemId === "pcv");
+    expect(failure?.key).toBe(`duplicate_tag:${duplicateTagSubjectKey("pcv", "HV-3300")}`);
+    expect(after.waived).toEqual([]);
+  });
+
+  it("does not let a port_size_mismatch waiver silence a later mismatch with different sizes", () => {
+    const doc = cleanDocument();
+    item<EquipmentItem>(doc, "vc").nozzles![0].size = '1/2"';
+    const firstKey = `port_size_mismatch:${portSizeMismatchSubjectKey("l5", 1, '1/4"', '1/2"')}`;
+    const waived = runDrc({
+      doc,
+      registry,
+      tagScheme: DEFAULT_TAG_SCHEME,
+      parts,
+      waivers: [{ key: firstKey, reason: "adapter on order" }]
+    });
+    expect(waived.waived.map((finding) => finding.key)).toEqual([firstKey]);
+    expect(waived.findings.some((finding) => finding.rule === "port_size_mismatch")).toBe(false);
+
+    item<LineItem>(doc, "l5").size = '3/8"';
+    const after = runDrc({
+      doc,
+      registry,
+      tagScheme: DEFAULT_TAG_SCHEME,
+      parts,
+      waivers: [{ key: firstKey, reason: "adapter on order" }]
+    });
+    const failure = after.findings.find((finding) => finding.rule === "port_size_mismatch");
+    expect(failure?.key).toBe(`port_size_mismatch:${portSizeMismatchSubjectKey("l5", 1, '3/8"', '1/2"')}`);
+    expect(after.waived).toEqual([]);
   });
 
   it("flags tags that duplicate another sheet's tags or equipment tags", () => {

@@ -117,6 +117,16 @@ const OPEN_KEYS = new Set(["vent_atmosphere", "drain"]);
 const PROCESS_LINE_TYPES = new Set(["process", "vacuum", "capillary"]);
 const STUB_MM = 25;
 
+/** Subject key for duplicate_tag findings: item + the colliding tag value. */
+export function duplicateTagSubjectKey(itemId: string, tag: string): string {
+  return `${itemId}:${tag.trim()}`;
+}
+
+/** Subject key for port_size_mismatch findings: line end + the two sizes that disagreed. */
+export function portSizeMismatchSubjectKey(lineId: string, end: number, lineSize: string, portSize: string): string {
+  return `${lineId}:${end}:${lineSize.trim()}:${portSize.trim()}`;
+}
+
 function caption(item: Item | undefined): string | null {
   if (!item) return null;
   if (item.kind === "symbol") return item.tag ?? item.label ?? null;
@@ -291,8 +301,11 @@ export function runDrc(input: DrcInput): DrcResult {
   // ---- tags ----
   for (const issue of tagIssues(doc, tagScheme, input.reservedTags)) {
     const item = byId.get(issue.itemId);
-    if (issue.issue === "duplicate") add("duplicate_tag", "error", item, `${issue.tag}: ${issue.message}`);
-    else add("invalid_tag", "warning", item, `${issue.tag}: ${issue.message}`);
+    if (issue.issue === "duplicate") {
+      add("duplicate_tag", "error", item, `${issue.tag}: ${issue.message}`, duplicateTagSubjectKey(issue.itemId, issue.tag));
+    } else {
+      add("invalid_tag", "warning", item, `${issue.tag}: ${issue.message}`);
+    }
   }
   for (const item of doc.items) {
     if (item.kind !== "symbol" || item.tag || !registry.has(item.symbol)) continue;
@@ -320,7 +333,13 @@ export function runDrc(input: DrcInput): DrcResult {
         if (attachment.kind === "port") {
           const port = ports.get(`${attachment.itemId}:${attachment.portId}`);
           if (port?.size && line.size && sizesDiffer(line.size, port.size)) {
-            add("port_size_mismatch", "error", line, `${describe(line)} (${line.size}) connects to ${describe(byId.get(attachment.itemId))} port ${attachment.portId} (${port.size})`, `${lineId}:${end.end}`);
+            add(
+              "port_size_mismatch",
+              "error",
+              line,
+              `${describe(line)} (${line.size}) connects to ${describe(byId.get(attachment.itemId))} port ${attachment.portId} (${port.size})`,
+              portSizeMismatchSubjectKey(lineId, end.end, line.size, port.size)
+            );
           }
         } else {
           const pair = [line.id, attachment.lineId].sort().join(":");

@@ -24,7 +24,7 @@ describe("deriveSheetData", () => {
       ],
       registry,
       tagScheme: DEFAULT_TAG_SCHEME,
-      waivers: [{ key: "duplicate_tag:hv", reason: "spare" }]
+      waivers: [{ key: "duplicate_tag:hv:HV-3201", reason: "spare" }]
     });
     const connector = derived.index.items.find((item) => item.item_id === "conn") as unknown as { fields: { target: string | null } } | undefined;
     expect(JSON.stringify(connector)).toContain("SHT 2 /");
