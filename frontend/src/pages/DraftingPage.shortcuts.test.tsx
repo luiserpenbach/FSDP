@@ -102,6 +102,6 @@ describe("DraftingPage shortcuts and cross-sheet tags", () => {
     fireEvent.keyDown(canvas, { key: "s", metaKey: true });
     await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
     const [, body] = apiMock.updateSheet.mock.calls[0] as [string, { drc: { findings: Array<{ key: string; message: string }> } }];
-    expect(body.drc.findings.find((finding) => finding.key === "duplicate_tag:hv-sh1")?.message).toBe("HV-1: Duplicate of HV-1 on another sheet");
+    expect(body.drc.findings.find((finding) => finding.key === "duplicate_tag:hv-sh1:HV-1")?.message).toBe("HV-1: Duplicate of HV-1 on another sheet");
   });
 });
