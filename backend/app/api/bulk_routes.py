@@ -51,6 +51,7 @@ from app.services.bulk_import import (
     validate_bulk_changes,
 )
 from app.services.catalog import catalog_files_root, remember_part_type
+from app.services.drc import invalidate_requirement_checks
 from app.services.sheet_index import mark_project_sheets_stale, mark_sheets_stale_for_part
 from app.services.traceability import delete_trace_links_for
 
@@ -281,6 +282,7 @@ def _commit_plan(db: Session, plan: ImportPlan, actor: str, source: str) -> None
         elif row.action == "update":
             obj = row.target
             had_constraint = not is_part and obj.constraint is not None
+            constraint_touched = not is_part and "constraint" in row.changes
             for name, (_old, new) in row.changes.items():
                 setattr(obj, "metadata_" if name == "metadata" else name, new)
             if is_part:
@@ -288,8 +290,11 @@ def _commit_plan(db: Session, plan: ImportPlan, actor: str, source: str) -> None
                     remember_part_type(db, obj.part_type)
                 # Ratings, material and lifecycle feed the DRC of sheets using the part.
                 mark_sheets_stale_for_part(db, obj.id)
-            elif had_constraint or obj.constraint is not None:
-                project_stale = True
+            else:
+                if constraint_touched:
+                    invalidate_requirement_checks(db, obj.id)
+                if had_constraint or obj.constraint is not None:
+                    project_stale = True
     db.flush()
 
     counts = plan.summary()
@@ -519,6 +524,7 @@ def bulk_update_requirements(
 
     updated = 0
     project_stale = False
+    constraint_touched = "constraint" in changes
     for requirement_id in ids:
         requirement = requirements[requirement_id]
         had_constraint = requirement.constraint is not None
@@ -526,6 +532,8 @@ def bulk_update_requirements(
         if not changed:
             continue
         updated += 1
+        if constraint_touched:
+            invalidate_requirement_checks(db, requirement.id)
         if had_constraint or requirement.constraint is not None:
             project_stale = True
         record_change(

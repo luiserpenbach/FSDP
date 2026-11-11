@@ -79,6 +79,7 @@ from app.services.catalog import (
     sanitize_upload_filename,
 )
 from app.services.change_impact import get_change_impact
+from app.services.drc import invalidate_requirement_checks
 from app.services.lists import rows_to_xlsx, spreadsheet_safe
 from app.services.sheet_index import (
     mark_project_sheets_stale,
@@ -963,7 +964,12 @@ def update_requirement(
             raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
     had_constraint = requirement.constraint is not None
+    constraint_touched = "constraint" in payload.model_dump(exclude_unset=True)
     apply_updates(requirement, payload)
+    if constraint_touched:
+        # Stored pass/fail rows encode the old rule; drop them so the matrix cannot
+        # keep showing pass under the new constraint (released sheets are not marked stale).
+        invalidate_requirement_checks(db, requirement.id)
     if had_constraint or requirement.constraint is not None:
         mark_project_sheets_stale(db, requirement.project_id)
     record_change(
