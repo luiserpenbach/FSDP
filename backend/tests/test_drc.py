@@ -223,10 +223,17 @@ def test_verification_matrix_and_drawing_trace_links(client: TestClient) -> None
     manual = _requirement(client, project_id, "REQ-9", None)
     _requirement(client, project_id, "REQ-8", {"kind": "relief_required", "values": []})
 
-    client.put(f"/sheets/{drawing['sheets'][0]['id']}", json={"drc": _drc(checked["id"])})
+    # Index + DRC together clear index_stale; a DRC-only PUT leaves the sheet stale
+    # and the matrix must ignore those checks (see stale-sheet regression below).
+    empty_index = {"items": [], "lines": []}
+    client.put(
+        f"/sheets/{drawing['sheets'][0]['id']}",
+        json={"index": empty_index, "drc": _drc(checked["id"])},
+    )
     client.put(
         f"/sheets/{second['id']}",
         json={
+            "index": empty_index,
             "drc": {
                 "findings": [],
                 "checks": [
@@ -237,12 +244,13 @@ def test_verification_matrix_and_drawing_trace_links(client: TestClient) -> None
                         "status": "pass",
                     }
                 ],
-            }
+            },
         },
     )
     client.put(
         f"/sheets/{other_drawing['sheets'][0]['id']}",
         json={
+            "index": empty_index,
             "drc": {
                 "findings": [],
                 "checks": [
@@ -253,7 +261,7 @@ def test_verification_matrix_and_drawing_trace_links(client: TestClient) -> None
                         "status": "pass",
                     }
                 ],
-            }
+            },
         },
     )
 
@@ -318,6 +326,186 @@ def test_verification_matrix_and_drawing_trace_links(client: TestClient) -> None
     # Stored findings stay until the next save; the deleted requirement is just unlinked.
     assert client.get(f"/drawings/{drawing['id']}/drc").json()["counts"]["error"] == 3
     assert client.delete(f"/requirements/{manual['id']}").status_code == 204
+
+
+def test_verification_matrix_drops_pass_when_constraint_changes(client: TestClient) -> None:
+    """Constraint edits must not keep a green verdict under the new rule.
+
+    Released drawings are not marked stale on requirement updates, so leaving the
+    old DrcRequirementCheck rows would pair pass with the rewritten constraint.
+    """
+    project_id = _project(client)
+    part = client.post(
+        "/parts",
+        json={
+            "part_number": "MAT-316",
+            "description": "Valve",
+            "part_type": "valve",
+            "material": "316L",
+            "lifecycle_status": "active",
+            "qualification_status": "qualified",
+            "preferred": True,
+        },
+    ).json()
+    requirement = _requirement(
+        client, project_id, "MAT-1", {"kind": "material_in", "values": ["316L"]}
+    )
+    drawing = _drawing(client, project_id)
+    sheet_id = drawing["sheets"][0]["id"]
+    document = {
+        "schemaVersion": 1,
+        "sheet": {
+            "size": "A3",
+            "orientation": "landscape",
+            "frame": {"kind": "basic", "columns": 4, "rows": 3, "margin": 10},
+        },
+        "layers": [],
+        "items": [
+            {
+                "id": "hv1",
+                "kind": "symbol",
+                "symbol": "ball_valve",
+                "position": {"x": 0, "y": 0},
+                "rotation": 0,
+                "tag": "HV-1",
+                "partId": part["id"],
+                "fields": {},
+            }
+        ],
+        "meta": {"grid": 2.5},
+    }
+    index = {
+        "items": [
+            {
+                "item_id": "hv1",
+                "kind": "symbol",
+                "category": "valve",
+                "tag": "HV-1",
+                "part_id": part["id"],
+            }
+        ],
+        "lines": [],
+    }
+    drc = {
+        "findings": [],
+        "checks": [
+            {
+                "requirement_id": requirement["id"],
+                "item_id": "hv1",
+                "status": "pass",
+                "message": "MAT-316 material 316L",
+                "subject": "HV-1",
+            }
+        ],
+    }
+    assert (
+        client.put(
+            f"/sheets/{sheet_id}", json={"document": document, "index": index, "drc": drc}
+        ).status_code
+        == 200
+    )
+    before = client.get(f"/projects/{project_id}/verification-matrix").json()["rows"][0]
+    assert (before["verdict"], before["checked"], before["failed"]) == ("pass", 1, 0)
+
+    assert client.post(f"/drawings/{drawing['id']}/release").status_code == 200
+    # New rule would fail the 316L part; the matrix must not keep the old pass.
+    updated = client.put(
+        f"/requirements/{requirement['id']}",
+        json={"constraint": {"kind": "material_in", "values": ["304SS"]}},
+    )
+    assert updated.status_code == 200, updated.text
+    after = client.get(f"/projects/{project_id}/verification-matrix").json()
+    row = after["rows"][0]
+    assert row["constraint"]["values"] == ["304SS"]
+    assert after["stale_sheets"] == []
+    assert (row["verdict"], row["checked"], row["failed"]) == ("no_data", 0, 0)
+    assert client.get(f"/sheets/{sheet_id}/drc").json()["checks"] == []
+
+
+def test_verification_matrix_ignores_checks_on_stale_sheets(client: TestClient) -> None:
+    """Part edits mark sheets stale; old pass rows must not keep the verdict green."""
+    project_id = _project(client)
+    part = client.post(
+        "/parts",
+        json={
+            "part_number": "MAT-304",
+            "description": "Valve",
+            "part_type": "valve",
+            "material": "316L",
+            "lifecycle_status": "active",
+            "qualification_status": "qualified",
+            "preferred": True,
+        },
+    ).json()
+    requirement = _requirement(
+        client, project_id, "MAT-2", {"kind": "material_in", "values": ["316L"]}
+    )
+    drawing = _drawing(client, project_id)
+    sheet_id = drawing["sheets"][0]["id"]
+    document = {
+        "schemaVersion": 1,
+        "sheet": {
+            "size": "A3",
+            "orientation": "landscape",
+            "frame": {"kind": "basic", "columns": 4, "rows": 3, "margin": 10},
+        },
+        "layers": [],
+        "items": [
+            {
+                "id": "hv1",
+                "kind": "symbol",
+                "symbol": "ball_valve",
+                "position": {"x": 0, "y": 0},
+                "rotation": 0,
+                "tag": "HV-1",
+                "partId": part["id"],
+                "fields": {},
+            }
+        ],
+        "meta": {"grid": 2.5},
+    }
+    index = {
+        "items": [
+            {
+                "item_id": "hv1",
+                "kind": "symbol",
+                "category": "valve",
+                "tag": "HV-1",
+                "part_id": part["id"],
+            }
+        ],
+        "lines": [],
+    }
+    drc = {
+        "findings": [],
+        "checks": [
+            {
+                "requirement_id": requirement["id"],
+                "item_id": "hv1",
+                "status": "pass",
+                "message": "ok",
+                "subject": "HV-1",
+            }
+        ],
+    }
+    assert (
+        client.put(
+            f"/sheets/{sheet_id}", json={"document": document, "index": index, "drc": drc}
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(f"/projects/{project_id}/verification-matrix").json()["rows"][0]["verdict"]
+        == "pass"
+    )
+
+    assert (
+        client.put(f"/parts/{part['id']}", json={"material": "Brass"}).status_code == 200
+    )
+    matrix = client.get(f"/projects/{project_id}/verification-matrix").json()
+    assert matrix["stale_sheets"][0]["sheet_id"] == sheet_id
+    row = matrix["rows"][0]
+    assert (row["verdict"], row["checked"]) == ("no_data", 0)
 
 
 def test_pdf_export_appends_extra_pages(client: TestClient) -> None:

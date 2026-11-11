@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -20,6 +20,19 @@ from app.models import (
 )
 from app.schemas import DrcIn
 from app.services.sheet_index import stale_sheets
+
+
+def invalidate_requirement_checks(db: Session, requirement_id: str) -> None:
+    """Drop stored checks and findings for a requirement after its constraint changes.
+
+    The verification matrix pairs the live constraint text with stored pass/fail
+    rows. Leaving those rows after a constraint edit (or after a released drawing
+    skipped the stale mark) would keep reporting pass under the new rule.
+    """
+    db.execute(
+        delete(DrcRequirementCheck).where(DrcRequirementCheck.requirement_id == requirement_id)
+    )
+    db.execute(delete(DrcResult).where(DrcResult.requirement_id == requirement_id))
 
 
 def replace_sheet_drc(db: Session, sheet: DrawingSheet, drc: DrcIn) -> None:
@@ -110,9 +123,12 @@ def verification_matrix(db: Session, project: Project) -> dict:
             .order_by(Requirement.key)
         )
     )
+    drawing_ids = list(db.scalars(select(Drawing.id).where(Drawing.project_id == project.id)))
+    stale = stale_sheets(db, drawing_ids)
+    stale_sheet_ids = {entry["sheet_id"] for entry in stale}
     rows = []
     for requirement in requirements:
-        checks = db.execute(
+        raw_checks = db.execute(
             select(DrcRequirementCheck, DrawingSheet, Drawing)
             .join(DrawingSheet, DrcRequirementCheck.sheet_id == DrawingSheet.id)
             .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
@@ -122,6 +138,9 @@ def verification_matrix(db: Session, project: Project) -> dict:
             )
             .order_by(Drawing.number, DrawingSheet.sheet_no)
         ).all()
+        # Stale sheets still hold the last pass/fail rows; counting them would keep a
+        # green verdict after a part or constraint change until every sheet is re-saved.
+        checks = [row for row in raw_checks if row[1].id not in stale_sheet_ids]
         by_drawing: dict[str, dict] = {}
         for check, sheet, drawing in checks:
             entry = by_drawing.setdefault(
@@ -177,5 +196,4 @@ def verification_matrix(db: Session, project: Project) -> dict:
                 "failures": [check for check, _, _ in checks if check.status == "fail"],
             }
         )
-    drawing_ids = db.scalars(select(Drawing.id).where(Drawing.project_id == project.id))
-    return {"project_id": project.id, "rows": rows, "stale_sheets": stale_sheets(db, drawing_ids)}
+    return {"project_id": project.id, "rows": rows, "stale_sheets": stale}
