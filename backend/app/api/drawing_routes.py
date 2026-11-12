@@ -72,8 +72,10 @@ from app.services.lists import (
 )
 from app.services.release import next_revision_label, release_blockers, release_snapshot
 from app.services.sheet_index import (
+    connector_index_fingerprint,
     document_needs_index,
     mark_drawing_sheets_stale,
+    mark_other_sheets_stale,
     replace_sheet_index,
     stale_sheets,
     stale_sheets_note,
@@ -363,6 +365,12 @@ def update_sheet(
     sheet = require_model(db, DrawingSheet, sheet_id)
     drawing = _editable_sheet_drawing(db, sheet)
     data = payload.model_dump(exclude_unset=True)
+    previous_connectors = None
+    if payload.index is not None:
+        # Off-page targets and cross-sheet duplicate tags on siblings depend on this sheet.
+        previous_connectors = connector_index_fingerprint(
+            db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id))
+        )
     if "title" in data:
         sheet.title = data["title"]
     if data.get("document") is not None:
@@ -378,6 +386,11 @@ def update_sheet(
     elif data.get("document") is not None or payload.index is not None or payload.drc is not None:
         # A document without its index, or half of the derived data, leaves it out of date.
         sheet.index_stale = True
+    if payload.index is not None and previous_connectors != connector_index_fingerprint(
+        payload.index.items
+    ):
+        # Sibling indexes still hold pre-pair (or pre-break) connector targets.
+        mark_other_sheets_stale(db, drawing.id, sheet.id)
     item_count = len((sheet.document or {}).get("items", []))
     record_change(
         db,

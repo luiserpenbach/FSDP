@@ -149,6 +149,49 @@ def mark_drawing_sheets_stale(db: Session, drawing_id: str) -> None:
     )
 
 
+def mark_other_sheets_stale(db: Session, drawing_id: str, except_sheet_id: str) -> None:
+    """Flag every other sheet of a drawing, e.g. after this sheet's off-page connectors changed.
+
+    Sibling indexes store resolved `fields.target` ("SHT n / zone") and DRC uses reserved
+    tags from other sheets; those rows stay wrong until the siblings are re-saved.
+    """
+    db.execute(
+        update(DrawingSheet)
+        .where(
+            DrawingSheet.drawing_id == drawing_id,
+            DrawingSheet.id != except_sheet_id,
+        )
+        .values(index_stale=True)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def connector_index_fingerprint(items: Iterable) -> tuple:
+    """Stable fingerprint of off-page connectors in an index payload or stored rows.
+
+    Compared across saves so a sheet that gains, loses, moves, or re-refs a connector
+    can invalidate siblings without looping when a sibling reindex leaves its own
+    connectors unchanged.
+    """
+    rows: list[tuple] = []
+    for item in items:
+        category = getattr(item, "category", None)
+        if category != "connector":
+            continue
+        item_id = getattr(item, "item_id")
+        fields = getattr(item, "fields", None) or {}
+        ref = fields.get("ref") if isinstance(fields, dict) else None
+        rows.append(
+            (
+                item_id,
+                (str(ref).strip().upper() if ref is not None and str(ref).strip() else None),
+                getattr(item, "x", None),
+                getattr(item, "y", None),
+            )
+        )
+    return tuple(sorted(rows))
+
+
 def stale_sheets(db: Session, drawing_ids: Iterable[str]) -> list[dict]:
     """Sheets of the given drawings whose stored index/DRC is out of date."""
     ids = list(drawing_ids)
