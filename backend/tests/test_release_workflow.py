@@ -491,3 +491,106 @@ def test_lists_and_verification_matrix_report_stale_sheets(client: TestClient) -
     assert client.get(f"/drawings/{drawing['id']}/lists/valve").json()["stale_sheets"] == []
     assert "warning" not in client.get(f"/drawings/{drawing['id']}/lists/valve").json()["header"]
     assert client.get(f"/projects/{project_id}/verification-matrix").json()["stale_sheets"] == []
+
+
+def test_pairing_off_page_connectors_marks_sibling_sheets_stale(client: TestClient) -> None:
+    """Adding a matching connector on a new sheet must invalidate the sibling's stored target.
+
+    Without that, sheet 1 stays false-fresh with `fields.target=null` while sheet 2 points at
+    it; Release would freeze the broken off-page reference into the revision snapshot.
+    """
+    project_id = _project(client, "CONN")
+    drawing = _drawing(client, project_id)
+    drawing_id = drawing["id"]
+    sheet1 = drawing["sheets"][0]["id"]
+
+    def connector_doc(item_id: str) -> dict:
+        doc = _document()
+        doc["items"] = [
+            {
+                "id": item_id,
+                "kind": "symbol",
+                "layer": "symbols",
+                "symbol": {"library": "fsdp", "key": "off_page_connector", "version": 1},
+                "position": {"x": 100, "y": 100},
+                "rotation": 0,
+                "fields": {"ref": "A"},
+            }
+        ]
+        return doc
+
+    def connector_index(item_id: str, target: str | None) -> dict:
+        return {
+            "items": [
+                {
+                    "item_id": item_id,
+                    "kind": "symbol",
+                    "category": "connector",
+                    "symbol_key": "off_page_connector",
+                    "symbol_name": "Off-page connector",
+                    "x": 100,
+                    "y": 100,
+                    "fields": {"ref": "A", "target": target},
+                }
+            ],
+            "lines": [],
+        }
+
+    assert (
+        client.put(
+            f"/sheets/{sheet1}",
+            json={
+                "document": connector_doc("c1"),
+                "index": connector_index("c1", None),
+                "drc": {"findings": [], "checks": []},
+            },
+        ).status_code
+        == 200
+    )
+
+    # UI addSheet: empty sheet, then place the matching connector and save.
+    sheet2 = client.post(f"/drawings/{drawing_id}/sheets", json={}).json()["id"]
+    assert client.get(f"/sheets/{sheet1}").json()["index_stale"] is False
+
+    saved = client.put(
+        f"/sheets/{sheet2}",
+        json={
+            "document": connector_doc("c2"),
+            "index": connector_index("c2", "SHT 1 / B-2"),
+            "drc": {"findings": [], "checks": []},
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["index_stale"] is False
+    assert client.get(f"/sheets/{sheet1}").json()["index_stale"] is True
+
+    # Release must refuse until the sibling is re-indexed with the new pair.
+    refused = client.post(f"/drawings/{drawing_id}/release")
+    assert refused.status_code == 409, refused.text
+    assert any(reason["code"] == "index_stale" for reason in refused.json()["detail"]["reasons"])
+
+    # Re-saving sheet 1 with the resolved target clears the gate; unchanged connectors on
+    # that re-save must not bounce sheet 2 back to stale (no invalidation loop).
+    assert (
+        client.put(
+            f"/sheets/{sheet1}",
+            json={
+                "document": connector_doc("c1"),
+                "index": connector_index("c1", "SHT 2 / B-2"),
+                "drc": {"findings": [], "checks": []},
+            },
+        ).status_code
+        == 200
+    )
+    assert _sheet_stale(client, drawing_id) == [False, False]
+    released = client.post(f"/drawings/{drawing_id}/release")
+    assert released.status_code == 200, released.text
+    snapshot = client.get(
+        f"/revisions/{released.json()['current_revision']['id']}/snapshot"
+    ).json()["snapshot"]
+    targets = {
+        (sheet["sheet_no"], item["item_id"]): (item.get("fields") or {}).get("target")
+        for sheet in snapshot["sheets"]
+        for item in sheet["items"]
+    }
+    assert targets == {(1, "c1"): "SHT 2 / B-2", (2, "c2"): "SHT 1 / B-2"}
