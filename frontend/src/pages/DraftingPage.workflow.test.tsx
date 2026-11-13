@@ -260,6 +260,51 @@ describe("DraftingPage release workflow", () => {
     expect(sent).toBe(102.5);
   });
 
+  it("freezes the canvas for the whole Release await so mid-await edits cannot miss the baseline", async () => {
+    let resolveSave!: (value: DrawingSheet) => void;
+    let resolveRelease!: (value: DrawingRead) => void;
+    apiMock.updateSheet.mockReturnValue(new Promise<DrawingSheet>((resolve) => (resolveSave = resolve)));
+    workflowMock.releaseDrawing.mockReturnValue(new Promise<DrawingRead>((resolve) => (resolveRelease = resolve)));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const notify = vi.fn();
+    renderPage({ notify });
+    const canvas = await openCanvas();
+
+    // Dirty the sheet, then confirm Release while the save is held open.
+    fireEvent.keyDown(canvas, { key: "a", ctrlKey: true });
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    fireEvent.click(within(screen.getByRole("region", { name: "Release workflow" })).getByRole("button", { name: "Release…" }));
+    await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(1));
+    const savedX = (apiMock.updateSheet.mock.calls[0][1] as { document: { items: Array<{ position: { x: number } }> } }).document.items[0].position.x;
+
+    // Canvas is frozen before the save resolves: nudges must not apply.
+    expect(canvas).toHaveAttribute("data-readonly", "true");
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    resolveSave({ ...sheets.sh1, document: (apiMock.updateSheet.mock.calls[0][1] as { document: unknown }).document as DrawingSheet["document"] });
+    await waitFor(() => expect(workflowMock.releaseDrawing).toHaveBeenCalledWith("dw1"));
+
+    // Still frozen while releaseDrawing is in flight.
+    expect(canvas).toHaveAttribute("data-readonly", "true");
+    fireEvent.keyDown(canvas, { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "2" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Wire/ })).toBeDisabled();
+
+    resolveRelease(
+      makeDrawing({
+        status: "released",
+        revisions: [{ ...revB, status: "released", approved_by: "eng@fsdp.test", approved_at: "2026-09-12T10:00:00Z" }],
+        current_revision: { ...revB, status: "released", approved_by: "eng@fsdp.test", approved_at: "2026-09-12T10:00:00Z" }
+      })
+    );
+    await waitFor(() => expect(canvas).toHaveAttribute("data-readonly", "true"));
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("Released AMB2-9003"));
+    // Only the pre-confirm nudge was stored; mid-await nudges never dirtied the sheet.
+    expect(apiMock.updateSheet).toHaveBeenCalledTimes(1);
+    expect(savedX).toBe(102.5);
+    expect(screen.getByText("Saved", { selector: ".draftingStatus span" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
+  });
+
   it("locks a released drawing: read-only canvas and inspector, banner, and a new revision unlocks it", async () => {
     apiMock.listDrawings.mockResolvedValue([releasedDrawing()]);
     workflowMock.reviseDrawing.mockResolvedValue(makeDrawing({ status: "draft" }));

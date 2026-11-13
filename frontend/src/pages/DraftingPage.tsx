@@ -312,6 +312,12 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   const [exportFindings, setExportFindings] = useState(false);
   const [tagSchemeReady, setTagSchemeReady] = useState(false);
   const [workflowBusy, setWorkflowBusy] = useState(false);
+  /**
+   * Freeze the canvas/lists/inspector for the whole Release/Submit await chain
+   * (including ensureSaved). Without this, edits land after the stored baseline
+   * is chosen and are then locked out when status becomes released.
+   */
+  const [workflowFreeze, setWorkflowFreeze] = useState(false);
   /** Reasons the last release attempt was refused. */
   const [blockers, setBlockers] = useState<ReleaseBlocker[]>([]);
   const [snapshotRevision, setSnapshotRevision] = useState<DrawingRevision | null>(null);
@@ -338,6 +344,9 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   // Released drawings are locked: edits go into a new revision. Viewers never edit.
   const locked = status === "released";
   const canEdit = canWrite && !locked;
+  // Save still uses `canEdit`; the live UI uses `uiEditable` so a freeze can
+  // block new edits without preventing ensureSaved from writing the sheet.
+  const uiEditable = canEdit && !workflowFreeze;
   const staleSheets = useMemo(() => drawing?.sheets.filter((entry) => entry.index_stale) ?? [], [drawing]);
   const systemName = systems.find((system) => system.id === drawing?.system_id)?.name;
   // Drawing number each legacy diagram was converted into (by source_diagram_id of a sheet).
@@ -768,11 +777,29 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     setDrawings((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
   }
 
-  async function runWorkflow(action: (id: string) => Promise<DrawingRead>, success: (updated: DrawingRead) => string): Promise<void> {
+  async function runWorkflow(
+    action: (id: string) => Promise<DrawingRead>,
+    success: (updated: DrawingRead) => string,
+    options: { saveFirst?: boolean } = {}
+  ): Promise<void> {
     if (!drawing) return;
     const id = drawing.id;
+    // Freeze before any await: React state alone would leave a tick where the
+    // canvas is still writable; setReadOnly drops in-flight drags immediately.
+    const liveEditor = sessionRef.current?.editor ?? editor;
+    liveEditor?.setReadOnly(true);
+    setWorkflowFreeze(true);
     setWorkflowBusy(true);
     try {
+      if (options.saveFirst) {
+        // Release/Submit read the stored index; drain dirty first under the freeze
+        // so mid-await canvas edits cannot miss the baseline then get locked out.
+        if (!(await ensureSaved())) return;
+        if (liveEditor?.store.dirty || editor?.store.dirty) {
+          notify("Unsaved edits remain on the sheet; the workflow action was cancelled.", true);
+          return;
+        }
+      }
       const updated = await action(id);
       replaceDrawing(updated);
       setBlockers([]);
@@ -786,12 +813,15 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       notify(error instanceof Error ? error.message : "The workflow action failed.", true);
     } finally {
       setWorkflowBusy(false);
+      setWorkflowFreeze(false);
     }
   }
 
   async function submitForReview() {
-    if (!drawing || !(await ensureSaved())) return;
-    await runWorkflow(submitDrawing, (updated) => `Submitted ${updated.number} rev ${updated.current_revision?.label ?? ""} for review.`);
+    if (!drawing) return;
+    await runWorkflow(submitDrawing, (updated) => `Submitted ${updated.number} rev ${updated.current_revision?.label ?? ""} for review.`, {
+      saveFirst: true
+    });
   }
 
   async function withdrawFromReview() {
@@ -803,9 +833,9 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     const label = drawing.current_revision?.label ?? drawing.revisions[drawing.revisions.length - 1]?.label ?? "-";
     const question = `Release ${drawing.number} rev ${label}?\n\nThe drawing locks and you are recorded as the approver. Later changes need a new revision.`;
     if (!window.confirm(question)) return;
-    // Release reads the stored index, so unsaved edits go in first.
-    if (!(await ensureSaved())) return;
-    await runWorkflow(releaseDrawing, (updated) => `Released ${updated.number} rev ${updated.current_revision?.label ?? label}.`);
+    await runWorkflow(releaseDrawing, (updated) => `Released ${updated.number} rev ${updated.current_revision?.label ?? label}.`, {
+      saveFirst: true
+    });
   }
 
   async function startRevision(body: { label?: string; description?: string }) {
@@ -894,12 +924,19 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
 
   /** Exports and the BoM read the saved index, so save a dirty sheet first. */
   async function ensureSaved(): Promise<boolean> {
-    if (!editor?.store.dirty) return true;
     if (!canEdit) {
-      notify("Unsaved changes are not in the stored index; a writer must save the sheet first.", true);
-      return false;
+      if (editor?.store.dirty) {
+        notify("Unsaved changes are not in the stored index; a writer must save the sheet first.", true);
+        return false;
+      }
+      return true;
     }
-    return save();
+    // Mid-save edits stay dirty (markSaved keeps the in-flight version). Drain
+    // until clean so Release/Submit/BoM/export never proceed on a half-saved sheet.
+    while (editor?.store.dirty) {
+      if (!(await save())) return false;
+    }
+    return true;
   }
 
   async function exportList(scope: ListScope, kind: ListKind, format: "csv" | "xlsx") {
@@ -1034,11 +1071,13 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   }
 
   function switchDrawing(nextId: string) {
+    if (workflowFreeze) return;
     if (!confirmDiscard()) return;
     setDrawingId(nextId);
   }
 
   function switchSheet(nextId: string) {
+    if (workflowFreeze) return;
     if (nextId === sheetId || !confirmDiscard()) return;
     setSheetId(nextId);
   }
@@ -1197,7 +1236,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
         <h1>Drafting</h1>
         <label className="draftingDrawingSelect">
           <span className="srOnly">Drawing</span>
-          <select value={drawingId} onChange={(event) => switchDrawing(event.target.value)} disabled={!drawings.length} aria-label="Drawing">
+          <select value={drawingId} onChange={(event) => switchDrawing(event.target.value)} disabled={!drawings.length || workflowFreeze} aria-label="Drawing">
             {drawings.length === 0 && <option value="">No drawings in this project</option>}
             {drawings.map((entry) => (
               <option key={entry.id} value={entry.id}>
@@ -1216,13 +1255,14 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                 role="tab"
                 aria-selected={sheet.id === sheetId}
                 className={`sheetTab${sheet.id === sheetId ? " active" : ""}${sheet.index_stale ? " stale" : ""}`}
+                disabled={workflowFreeze && sheet.id !== sheetId}
                 onClick={() => switchSheet(sheet.id)}
                 title={`${sheet.title ?? `Sheet ${sheet.sheet_no}`}${sheet.index_stale ? " (index out of date)" : ""}`}
               >
                 {sheet.sheet_no}
               </button>
             ))}
-            <button type="button" className="sheetTab sheetTabAdd" disabled={!canEdit} onClick={() => void addSheet()} title={locked ? "Released: start a new revision to add sheets" : "Add sheet"}>
+            <button type="button" className="sheetTab sheetTabAdd" disabled={!uiEditable} onClick={() => void addSheet()} title={locked ? "Released: start a new revision to add sheets" : "Add sheet"}>
               +
             </button>
           </div>
@@ -1293,7 +1333,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
           <EditorToolbar
             editor={editor}
             registry={registry}
-            canWrite={canEdit}
+            canWrite={uiEditable}
             showGrid={showGrid}
             onToggleGrid={() => setShowGrid((current) => !current)}
             onFit={() => canvasRef.current?.fitToSheet()}
@@ -1352,7 +1392,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                 sheetNo={sheetSummary?.sheet_no ?? 1}
                 otherSheets={otherSheets}
                 parts={parts}
-                readOnly={!canEdit}
+                readOnly={!uiEditable}
                 canvasRef={canvasRef}
                 onCursor={setCursor}
                 onViewport={setViewport}
@@ -1380,8 +1420,16 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                 projectId={projectId}
                 drawing={drawing}
                 canWrite={canWrite}
-                editable={canEdit && Boolean(drawing)}
-                readOnlyReason={locked ? `${drawing?.number ?? "This drawing"} is released: its lists are read-only. Start a new revision to edit.` : !canWrite ? "View only: your role cannot edit these lists." : null}
+                editable={uiEditable && Boolean(drawing)}
+                readOnlyReason={
+                  locked
+                    ? `${drawing?.number ?? "This drawing"} is released: its lists are read-only. Start a new revision to edit.`
+                    : !canWrite
+                      ? "View only: your role cannot edit these lists."
+                      : workflowFreeze
+                        ? "A release or submit is in progress; editing is paused until it finishes."
+                        : null
+                }
                 tagScheme={tagScheme}
                 lineClasses={lineClasses}
                 onCommitEdits={commitListEdits}
@@ -1407,7 +1455,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                     drawing={drawing}
                     systems={systems}
                     sheetCount={drawing.sheets.length}
-                    canEdit={canEdit}
+                    canEdit={uiEditable}
                     open={showDrawingPanel}
                     onToggle={() => setShowDrawingPanel((current) => !current)}
                     onUpdate={(patch) => void updateDrawing(patch)}
@@ -1433,7 +1481,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                       <IndexStatusNote
                         staleSheetNos={staleSheets.map((entry) => entry.sheet_no)}
                         status={reindexStatus}
-                        canReindex={canEdit}
+                        canReindex={uiEditable}
                         onReindex={() => requestReindex()}
                       />
                     )}
@@ -1443,7 +1491,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                   <Inspector
                     editor={editor}
                     registry={registry}
-                    canWrite={canEdit}
+                    canWrite={uiEditable}
                     lineClasses={lineClasses}
                     otherSheets={otherSheets}
                     sheetNo={sheetSummary?.sheet_no ?? 1}
