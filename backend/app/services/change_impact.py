@@ -22,11 +22,13 @@ from app.models import (
     Part,
     Requirement,
     SheetItem,
+    SheetLine,
     TraceLink,
 )
 from app.services.traceability import get_trace_links
 
 ItemRow = tuple[SheetItem, DrawingSheet, Drawing]
+LineRow = tuple[SheetLine, DrawingSheet, Drawing]
 
 
 def _linked_ids(links: Iterable[TraceLink], object_type: str) -> set[str]:
@@ -68,6 +70,19 @@ def _item_rows(db: Session, *conditions) -> list[ItemRow]:
     ]
 
 
+def _line_rows(db: Session, *conditions) -> list[LineRow]:
+    return [
+        tuple(row)
+        for row in db.execute(
+            select(SheetLine, DrawingSheet, Drawing)
+            .join(DrawingSheet, SheetLine.sheet_id == DrawingSheet.id)
+            .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
+            .where(*conditions)
+            .order_by(Drawing.number, DrawingSheet.sheet_no, SheetLine.line_number)
+        ).all()
+    ]
+
+
 def _sheet_item_read(item: SheetItem, sheet: DrawingSheet, drawing: Drawing) -> dict:
     return {
         "id": item.id,
@@ -82,11 +97,30 @@ def _sheet_item_read(item: SheetItem, sheet: DrawingSheet, drawing: Drawing) -> 
     }
 
 
-def _drawings_read(db: Session, drawing_ids: set[str], items: list[ItemRow]) -> list[dict]:
+def _sheet_line_read(line: SheetLine, sheet: DrawingSheet, drawing: Drawing) -> dict:
+    """Reuse the sheet-item impact shape so Reviews can list traced lines as tags."""
+    return {
+        "id": line.id,
+        "sheet_id": sheet.id,
+        "item_id": line.line_id,
+        "tag": line.line_number,
+        "zone": line.zone,
+        "part_id": None,
+        "drawing_id": drawing.id,
+        "drawing_number": drawing.number,
+        "sheet_no": sheet.sheet_no,
+    }
+
+
+def _drawings_read(
+    db: Session, drawing_ids: set[str], items: list[ItemRow], lines: list[LineRow] | None = None
+) -> list[dict]:
     if not drawing_ids:
         return []
     sheets_by_drawing: dict[str, set[int]] = {}
     for _, sheet, drawing in items:
+        sheets_by_drawing.setdefault(drawing.id, set()).add(sheet.sheet_no)
+    for _, sheet, drawing in lines or []:
         sheets_by_drawing.setdefault(drawing.id, set()).add(sheet.sheet_no)
     drawings = db.scalars(
         select(Drawing)
@@ -152,27 +186,47 @@ def _parts_read(db: Session, part_ids: set[str]) -> list[dict]:
 
 def _part_drawing_impact(db: Session, part_id: str, direct_links: list[TraceLink]) -> dict:
     items = _item_rows(db, SheetItem.part_id == part_id)
-    drawing_ids = {drawing.id for _, _, drawing in items}
-    # Requirements traced to the part itself, to its tags, or to their drawings.
+    # Trace links to tags/drawings/lines count even when the tag has no part_id yet.
+    traced_item_ids = _linked_ids(direct_links, "sheet_item")
+    if traced_item_ids:
+        seen = {item.id for item, _, _ in items}
+        items.extend(
+            row
+            for row in _item_rows(db, SheetItem.id.in_(traced_item_ids))
+            if row[0].id not in seen
+        )
+    line_ids = _linked_ids(direct_links, "sheet_line")
+    lines = _line_rows(db, SheetLine.id.in_(line_ids)) if line_ids else []
+    drawing_ids = (
+        {drawing.id for _, _, drawing in items}
+        | {drawing.id for _, _, drawing in lines}
+        | _linked_ids(direct_links, "drawing")
+    )
+    # Requirements traced to the part itself, to its tags/lines, or to their drawings.
     links = _links_touching(
         db,
         {
             "sheet_item": {item.id for item, _, _ in items},
+            "sheet_line": {line.id for line, _, _ in lines},
             "drawing": drawing_ids,
         },
     )
     requirement_ids = _linked_ids([*direct_links, *links], "requirement")
     return {
-        "affected_drawings": _drawings_read(db, drawing_ids, items),
-        "affected_sheet_items": [_sheet_item_read(*row) for row in items],
+        "affected_drawings": _drawings_read(db, drawing_ids, items, lines),
+        "affected_sheet_items": [
+            *[_sheet_item_read(*row) for row in items],
+            *[_sheet_line_read(*row) for row in lines],
+        ],
         "affected_requirements": _requirements_read(db, requirement_ids),
         "drawing_snapshots": _drawing_snapshots_with_part(db, part_id),
     }
 
 
 def _requirement_impact(db: Session, requirement_id: str, direct_links: list[TraceLink]) -> dict:
-    # Tags the requirement is traced to, and tags its constraint was checked on.
+    # Tags/lines the requirement is traced to, and tags its constraint was checked on.
     item_ids = _linked_ids(direct_links, "sheet_item")
+    line_ids = _linked_ids(direct_links, "sheet_line")
     checked = db.execute(
         select(DrcRequirementCheck.sheet_id, DrcRequirementCheck.item_id).where(
             DrcRequirementCheck.requirement_id == requirement_id
@@ -180,16 +234,30 @@ def _requirement_impact(db: Session, requirement_id: str, direct_links: list[Tra
     ).all()
     checked_pairs = {(sheet_id, item_id) for sheet_id, item_id in checked}
     items = _item_rows(db, SheetItem.id.in_(item_ids)) if item_ids else []
+    lines = _line_rows(db, SheetLine.id.in_(line_ids)) if line_ids else []
     if checked_pairs:
-        seen = {item.id for item, _, _ in items}
+        seen_items = {item.id for item, _, _ in items}
         items.extend(
             row
             for row in _item_rows(
                 db, SheetItem.sheet_id.in_({sheet_id for sheet_id, _ in checked_pairs})
             )
-            if (row[0].sheet_id, row[0].item_id) in checked_pairs and row[0].id not in seen
+            if (row[0].sheet_id, row[0].item_id) in checked_pairs and row[0].id not in seen_items
         )
-    drawing_ids = {drawing.id for _, _, drawing in items} | _linked_ids(direct_links, "drawing")
+        # Constraint checks on lines use the engine line_id as DrcRequirementCheck.item_id.
+        seen_lines = {line.id for line, _, _ in lines}
+        lines.extend(
+            row
+            for row in _line_rows(
+                db, SheetLine.sheet_id.in_({sheet_id for sheet_id, _ in checked_pairs})
+            )
+            if (row[0].sheet_id, row[0].line_id) in checked_pairs and row[0].id not in seen_lines
+        )
+    drawing_ids = (
+        {drawing.id for _, _, drawing in items}
+        | {drawing.id for _, _, drawing in lines}
+        | _linked_ids(direct_links, "drawing")
+    )
     drawing_ids |= {
         drawing_id
         for (drawing_id,) in db.execute(
@@ -199,7 +267,17 @@ def _requirement_impact(db: Session, requirement_id: str, direct_links: list[Tra
         )
     }
     part_ids = {item.part_id for item, _, _ in items if item.part_id}
-    part_ids |= _linked_ids(direct_links, "part")
+    linked_part_ids = _linked_ids(direct_links, "part")
+    part_ids |= linked_part_ids
+    # A requirement traced directly to a catalog part also touches drawings that place it.
+    if linked_part_ids:
+        seen_items = {item.id for item, _, _ in items}
+        items.extend(
+            row
+            for row in _item_rows(db, SheetItem.part_id.in_(linked_part_ids))
+            if row[0].id not in seen_items
+        )
+        drawing_ids |= {drawing.id for _, _, drawing in items}
     component_ids = _linked_ids(direct_links, "component")
     snapshots = (
         list(
@@ -213,8 +291,11 @@ def _requirement_impact(db: Session, requirement_id: str, direct_links: list[Tra
         else []
     )
     return {
-        "affected_drawings": _drawings_read(db, drawing_ids, items),
-        "affected_sheet_items": [_sheet_item_read(*row) for row in items],
+        "affected_drawings": _drawings_read(db, drawing_ids, items, lines),
+        "affected_sheet_items": [
+            *[_sheet_item_read(*row) for row in items],
+            *[_sheet_line_read(*row) for row in lines],
+        ],
         "affected_parts": _parts_read(db, part_ids),
         "components": list(
             db.scalars(select(ComponentInstance).where(ComponentInstance.id.in_(component_ids)))

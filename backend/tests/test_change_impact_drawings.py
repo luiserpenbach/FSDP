@@ -160,3 +160,90 @@ def test_impact_for_unknown_object_is_empty(client: TestClient) -> None:
     assert body["affected_drawings"] == []
     assert body["affected_sheet_items"] == []
     assert body["affected_bom_snapshots"] == []
+
+
+def test_requirement_impact_includes_traced_sheet_lines(client: TestClient) -> None:
+    """sheet_line is a first-class trace target; impact must list its drawing (not only tags)."""
+    project_id = client.post("/projects", json={"name": "LINE-IMP"}).json()["id"]
+    drawing = client.post(f"/projects/{project_id}/drawings", json={"title": "P&ID"}).json()
+    sheet_id = drawing["sheets"][0]["id"]
+    client.put(
+        f"/sheets/{sheet_id}",
+        json={
+            "index": {
+                "items": [],
+                "lines": [{"line_id": "l1", "line_number": "L-100", "zone": "A-1"}],
+            }
+        },
+    )
+    line_id = client.get(f"/sheets/{sheet_id}/index").json()["lines"][0]["id"]
+    requirement = _requirement(client, project_id, "REQ-LINE")
+    _link(client, ("requirement", requirement["id"]), ("sheet_line", line_id))
+
+    body = client.get(
+        f"/changes/impact?object_type=requirement&object_id={requirement['id']}"
+    ).json()
+    assert [drawing_row["number"] for drawing_row in body["affected_drawings"]] == [
+        drawing["number"]
+    ]
+    assert body["affected_drawings"][0]["sheets"] == [1]
+    assert [
+        (item["tag"], item["item_id"], item["zone"]) for item in body["affected_sheet_items"]
+    ] == [("L-100", "l1", "A-1")]
+
+
+def test_requirement_impact_expands_traced_part_placements(client: TestClient) -> None:
+    """A requirement linked to a catalog part must list drawings that place that part."""
+    setup = _setup(client)
+    requirement = _requirement(client, setup["project_id"], "REQ-VIA-PART")
+    _link(client, ("requirement", requirement["id"]), ("part", setup["part"]["id"]))
+
+    body = client.get(
+        f"/changes/impact?object_type=requirement&object_id={requirement['id']}"
+    ).json()
+    assert [drawing_row["number"] for drawing_row in body["affected_drawings"]] == [
+        setup["drawing"]["number"]
+    ]
+    assert sorted(item["tag"] for item in body["affected_sheet_items"]) == ["HV1", "HV2"]
+    assert [part["part_number"] for part in body["affected_parts"]] == ["AMB2-001"]
+
+
+def test_part_impact_includes_tracelink_drawing_and_tag_without_part_id(
+    client: TestClient,
+) -> None:
+    """Trace links to a drawing/tag count even when the tag has no part_id assigned yet."""
+    project_id = client.post("/projects", json={"name": "PART-TL"}).json()["id"]
+    part = client.post(
+        "/parts", json={"part_number": "PART-TL-1", "description": "Valve", "part_type": "valve"}
+    ).json()
+    drawing = client.post(f"/projects/{project_id}/drawings", json={"title": "P&ID"}).json()
+    sheet_id = drawing["sheets"][0]["id"]
+    client.put(
+        f"/sheets/{sheet_id}",
+        json={
+            "index": {
+                "items": [
+                    {
+                        "item_id": "hv1",
+                        "kind": "symbol",
+                        "category": "valve",
+                        "tag": "HV1",
+                        "zone": "B-2",
+                    }
+                ],
+                "lines": [],
+            }
+        },
+    )
+    item_id = client.get(f"/sheets/{sheet_id}/index").json()["items"][0]["id"]
+    _link(client, ("part", part["id"]), ("sheet_item", item_id))
+    _link(client, ("part", part["id"]), ("drawing", drawing["id"]))
+
+    body = client.get(f"/changes/impact?object_type=part&object_id={part['id']}").json()
+    assert [drawing_row["number"] for drawing_row in body["affected_drawings"]] == [
+        drawing["number"]
+    ]
+    assert body["affected_drawings"][0]["sheets"] == [1]
+    assert [(item["tag"], item["part_id"]) for item in body["affected_sheet_items"]] == [
+        ("HV1", None)
+    ]
