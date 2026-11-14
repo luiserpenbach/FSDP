@@ -399,6 +399,84 @@ def test_part_changes_mark_sheets_using_it_stale(client: TestClient) -> None:
     assert _sheet_stale(client, unrelated["id"]) == [False]
 
 
+def test_late_save_after_obsolete_keeps_sheet_stale_and_blocks_release(
+    client: TestClient,
+) -> None:
+    """A Save derived without part_status errors must not clear stale after obsolete.
+
+    Concrete trigger: sheet saved clean with an active part → mark the part obsolete
+    (index_stale=true) → PUT the same clean index+DRC (empty findings, as a Drafting
+    tab with a stale catalog would) → tip cleared stale and Release 200 froze the
+    obsolete assignment into the revision snapshot with findings=[].
+    """
+    project_id = _project(client)
+    part = _part(client)
+    drawing = _drawing(client, project_id, "hv")
+    sheet_id = drawing["sheets"][0]["id"]
+    _save(client, sheet_id, part_id=part["id"])
+    assert _sheet_stale(client, drawing["id"]) == [False]
+
+    assert client.post(f"/parts/{part['id']}/obsolete").status_code == 200
+    assert _sheet_stale(client, drawing["id"]) == [True]
+
+    # Late / stale-catalog Save: same index, no part_status error finding.
+    _save(client, sheet_id, part_id=part["id"], findings=[])
+    assert _sheet_stale(client, drawing["id"]) == [True]
+
+    refused = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused.status_code == 409, refused.text
+    assert any(
+        reason["code"] == "index_stale" for reason in refused.json()["detail"]["reasons"]
+    )
+
+    # A fresh Save that reports the part_status error clears the lifecycle gap;
+    # Release then blocks on the open DRC error instead (waiveable as before).
+    _save(
+        client,
+        sheet_id,
+        part_id=part["id"],
+        findings=[
+            {
+                "key": "part_status:hv",
+                "rule": "part_status",
+                "severity": "error",
+                "message": "HV uses an obsolete part",
+                "item_id": "hv",
+            }
+        ],
+    )
+    assert _sheet_stale(client, drawing["id"]) == [False]
+    refused_drc = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused_drc.status_code == 409, refused_drc.text
+    assert any(
+        reason["code"] == "drc_errors" for reason in refused_drc.json()["detail"]["reasons"]
+    )
+
+
+def test_late_save_after_restricted_keeps_sheet_stale_and_blocks_release(
+    client: TestClient,
+) -> None:
+    """Restricted parts are the same release-blocking lifecycle as obsolete."""
+    project_id = _project(client)
+    part = _part(client)
+    drawing = _drawing(client, project_id, "hv")
+    sheet_id = drawing["sheets"][0]["id"]
+    _save(client, sheet_id, part_id=part["id"])
+
+    assert (
+        client.put(f"/parts/{part['id']}", json={"lifecycle_status": "restricted"}).status_code
+        == 200
+    )
+    assert _sheet_stale(client, drawing["id"]) == [True]
+    _save(client, sheet_id, part_id=part["id"], findings=[])
+    assert _sheet_stale(client, drawing["id"]) == [True]
+    refused = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused.status_code == 409, refused.text
+    assert any(
+        reason["code"] == "index_stale" for reason in refused.json()["detail"]["reasons"]
+    )
+
+
 def test_released_drawings_stay_current_until_revised(client: TestClient) -> None:
     project_id = _project(client)
     part = _part(client)

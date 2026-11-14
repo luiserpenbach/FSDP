@@ -12,9 +12,12 @@ from collections.abc import Iterable
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
-from app.models import Drawing, DrawingSheet, Part, SheetItem, SheetLine
+from app.models import Drawing, DrawingSheet, DrcResult, Part, SheetItem, SheetLine
 from app.schemas import SheetIndexIn
 from app.services.traceability import delete_trace_links_for_many
+
+# Browser DRC treats these as errors that must block release (unless waived).
+_BLOCKING_PART_LIFECYCLES = frozenset({"obsolete", "restricted"})
 
 ItemRow = tuple[SheetItem, DrawingSheet, Drawing]
 LineRow = tuple[SheetLine, DrawingSheet, Drawing]
@@ -147,6 +150,58 @@ def mark_drawing_sheets_stale(db: Session, drawing_id: str) -> None:
         .values(index_stale=True)
         .execution_options(synchronize_session=False)
     )
+
+
+def sheets_missing_part_status_findings(db: Session, sheet_ids: Iterable[str]) -> set[str]:
+    """Sheet ids that assign obsolete/restricted parts without a matching part_status error.
+
+    `PUT /sheets` trusts the client index+DRC pair and clears `index_stale`. A Save derived
+    against a stale catalog (or one that raced `POST /parts/{id}/obsolete`) can omit those
+    errors, leave the sheet looking fresh, and let Release freeze the bad lifecycle into the
+    revision snapshot. Callers re-assert stale / block release when this set is non-empty.
+    """
+    ids = list(sheet_ids)
+    if not ids:
+        return set()
+    assigned = db.execute(
+        select(SheetItem.sheet_id, SheetItem.item_id)
+        .join(Part, SheetItem.part_id == Part.id)
+        .where(
+            SheetItem.sheet_id.in_(ids),
+            Part.lifecycle_status.in_(_BLOCKING_PART_LIFECYCLES),
+        )
+    ).all()
+    if not assigned:
+        return set()
+    covered_by_item = {
+        (sheet_id, item_id)
+        for sheet_id, item_id in db.execute(
+            select(DrcResult.sheet_id, DrcResult.item_id).where(
+                DrcResult.sheet_id.in_(ids),
+                DrcResult.rule == "part_status",
+                DrcResult.severity == "error",
+                DrcResult.item_id.is_not(None),
+            )
+        )
+    }
+    covered_by_key = {
+        (sheet_id, key)
+        for sheet_id, key in db.execute(
+            select(DrcResult.sheet_id, DrcResult.key).where(
+                DrcResult.sheet_id.in_(ids),
+                DrcResult.rule == "part_status",
+                DrcResult.severity == "error",
+            )
+        )
+    }
+    missing: set[str] = set()
+    for sheet_id, item_id in assigned:
+        if (sheet_id, item_id) in covered_by_item:
+            continue
+        if (sheet_id, f"part_status:{item_id}") in covered_by_key:
+            continue
+        missing.add(sheet_id)
+    return missing
 
 
 def stale_sheets(db: Session, drawing_ids: Iterable[str]) -> list[dict]:

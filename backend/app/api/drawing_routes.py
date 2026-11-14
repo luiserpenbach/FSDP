@@ -75,6 +75,7 @@ from app.services.sheet_index import (
     document_needs_index,
     mark_drawing_sheets_stale,
     replace_sheet_index,
+    sheets_missing_part_status_findings,
     stale_sheets,
     stale_sheets_note,
 )
@@ -372,9 +373,13 @@ def update_sheet(
     if payload.drc is not None:
         replace_sheet_drc(db, sheet, payload.drc)
     if payload.index is not None and payload.drc is not None:
-        # The engine indexed and checked exactly this document.
+        # The engine indexed and checked exactly this document — unless the DRC omitted
+        # live obsolete/restricted part_status errors (stale catalog or race with obsolete).
         sheet.index_stale = False
         sheet.indexed_at = _now()
+        db.flush()
+        if sheets_missing_part_status_findings(db, [sheet.id]):
+            sheet.index_stale = True
     elif data.get("document") is not None or payload.index is not None or payload.drc is not None:
         # A document without its index, or half of the derived data, leaves it out of date.
         sheet.index_stale = True
