@@ -22,6 +22,7 @@ from app.models import (
     SheetLine,
 )
 from app.schemas import DrcResultRead, SheetItemRead, SheetLineRead
+from app.services.sheet_index import sheets_missing_part_status_findings
 
 
 def next_revision_label(current: str | None, sequence: int) -> str:
@@ -71,8 +72,12 @@ def _open_error_counts(db: Session, sheet_ids: list[str]) -> dict[str, int]:
 def release_blockers(db: Session, drawing: Drawing) -> list[dict]:
     """Reasons the drawing cannot be released yet; empty when it can."""
     reasons: list[dict] = []
+    sheet_ids = [sheet.id for sheet in drawing.sheets]
+    # A Save that raced a part obsolete can clear index_stale while omitting part_status
+    # errors; treat that gap like a stale index so Release cannot freeze it.
+    lifecycle_gaps = sheets_missing_part_status_findings(db, sheet_ids)
     for sheet in drawing.sheets:
-        if sheet.index_stale:
+        if sheet.index_stale or sheet.id in lifecycle_gaps:
             reasons.append(
                 {
                     "code": "index_stale",
@@ -84,7 +89,7 @@ def release_blockers(db: Session, drawing: Drawing) -> list[dict]:
                     ),
                 }
             )
-    errors = _open_error_counts(db, [sheet.id for sheet in drawing.sheets])
+    errors = _open_error_counts(db, sheet_ids)
     for sheet in drawing.sheets:
         count = errors.get(sheet.id, 0)
         if count:
