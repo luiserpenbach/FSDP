@@ -399,6 +399,120 @@ def test_part_changes_mark_sheets_using_it_stale(client: TestClient) -> None:
     assert _sheet_stale(client, unrelated["id"]) == [False]
 
 
+def _custom_symbol(client: TestClient, name: str = "Custom valve") -> dict:
+    created = client.post(
+        "/symbols",
+        json={
+            "name": name,
+            "view_box": "0 0 64 40",
+            "svg": '<path d="M12 10 L32 20 L12 30 Z" />',
+            "ports": [
+                {"id": "in", "x": 2, "y": 20, "side": "left"},
+                {"id": "out", "x": 62, "y": 20, "side": "right"},
+            ],
+            "category": "valve",
+        },
+    )
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+def _save_custom_symbol_sheet(
+    client: TestClient, sheet_id: str, symbol: dict, item_id: str = "cv"
+) -> dict:
+    document = {
+        "schemaVersion": 1,
+        "sheet": {
+            "size": "A3",
+            "orientation": "landscape",
+            "frame": {"kind": "basic", "columns": 4, "rows": 3, "margin": 10},
+        },
+        "layers": [],
+        "items": [
+            {
+                "id": item_id,
+                "kind": "symbol",
+                "layer": "symbols",
+                "symbol": {"library": "custom", "key": symbol["id"], "version": 1},
+                "position": {"x": 50, "y": 50},
+                "rotation": 0,
+                "tag": item_id.upper(),
+                "fields": {},
+            }
+        ],
+        "meta": {"grid": 2.5},
+    }
+    index = {
+        "items": [
+            {
+                "item_id": item_id,
+                "kind": "symbol",
+                "category": "valve",
+                "symbol_key": symbol["id"],
+                "symbol_name": symbol["name"],
+                "tag": item_id.upper(),
+                "zone": "D-4",
+                "part_id": None,
+            }
+        ],
+        "lines": [],
+    }
+    saved = client.put(
+        f"/sheets/{sheet_id}",
+        json={"document": document, "index": index, "drc": {"findings": [], "checks": []}},
+    )
+    assert saved.status_code == 200, saved.text
+    return saved.json()
+
+
+def test_custom_symbol_port_changes_mark_placed_sheets_stale(client: TestClient) -> None:
+    """Port edits must invalidate stored DRC so release cannot freeze a false-clean baseline."""
+    project_id = _project(client)
+    symbol = _custom_symbol(client)
+    other = _custom_symbol(client, "Other custom")
+    using = _drawing(client, project_id)
+    unrelated = _drawing(client, project_id)
+    _save_custom_symbol_sheet(client, using["sheets"][0]["id"], symbol)
+    _save_custom_symbol_sheet(client, unrelated["sheets"][0]["id"], other, item_id="ox")
+    assert _sheet_stale(client, using["id"]) == [False]
+
+    # No-op port list leaves the index current.
+    client.put(
+        f"/symbols/{symbol['id']}",
+        json={
+            "ports": [
+                {"id": "in", "x": 2, "y": 20, "side": "left"},
+                {"id": "out", "x": 62, "y": 20, "side": "right"},
+            ]
+        },
+    )
+    assert _sheet_stale(client, using["id"]) == [False]
+
+    # Removing a port would create dangling/open connectivity errors on a live DRC.
+    client.put(
+        f"/symbols/{symbol['id']}",
+        json={"ports": [{"id": "in", "x": 2, "y": 20, "side": "left"}]},
+    )
+    assert _sheet_stale(client, using["id"]) == [True]
+    assert _sheet_stale(client, unrelated["id"]) == [False]
+
+    refused = client.post(f"/drawings/{using['id']}/release")
+    assert refused.status_code == 409, refused.text
+    assert any(reason["code"] == "index_stale" for reason in refused.json()["detail"]["reasons"])
+
+
+def test_custom_symbol_delete_marks_placed_sheets_stale(client: TestClient) -> None:
+    project_id = _project(client)
+    symbol = _custom_symbol(client, "Doomed")
+    drawing = _drawing(client, project_id)
+    _save_custom_symbol_sheet(client, drawing["sheets"][0]["id"], symbol)
+    assert client.delete(f"/symbols/{symbol['id']}").status_code == 204
+    assert _sheet_stale(client, drawing["id"]) == [True]
+    refused = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused.status_code == 409, refused.text
+    assert any(reason["code"] == "index_stale" for reason in refused.json()["detail"]["reasons"])
+
+
 def test_released_drawings_stay_current_until_revised(client: TestClient) -> None:
     project_id = _project(client)
     part = _part(client)
