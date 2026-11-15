@@ -415,6 +415,79 @@ def test_released_drawings_stay_current_until_revised(client: TestClient) -> Non
     assert _sheet_stale(client, drawing["id"]) == [True]
 
 
+def test_late_save_after_constraint_rewrite_keeps_sheet_stale_and_blocks_release(
+    client: TestClient,
+) -> None:
+    """A Save derived without requirement errors must not clear stale after a rewrite.
+
+    Concrete trigger: sheet saved clean under material_in [316L, 304SS] with a 304SS
+    part → tighten constraint to [316L] (index_stale=true) → PUT the same clean
+    index+DRC (empty findings, as a Drafting tab with stale requirements would) → tip
+    cleared stale and Release 200 froze the non-compliant assignment into the revision
+    snapshot with findings=[].
+    """
+    project_id = _project(client)
+    part = _part(client, material="304SS")
+    drawing = _drawing(client, project_id, "hv")
+    sheet_id = drawing["sheets"][0]["id"]
+    req = client.post(
+        "/requirements",
+        json={
+            "project_id": project_id,
+            "key": "REQ-MAT",
+            "title": "Wetted",
+            "text": "316L wetted parts",
+            "requirement_type": "materials",
+            "constraint": {"kind": "material_in", "values": ["316L", "304SS"]},
+        },
+    ).json()
+    _save(client, sheet_id, part_id=part["id"], findings=[])
+    assert _sheet_stale(client, drawing["id"]) == [False]
+
+    assert (
+        client.put(
+            f"/requirements/{req['id']}",
+            json={"constraint": {"kind": "material_in", "values": ["316L"]}},
+        ).status_code
+        == 200
+    )
+    assert _sheet_stale(client, drawing["id"]) == [True]
+
+    # Late / stale-requirements Save: same index, no requirement error finding.
+    _save(client, sheet_id, part_id=part["id"], findings=[])
+    assert _sheet_stale(client, drawing["id"]) == [True]
+
+    refused = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused.status_code == 409, refused.text
+    assert any(
+        reason["code"] == "index_stale" for reason in refused.json()["detail"]["reasons"]
+    )
+
+    # A fresh Save that reports the requirement error clears the gap; Release then
+    # blocks on the open DRC error instead (waiveable as before).
+    _save(
+        client,
+        sheet_id,
+        part_id=part["id"],
+        findings=[
+            {
+                "key": f"requirement:{req['id']}:hv",
+                "rule": "requirement",
+                "severity": "error",
+                "message": "REQ-MAT: material not allowed",
+                "item_id": "hv",
+                "requirement_id": req["id"],
+            }
+        ],
+    )
+    assert _sheet_stale(client, drawing["id"]) == [False]
+    refused_drc = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused_drc.status_code == 409, refused_drc.text
+    assert any(
+        reason["code"] == "drc_errors" for reason in refused_drc.json()["detail"]["reasons"]
+    )
+
+
 def test_requirement_constraint_changes_mark_project_sheets_stale(client: TestClient) -> None:
     project_id = _project(client)
     other_project = _project(client, "Other")
