@@ -149,6 +149,47 @@ def mark_drawing_sheets_stale(db: Session, drawing_id: str) -> None:
     )
 
 
+def mark_other_sheets_stale(db: Session, drawing_id: str, except_sheet_id: str) -> None:
+    """Flag every other sheet of a drawing after this sheet's cross-sheet DRC inputs change.
+
+    Sibling DRC uses reserved tags (and connector targets) from other sheets; those
+    stored findings stay wrong until the siblings are re-saved.
+    """
+    db.execute(
+        update(DrawingSheet)
+        .where(
+            DrawingSheet.drawing_id == drawing_id,
+            DrawingSheet.id != except_sheet_id,
+        )
+        .values(index_stale=True)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def _tag_key(tag: str) -> str:
+    """Match the browser `tagKey` used for duplicate detection: strip - / whitespace, upper."""
+    return "".join(ch for ch in tag.upper() if ch not in "- \t\r\n")
+
+
+def tag_index_fingerprint(items: Iterable) -> tuple[str, ...]:
+    """Sorted unique tag keys from index rows / SheetItem objects.
+
+    Compared across saves so gaining, losing, or retagging an item can invalidate
+    siblings (their reserved-tag DRC) without looping when a sibling reindex leaves
+    its own tags unchanged.
+    """
+    keys: set[str] = set()
+    for item in items:
+        tag = getattr(item, "tag", None)
+        if tag is None:
+            continue
+        text = str(tag).strip()
+        if not text:
+            continue
+        keys.add(_tag_key(text))
+    return tuple(sorted(keys))
+
+
 def stale_sheets(db: Session, drawing_ids: Iterable[str]) -> list[dict]:
     """Sheets of the given drawings whose stored index/DRC is out of date."""
     ids = list(drawing_ids)

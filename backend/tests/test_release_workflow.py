@@ -208,8 +208,11 @@ def test_release_refused_for_stale_index_and_open_drc_errors(client: TestClient)
         ("index_stale", 2),
     ]
 
-    _save(client, sheet_id, findings=[_error(), {**_error("open_port:pt"), "severity": "warning"}])
+    findings = [_error(), {**_error("open_port:pt"), "severity": "warning"}]
+    _save(client, sheet_id, findings=findings)
     _save(client, second.json()["id"], item_id="pt")
+    # Sheet 2's first tag set invalidates sheet 1 (reserved tags changed); re-save clears it.
+    _save(client, sheet_id, findings=findings)
     refused = client.post(f"/drawings/{drawing_id}/release")
     assert refused.status_code == 409
     reasons = refused.json()["detail"]["reasons"]
@@ -491,3 +494,104 @@ def test_lists_and_verification_matrix_report_stale_sheets(client: TestClient) -
     assert client.get(f"/drawings/{drawing['id']}/lists/valve").json()["stale_sheets"] == []
     assert "warning" not in client.get(f"/drawings/{drawing['id']}/lists/valve").json()["header"]
     assert client.get(f"/projects/{project_id}/verification-matrix").json()["stale_sheets"] == []
+
+
+def test_retagging_sheet_marks_sibling_stale_and_blocks_release_until_reindexed(
+    client: TestClient,
+) -> None:
+    """Saving a colliding tag on sheet 2 must invalidate sheet 1's stored DRC.
+
+    Concrete UI path: Save HV-1 on sheet 1 (clean) → place HV-1 on sheet 2 and Save
+    (sheet 2 reports duplicate_tag via reservedTags) → tip left sheet 1 false-fresh with
+    findings=[] → waive sheet 2's finding → Release 200 froze both sheets tagged HV-1
+    with only one side recorded. After the fix, sheet 1 becomes index_stale and Release
+    refuses until it is re-saved with the peer duplicate finding.
+    """
+    project_id = _project(client)
+    drawing = client.post(
+        f"/projects/{project_id}/drawings",
+        json={
+            "title": "P&ID",
+            "first_sheet": {"document": _document("a"), "title": "Main"},
+        },
+    ).json()
+    sheet1 = drawing["sheets"][0]["id"]
+    sheet2 = client.post(
+        f"/drawings/{drawing['id']}/sheets",
+        json={"title": "Vent", "document": _document("b")},
+    ).json()["id"]
+
+    def save_tagged(sheet_id: str, item_id: str, tag: str, findings: list[dict] | None = None) -> None:
+        doc = _document(item_id)
+        doc["items"][0]["tag"] = tag
+        index = _index(item_id=item_id)
+        index["items"][0]["tag"] = tag
+        saved = client.put(
+            f"/sheets/{sheet_id}",
+            json={
+                "document": doc,
+                "index": index,
+                "drc": {"findings": findings or [], "checks": []},
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+    # Distinct tags first: each save marks the sibling once, then a no-op re-save
+    # (same fingerprint) clears without bouncing the other sheet back to stale.
+    save_tagged(sheet1, "a", "HV-1")
+    save_tagged(sheet2, "b", "HV-2")
+    save_tagged(sheet1, "a", "HV-1")
+    assert _sheet_stale(client, drawing["id"]) == [False, False]
+    assert client.get(f"/sheets/{sheet1}/drc").json()["findings"] == []
+
+    dup = {
+        "key": "duplicate_tag:b",
+        "rule": "duplicate_tag",
+        "severity": "error",
+        "message": "HV-1: Duplicate of HV-1 on another sheet",
+        "item_id": "b",
+        "subject": "HV-1",
+    }
+    save_tagged(sheet2, "b", "HV-1", findings=[dup])
+    assert _sheet_stale(client, drawing["id"]) == [True, False]
+
+    refused = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused.status_code == 409, refused.text
+    reasons = refused.json()["detail"]["reasons"]
+    assert any(reason["code"] == "index_stale" for reason in reasons)
+    assert any(reason["code"] == "drc_errors" for reason in reasons)
+
+    # Re-save sheet 1 with the peer duplicate finding (background reindex / open+save).
+    # Tag fingerprint is unchanged (still HV-1), so sheet 2 stays fresh.
+    peer = {
+        "key": "duplicate_tag:a",
+        "rule": "duplicate_tag",
+        "severity": "error",
+        "message": "HV-1: Duplicate of HV-1 on another sheet",
+        "item_id": "a",
+        "subject": "HV-1",
+    }
+    save_tagged(sheet1, "a", "HV-1", findings=[peer])
+    assert _sheet_stale(client, drawing["id"]) == [False, False]
+
+    # Waiving only sheet 2 is no longer enough: sheet 1 still has an open error.
+    assert (
+        client.put(
+            f"/sheets/{sheet2}/drc/waivers",
+            json={"key": "duplicate_tag:b", "reason": "accepted"},
+        ).status_code
+        == 201
+    )
+    still = client.post(f"/drawings/{drawing['id']}/release")
+    assert still.status_code == 409, still.text
+    assert any(reason["code"] == "drc_errors" for reason in still.json()["detail"]["reasons"])
+
+    assert (
+        client.put(
+            f"/sheets/{sheet1}/drc/waivers",
+            json={"key": "duplicate_tag:a", "reason": "accepted"},
+        ).status_code
+        == 201
+    )
+    released = client.post(f"/drawings/{drawing['id']}/release")
+    assert released.status_code == 200, released.text
