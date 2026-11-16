@@ -74,9 +74,11 @@ from app.services.release import next_revision_label, release_blockers, release_
 from app.services.sheet_index import (
     document_needs_index,
     mark_drawing_sheets_stale,
+    mark_other_sheets_stale,
     replace_sheet_index,
     stale_sheets,
     stale_sheets_note,
+    tag_index_fingerprint,
 )
 from app.services.traceability import (
     delete_trace_links_for_many,
@@ -363,6 +365,12 @@ def update_sheet(
     sheet = require_model(db, DrawingSheet, sheet_id)
     drawing = _editable_sheet_drawing(db, sheet)
     data = payload.model_dump(exclude_unset=True)
+    previous_tags = None
+    if payload.index is not None:
+        # Cross-sheet duplicate_tag on siblings depends on this sheet's tag set.
+        previous_tags = tag_index_fingerprint(
+            db.scalars(select(SheetItem).where(SheetItem.sheet_id == sheet.id))
+        )
     if "title" in data:
         sheet.title = data["title"]
     if data.get("document") is not None:
@@ -378,6 +386,9 @@ def update_sheet(
     elif data.get("document") is not None or payload.index is not None or payload.drc is not None:
         # A document without its index, or half of the derived data, leaves it out of date.
         sheet.index_stale = True
+    if payload.index is not None and previous_tags != tag_index_fingerprint(payload.index.items):
+        # Sibling DRC still uses the pre-change reserved-tag set from this sheet.
+        mark_other_sheets_stale(db, drawing.id, sheet.id)
     item_count = len((sheet.document or {}).get("items", []))
     record_change(
         db,
