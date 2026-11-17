@@ -2460,6 +2460,10 @@ function Inspector({
               <input type="checkbox" checked={item.showSpecLabel !== false} onChange={(event) => update({ showSpecLabel: event.target.checked })} disabled={!canWrite} />
               <span>Print size and spec on the line</span>
             </label>
+            <label className="checkRow">
+              <input type="checkbox" checked={item.showNumberLabel !== false} onChange={(event) => update({ showNumberLabel: event.target.checked })} disabled={!canWrite} />
+              <span>Print the line number on the line</span>
+            </label>
             {(() => {
               const ends = lineEndpoints(doc, connectivity, item);
               return (

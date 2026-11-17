@@ -549,3 +549,28 @@ can run that same engine under Node, so a sheet does not have to wait for a brow
   (neither the index nor the DRC reads them today).
 
 **BoM release.** `PUT /bom/{id}/status` with `released` is refused (409, `detail.issues`) while readiness has blocking issues: rows without a catalog part, obsolete or restricted parts, or a snapshot generated from stale sheets. It stamps `released_by/at`; released BoMs are immutable (no return to draft; generate a new snapshot instead). The BoM page lists a drawing's snapshots, splits readiness into blocking issues and warnings, diffs two snapshots of the same drawing, and exports CSV and XLSX (`GET /bom/{id}/xlsx`, with a header block for project, drawing, revision, and status). Legacy diagram BoMs stay visible there as read-only history.
+
+### Symbol drawing conventions
+
+- **Pipe weight.** A symbol outline is drawn at 0.35 mm and a process line at 0.5 mm.
+  The straight runs inside a built-in symbol that end on a process port are pipe, so
+  they are marked (`data-stub`, by `markProcessStubs`) and drawn at pipe weight: a valve
+  sits in its line without a visible step in thickness.
+- **Outline.** Every built-in symbol carries `ink`, the box around what is actually
+  drawn (`svgInkBounds`), next to its nominal origin-centred `width`/`height`, which the
+  editor still selects and snaps by.
+- **Captions.** A tag goes a fixed gap below the outline; if a line leaves from below it
+  moves above, then right, then left (`captionSideFor`), so it never sits on a connected
+  line. A symbol with ports on every side gets its tag at the lower right corner, or
+  lettered inside when it is a vessel large enough to hold it. Flag terminators carry
+  their text inside.
+- **Lettering** inside a symbol (the S of a solenoid) stays upright when the symbol is
+  rotated or mirrored, and long instrument function letters are set smaller.
+- **Scale.** Symbols are authored on the 2.5 mm module (valve bodies 12 x 7 mm, bubbles
+  10 mm, text 2.5 mm). Vessels are small by default and meant to be scaled per item
+  (`scale`; the demo uses 4 for its run tanks): ports stay on the grid and line weights
+  and text do not scale.
+- **Line labels.** A line prints its number and size on its longest segment;
+  `showNumberLabel: false` (and `showSpecLabel: false`) keep the data for lists and checks
+  without printing it, so a run drawn in several pieces between components is labelled
+  once.

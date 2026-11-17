@@ -12,6 +12,7 @@
  *    symbol is drawn; actuator geometry is authored relative to that point
  *    with its signal port at (0, -7.5) so composed ports stay on grid.
  */
+import { markProcessStubs, svgInkBounds } from "./svgBounds";
 import type { PortDef, SymbolDef } from "./types";
 
 export const BUILTIN_LIBRARY = "fsdp";
@@ -38,7 +39,8 @@ const VALVE_MOUNT = { x: 0, y: -2.5 };
 type Entry = Omit<SymbolDef, "library" | "version">;
 
 function def(entry: Entry): SymbolDef {
-  return { library: BUILTIN_LIBRARY, version: 1, ...entry };
+  const svg = markProcessStubs(entry.svg, entry.ports);
+  return { library: BUILTIN_LIBRARY, version: 1, ...entry, svg, ink: svgInkBounds(svg) ?? undefined };
 }
 
 function valve(key: string, name: string, legend: string, svg: string, tagPrefix: string, extra: Partial<Entry> = {}): SymbolDef {
@@ -132,7 +134,8 @@ const VALVES: SymbolDef[] = [
     ports: [...INLINE_PORTS, { id: "signal", x: 0, y: -10, side: "top", kind: "signal" }],
     actuatorMount: undefined
   }),
-  valve("relief_valve", "Relief valve", "RELIEF VALVE", '<path d="M-10,0 H-7 M-7,-3.5 L0,0 L-7,3.5 Z M-3.5,-7 L0,0 L3.5,-7 Z M0,-7 V-10 M2,-1.5 l3,-1.5 M2,-3.5 l3,-1.5 M2,-5.5 l3,-1.5"/>', "PSV", {
+  // Angle pattern: inlet left, outlet up, spring on the stem opposite the inlet.
+  valve("relief_valve", "Relief valve", "RELIEF VALVE", '<path d="M-10,0 H-7 M-7,-3.5 L0,0 L-7,3.5 Z M-3.5,-7 L0,0 L3.5,-7 Z M0,-7 V-10 M0,0 H7.5 M2,-2 L3.5,2 L5,-2 L6.5,2"/>', "PSV", {
     height: 20,
     ports: [
       { id: "in", x: -10, y: 0, side: "left", kind: "process" },
@@ -140,7 +143,7 @@ const VALVES: SymbolDef[] = [
     ],
     actuatorMount: undefined
   }),
-  valve("safety_valve", "Safety valve (spring loaded)", "SAFETY VALVE", '<path d="M-10,0 H-7 M-7,-3.5 L0,0 L-7,3.5 Z M-3.5,-7 L0,0 L3.5,-7 Z M0,-7 V-10 M-2,-3 L2,-4 M-2,-5 L2,-6 M-2,-7 L2,-8"/>', "PSV", {
+  valve("safety_valve", "Safety valve (spring loaded)", "SAFETY VALVE", '<path d="M-10,0 H-7 M-7,-3.5 L0,0 L-7,3.5 Z M-3.5,-7 L0,0 L3.5,-7 Z M0,-7 V-10 M0,0 H7.5 M2,-2 L3.5,2 L5,-2 L6.5,2 M7.5,-2 V2"/><path d="M-7,-3.5 L0,0 L-7,3.5 Z" fill="currentColor"/>', "PSV", {
     height: 20,
     ports: [
       { id: "in", x: -10, y: 0, side: "left", kind: "process" },
@@ -308,7 +311,7 @@ const INSTRUMENTS: SymbolDef[] = [
     standardRef: ISA,
     width: 10,
     height: 10,
-    svg: '<circle cx="0" cy="0" r="5" fill="#fff"/><path d="M0,0 L2.5,-3"/>',
+    svg: '<circle cx="0" cy="0" r="5" fill="#fff"/>',
     ports: [{ id: "process", x: 0, y: 5, side: "bottom", kind: "process" }],
     tagPrefix: "PG"
   }),
@@ -320,7 +323,7 @@ const INSTRUMENTS: SymbolDef[] = [
     standardRef: ISA,
     width: 10,
     height: 10,
-    svg: '<circle cx="0" cy="0" r="5" fill="#fff"/><path d="M0,5 V0 M-1.5,0 L0,-2.5 L1.5,0"/>',
+    svg: '<circle cx="0" cy="0" r="5" fill="#fff"/>',
     ports: [
       { id: "process", x: 0, y: 5, side: "bottom", kind: "process" },
       { id: "signal_left", x: -5, y: 0, side: "left", kind: "signal" },

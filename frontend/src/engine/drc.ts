@@ -446,6 +446,12 @@ export function runDrc(input: DrcInput): DrcResult {
     if (item?.kind === "symbol" && registry.has(item.symbol) && registry.resolve(item.symbol).category === "connector") continue;
     // Relief outlets vent to atmosphere without a drawn line.
     if (item?.kind === "symbol" && isRelief(item) && port.id === "vent") continue;
+    // A function bubble (interlock, controller, PLC) wired by signal lines has no process tap to miss.
+    if (item?.kind === "symbol" && registry.has(item.symbol) && registry.resolve(item.symbol).category === "instrument") {
+      const signalPorts = registry.portsOf(item).filter((entry) => entry.kind === "signal");
+      const openSignals = connectivity.openPorts.filter((entry) => entry.itemId === item.id && entry.kind === "signal").length;
+      if (signalPorts.length > openSignals) continue;
+    }
     add("open_port", "warning", item, `${describe(item)} port ${port.id} has no line`, `${port.itemId}:${port.id}`);
   }
 

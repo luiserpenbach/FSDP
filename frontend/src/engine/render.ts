@@ -21,6 +21,7 @@ import type {
   Point,
   Rect,
   SchematicDocument,
+  Side,
   SymbolDef,
   SymbolItem
 } from "./types";
@@ -138,6 +139,35 @@ function text(value: string, x: number, y: number, options: { size?: number; anc
   return `<text x="${n(x)}" y="${n(y)}" font-family="${FONT_FAMILY}" font-size="${n(size)}" text-anchor="${options.anchor ?? "middle"}" fill="${options.color ?? "currentColor"}" stroke="none"${options.weight ? ` font-weight="${options.weight}"` : ""}${transform}>${escapeXml(value)}</text>`;
 }
 
+/**
+ * Lettering inside a symbol (the S of a solenoid, the M of a motor) stays
+ * upright and readable when the symbol is rotated or mirrored: each text is
+ * turned back about its own centre.
+ */
+function uprightText(svg: string, item: SymbolItem): string {
+  if (!item.rotation && !item.mirror) return svg;
+  return svg.replace(/<text x="(-?[\d.]+)" y="(-?[\d.]+)" font-size="([\d.]+)"/g, (whole, x: string, y: string, size: string) => {
+    const centreY = Number(y) - Number(size) * 0.35;
+    // The symbol is drawn rotate · mirror, so the text is turned back mirror · rotate⁻¹.
+    const undo = `translate(${x} ${n(centreY)})${item.mirror ? " scale(-1 1)" : ""}${item.rotation ? ` rotate(${-item.rotation})` : ""} translate(${n(-Number(x))} ${n(-centreY)})`;
+    return `${whole} transform="${undo}"`;
+  });
+}
+
+/** Clear space between a symbol's outline and its caption. */
+export const CAPTION_GAP_MM = 1.4;
+
+/**
+ * Side of a symbol its caption goes on: below by default, otherwise the first
+ * side that no port leaves from, so the text never sits on a connected line.
+ * `portSides` are the sides as placed (after rotation and mirroring).
+ */
+export function captionSideFor(portSides: Side[]): Side | "corner" {
+  const taken = new Set(portSides);
+  // Ports on every side: the lower right corner is the one place no line runs.
+  return (["bottom", "top", "right", "left"] as Side[]).find((side) => !taken.has(side)) ?? "corner";
+}
+
 export function renderSymbol(item: SymbolItem, ctx: RenderContext): string {
   const definition = ctx.registry.resolve(item.symbol);
   const scale = item.scale ?? 1;
@@ -148,10 +178,15 @@ export function renderSymbol(item: SymbolItem, ctx: RenderContext): string {
     actuator && definition.actuatorMount
       ? `<g transform="translate(${n(definition.actuatorMount.x)} ${n(definition.actuatorMount.y)})">${actuator.svg}</g>`
       : "";
+  // Runs that end on a process port are pipe: drawn at pipe weight, whatever the scale.
+  const pipeWidth = n(LINE_STYLES.process.width / scale);
+  const body = uprightText(definition.svg, item).replaceAll("<path data-stub ", `<path stroke-width="${pipeWidth}" `);
   const parts = [
-    `<g transform="${transform}" fill="none" stroke="currentColor" stroke-width="${n(SYMBOL_STROKE_MM / scale)}" stroke-linecap="round" stroke-linejoin="round">${definition.svg}${actuatorMarkup}</g>`
+    `<g transform="${transform}" fill="none" stroke="currentColor" stroke-width="${n(SYMBOL_STROKE_MM / scale)}" stroke-linecap="round" stroke-linejoin="round">${body}${actuatorMarkup}</g>`
   ];
   const caption = item.tag ?? item.label ?? "";
+  // Where the caption went, so a part badge can clear it.
+  let captionSide: Side | "corner" | null = null;
   if (definition.category === "instrument" && definition.height <= 6) {
     // Boxed primary element: letters inside, number below the box.
     const { letters, number } = splitTag(caption);
@@ -159,9 +194,13 @@ export function renderSymbol(item: SymbolItem, ctx: RenderContext): string {
     if (number) parts.push(text(number, item.position.x, item.position.y + (definition.height * scale) / 2 + 2.8, { size: 2.2 }));
   } else if (definition.category === "instrument") {
     const { letters, number } = splitTag(caption);
-    if (letters) parts.push(text(letters, item.position.x, item.position.y - 0.5, { size: 2.2 }));
-    if (number) parts.push(text(number, item.position.x, item.position.y + 2.4, { size: 2.2 }));
-  } else if (definition.category === "connector") {
+    // Long function letters (PDIT, FQIC) are set smaller so they stay inside the bubble.
+    const lettersSize = letters.length > 3 ? 1.9 : 2.2;
+    const numberSize = number.length > 4 ? 1.9 : 2.2;
+    if (letters) parts.push(text(letters, item.position.x, item.position.y - 0.5, { size: lettersSize }));
+    if (number) parts.push(text(number, item.position.x, item.position.y + 2.4, { size: numberSize }));
+  } else if (definition.category === "connector" && definition.width >= 30) {
+    // Flag-shaped terminators carry their text inside.
     const target = ctx.connectorTargets?.[item.id];
     if (target) {
       parts.push(text(target, item.position.x - 2, item.position.y + 0.9, { size: 2 }));
@@ -170,15 +209,25 @@ export function renderSymbol(item: SymbolItem, ctx: RenderContext): string {
       parts.push(text(caption, item.position.x - 2, item.position.y + 0.9, { size: 2.2 }));
     }
   } else if (caption) {
-    const bounds = ctx.registry.boundsOf(item);
-    parts.push(text(caption, item.position.x, bounds.y + bounds.height + 3.2, { size: TEXT_MM }));
+    const ink = ctx.registry.inkBoundsOf(item);
+    captionSide = captionSideFor(ctx.registry.portsOf(item).map((port) => port.side));
+    const centreX = ink.x + ink.width / 2;
+    const centreY = ink.y + ink.height / 2;
+    if (captionSide === "bottom") parts.push(text(caption, centreX, ink.y + ink.height + CAPTION_GAP_MM + TEXT_MM * 0.75, { size: TEXT_MM }));
+    else if (captionSide === "top") parts.push(text(caption, centreX, ink.y - CAPTION_GAP_MM, { size: TEXT_MM }));
+    else if (captionSide === "right") parts.push(text(caption, ink.x + ink.width + CAPTION_GAP_MM, centreY + TEXT_MM * 0.36, { size: TEXT_MM, anchor: "start" }));
+    else if (captionSide === "left") parts.push(text(caption, ink.x - CAPTION_GAP_MM, centreY + TEXT_MM * 0.36, { size: TEXT_MM, anchor: "end" }));
+    else if (ink.width >= caption.length * TEXT_MM * 0.6 + 8 && ink.height >= 30) {
+      // A vessel with nozzles on every side, large enough to hold its tag: letter it inside.
+      parts.push(text(caption, centreX, ink.y + ink.height * 0.3, { size: TEXT_MM * 1.2, weight: "600" }));
+    } else parts.push(text(caption, ink.x + ink.width + CAPTION_GAP_MM, ink.y + ink.height, { size: TEXT_MM, anchor: "start" }));
   }
   const badge = ctx.partBadges?.[item.id];
   if (item.dnp || badge) {
-    const bounds = ctx.registry.boundsOf(item);
-    const captionBelow = caption && definition.category !== "instrument" && definition.category !== "connector";
-    if (item.dnp) parts.push(text("DNP", item.position.x, bounds.y - 1, { size: 1.8, weight: "600" }));
-    if (badge) parts.push(renderPartBadge(badge, item.position.x, bounds.y + bounds.height + (captionBelow ? 4.2 : 1.2)));
+    const ink = ctx.registry.inkBoundsOf(item);
+    const centreX = ink.x + ink.width / 2;
+    if (item.dnp) parts.push(text("DNP", centreX, ink.y - (captionSide === "top" ? CAPTION_GAP_MM + TEXT_MM + 0.6 : 1), { size: 1.8, weight: "600" }));
+    if (badge) parts.push(renderPartBadge(badge, centreX, ink.y + ink.height + (captionSide === "bottom" ? CAPTION_GAP_MM + TEXT_MM + 0.6 : 1.2)));
   }
   return `<g class="item item-symbol" data-id="${escapeXml(item.id)}" color="${escapeXml(color)}">${parts.join("")}</g>`;
 }
@@ -266,7 +315,7 @@ export function renderLine(item: LineItem, ctx?: RenderContext): string {
     );
   }
   parts.push(renderAnnotations(item));
-  if (item.lineNumber && item.points.length >= 2) {
+  if (item.lineNumber && item.showNumberLabel !== false && item.points.length >= 2) {
     // Label the longest segment, offset to its left-hand side.
     const { a, b } = longestSegment(item.points);
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };

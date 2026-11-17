@@ -11,9 +11,19 @@ a legacy diagram with component instances and requirement trace links, written
 directly through the ORM (the API no longer creates legacy rows). Open Drafting
 and use "Convert diagram…" to turn it into a drawing, then trace requirements to
 its tags and generate the drawing BoM.
+
+The second drawing, TS-0100, is a full-size test stand P&ID (two run tanks,
+helium pressurization, nitrogen purge, feed lines to an engine). It is built by
+the drafting engine (`frontend/src/engine/demo/testStandPid.ts`) and stored as
+`app/demo/test_stand_pid.json`; the seed adds it to the demo project whenever
+it is missing, also on databases seeded before it existed.
 """
 
+import copy
+import json
 import logging
+from datetime import date
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,7 +35,11 @@ from app.models import (
     Diagram,
     DiagramEdge,
     DiagramNode,
+    Drawing,
+    DrawingRevision,
+    DrawingSheet,
     FluidSystem,
+    LineClass,
     Part,
     Project,
     Requirement,
@@ -35,6 +49,7 @@ from app.models import (
 logger = logging.getLogger(__name__)
 
 DEMO_PROJECT_NAME = "Amphora Demo Vehicle"
+TEST_STAND_FILE = Path(__file__).parent / "demo" / "test_stand_pid.json"
 
 PARTS = [
     {
@@ -253,8 +268,10 @@ def seed_demo(db: Session) -> None:
     db.flush()
 
     for requirement_data in REQUIREMENTS:
-        trace_tag = requirement_data.pop("trace_tag")
-        requirement = Requirement(project_id=project.id, **requirement_data)
+        # Copied: the module-level table must survive a second seeding in one process.
+        fields = dict(requirement_data)
+        trace_tag = fields.pop("trace_tag")
+        requirement = Requirement(project_id=project.id, **fields)
         db.add(requirement)
         db.flush()
         db.add(
@@ -271,14 +288,86 @@ def seed_demo(db: Session) -> None:
     logger.info("Seeded demo project '%s'", DEMO_PROJECT_NAME)
 
 
+def seed_test_stand(db: Session, project: Project) -> bool:
+    """Add the test stand P&ID to the demo project; False when it is already there."""
+    demo = json.loads(TEST_STAND_FILE.read_text(encoding="utf-8"))
+    exists = db.scalar(
+        select(Drawing.id).where(
+            Drawing.project_id == project.id, Drawing.number == demo["number"]
+        )
+    )
+    if exists:
+        return False
+
+    system = db.scalar(
+        select(FluidSystem).where(
+            FluidSystem.project_id == project.id, FluidSystem.name == demo["system"]["name"]
+        )
+    )
+    if system is None:
+        system = FluidSystem(
+            project_id=project.id,
+            name=demo["system"]["name"],
+            fluid=demo["system"]["fluid"],
+            description="Run tanks, pressurization, purge, and feed lines of the test stand.",
+        )
+        db.add(system)
+    known_classes = set(
+        db.scalars(select(LineClass.name).where(LineClass.project_id == project.id))
+    )
+    for line_class in demo["lineClasses"]:
+        if line_class["name"] not in known_classes:
+            db.add(LineClass(project_id=project.id, **line_class))
+    db.flush()
+
+    # Bind the catalog parts the drawing names to the items that use them.
+    part_ids = dict(db.execute(select(Part.part_number, Part.id)).all())
+    document = copy.deepcopy(demo["document"])
+    for item in document["items"]:
+        part_number = demo["parts"].get(item["id"])
+        if part_number in part_ids:
+            item["partId"] = part_ids[part_number]
+
+    drawing = Drawing(
+        project_id=project.id,
+        system_id=system.id,
+        number=demo["number"],
+        title=demo["title"],
+        size=demo["size"],
+        units="mm",
+        frame_template="fsdp-standard",
+        fields={"company": "Amphora", "scale": "NO SCALE", "legends": "lines"},
+        notes=demo["notes"],
+    )
+    # Stale until indexed: by the server engine when it is configured, otherwise
+    # the first time the drawing is opened in Drafting.
+    drawing.sheets.append(DrawingSheet(sheet_no=1, document=document, index_stale=True))
+    drawing.revisions.append(
+        DrawingRevision(
+            sequence=1,
+            label="A",
+            description="Issued for review",
+            drawn_by="FSDP demo",
+            drawn_date=date.today().isoformat(),
+        )
+    )
+    db.add(drawing)
+    db.commit()
+    logger.info("Seeded demo drawing %s (%d items)", drawing.number, len(document["items"]))
+    return True
+
+
 def main() -> None:
     ensure_bootstrap_admin()
     with SessionLocal() as db:
-        existing = db.scalar(select(Project).where(Project.name == DEMO_PROJECT_NAME))
-        if existing is not None:
-            logger.info("Demo project already present; nothing to do.")
-            return
-        seed_demo(db)
+        project = db.scalar(select(Project).where(Project.name == DEMO_PROJECT_NAME))
+        if project is None:
+            seed_demo(db)
+            project = db.scalar(select(Project).where(Project.name == DEMO_PROJECT_NAME))
+        else:
+            logger.info("Demo project already present.")
+        if project is not None and not seed_test_stand(db, project):
+            logger.info("Demo drawing already present; nothing to do.")
 
 
 if __name__ == "__main__":

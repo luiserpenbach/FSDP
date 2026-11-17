@@ -159,6 +159,12 @@ export type LineItem = ItemBase & {
   showArrow?: boolean;
   /** Print "size spec" under the longest segment (default on when either is set). */
   showSpecLabel?: boolean;
+  /**
+   * Print the line number on the longest segment (default on). A run drawn as
+   * several pieces between components carries the number on each piece for the
+   * lists and checks, and shows it on one.
+   */
+  showNumberLabel?: boolean;
   annotations?: LineAnnotation[];
   /** Physical length in metres, when known; overrides the drawn-length estimate. */
   physicalLength?: number;
@@ -273,6 +279,11 @@ export type SymbolDef = {
   fields?: FieldDef[];
   /** Stem base (unrotated, mm) where an actuator symbol is composed onto this body. */
   actuatorMount?: Point;
+  /**
+   * Box around the drawn geometry (unrotated, mm), when it is known. Captions are
+   * placed against it; `width`/`height` stay the nominal, origin-centred footprint.
+   */
+  ink?: Rect;
 };
 
 export function createEmptyDocument(sheet?: Partial<Sheet>): SchematicDocument {
