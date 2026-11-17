@@ -22,6 +22,7 @@ from app.models import (
     SheetLine,
 )
 from app.schemas import DrcResultRead, SheetItemRead, SheetLineRead
+from app.services.drc import sheets_missing_relief_requirement_findings
 
 
 def next_revision_label(current: str | None, sequence: int) -> str:
@@ -71,8 +72,13 @@ def _open_error_counts(db: Session, sheet_ids: list[str]) -> dict[str, int]:
 def release_blockers(db: Session, drawing: Drawing) -> list[dict]:
     """Reasons the drawing cannot be released yet; empty when it can."""
     reasons: list[dict] = []
+    sheet_ids = [sheet.id for sheet in drawing.sheets]
+    # A Save that raced adding/rewriting relief_required can clear index_stale
+    # while omitting the geometry-backed requirement errors; treat that gap like
+    # a stale index (open #81 covers other constraint kinds only).
+    relief_gaps = sheets_missing_relief_requirement_findings(db, sheet_ids)
     for sheet in drawing.sheets:
-        if sheet.index_stale:
+        if sheet.index_stale or sheet.id in relief_gaps:
             reasons.append(
                 {
                     "code": "index_stale",
@@ -84,7 +90,7 @@ def release_blockers(db: Session, drawing: Drawing) -> list[dict]:
                     ),
                 }
             )
-    errors = _open_error_counts(db, [sheet.id for sheet in drawing.sheets])
+    errors = _open_error_counts(db, sheet_ids)
     for sheet in drawing.sheets:
         count = errors.get(sheet.id, 0)
         if count:

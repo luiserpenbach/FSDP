@@ -59,7 +59,13 @@ from app.schemas import (
     VerificationMatrixRead,
 )
 from app.services.bom import generate_drawing_bom_snapshot
-from app.services.drc import drawing_drc, replace_sheet_drc, sheet_drc, verification_matrix
+from app.services.drc import (
+    drawing_drc,
+    replace_sheet_drc,
+    sheet_drc,
+    sheets_missing_relief_requirement_findings,
+    verification_matrix,
+)
 from app.services.export import export_filename, svg_to_pdf, svg_to_png
 from app.services.lists import (
     LIST_KINDS,
@@ -372,9 +378,14 @@ def update_sheet(
     if payload.drc is not None:
         replace_sheet_drc(db, sheet, payload.drc)
     if payload.index is not None and payload.drc is not None:
-        # The engine indexed and checked exactly this document.
+        # The engine indexed and checked exactly this document — unless the DRC
+        # omitted a live relief_required failure (stale requirements catalog or
+        # race with adding/rewriting that constraint; open #81 skips this kind).
         sheet.index_stale = False
         sheet.indexed_at = _now()
+        db.flush()
+        if sheets_missing_relief_requirement_findings(db, [sheet.id]):
+            sheet.index_stale = True
     elif data.get("document") is not None or payload.index is not None or payload.drc is not None:
         # A document without its index, or half of the derived data, leaves it out of date.
         sheet.index_stale = True
