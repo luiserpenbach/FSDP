@@ -22,9 +22,8 @@ import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Vi
 import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
 import { useStaleReindex, type ReindexOutcome } from "../components/schematic/useStaleReindex";
 import { convertLegacyGraph } from "../engine/convert";
-import { deriveSheetData } from "../engine/derived";
 import { Editor, READ_ONLY_TOOLS, type AlignMode, type ToolId } from "../engine/editor";
-import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
+import { FRAME_TEMPLATE_LABELS, withFrameTemplate, type DrawingContext, type FrameTemplateId } from "../engine/frames";
 import { polylineLength } from "../engine/geometry";
 import { runDrc, type DrcResult, type DrcWaiver, type RequirementRef } from "../engine/drc";
 import { renderFindingsSheet } from "../engine/drcSheet";
@@ -35,6 +34,7 @@ import { CUSTOM_LIBRARY, SymbolRegistry } from "../engine/library";
 import { LINE_TYPE_LABELS, renderDocumentSvg, type PartBadge } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
+import { computeSheetPayload } from "../engine/sheetPayload";
 import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, tagsOf, validateTag, type TagScheme } from "../engine/tags";
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
@@ -174,13 +174,6 @@ function unassignedItems(doc: SchematicDocument, registry: SymbolRegistry): Arra
     if (item.kind === "equipment" && item.tag && !item.partId && !item.dnp) result.push(item);
   }
   return result;
-}
-
-function withFrameTemplate(document: SchematicDocument, template: string): SchematicDocument {
-  const frameTemplate = (template as FrameTemplateId) ?? "basic";
-  const kind = frameTemplate === "none" ? "none" : "basic";
-  if (document.sheet.frame.template === frameTemplate && document.sheet.frame.kind === kind) return document;
-  return { ...document, sheet: { ...document.sheet, frame: { ...document.sheet.frame, kind, template: frameTemplate } } };
 }
 
 /** Symbol families used on the sheet, for the generated legend. */
@@ -625,7 +618,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       const doc = editor.store.doc;
       // The index rows and the DRC (open and waived findings, requirement checks) travel with the
       // document so lists, BoM, where-used, and release read the saved state.
-      const { index, drc, payload } = deriveSheetData({
+      const { index, drc, payload } = computeSheetPayload({
         doc,
         sheetId,
         sheetNo,
@@ -680,9 +673,15 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       if (!latestDrawing) return "skipped";
       const own = sheets.find((entry) => entry.id === targetId);
       if (!own) return "skipped";
-      const doc = withFrameTemplate(own.document as unknown as SchematicDocument, latestDrawing.frame_template);
-      const { drc, payload } = deriveSheetData({
-        doc,
+      // Already refreshed elsewhere (another tab, or the server's own engine run): nothing to write.
+      if (own.index_stale === false) {
+        markSheetIndexed(latestDrawing.id, targetId, stored.counts.error);
+        return "skipped";
+      }
+      // The same engine function the server runs under Node (POST /projects/{id}/reindex).
+      const { doc, drc, payload } = computeSheetPayload({
+        doc: own.document as unknown as SchematicDocument,
+        frameTemplate: latestDrawing.frame_template,
         sheetId: targetId,
         sheetNo: own.sheet_no,
         otherSheets: sheets.map((entry) => ({ sheetId: entry.id, sheetNo: entry.sheet_no, doc: entry.document as unknown as SchematicDocument })),

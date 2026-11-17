@@ -1,0 +1,1154 @@
+{
+ "request": {
+  "context": {
+   "customSymbols": [
+    {
+     "id": "00000000-0000-4000-8000-0000000000b1",
+     "name": "Inline filter",
+     "view_box": "0 0 64 40",
+     "svg": "<rect x=\"12\" y=\"8\" width=\"40\" height=\"24\"/><path d=\"M0 20 H12 M52 20 H64\"/>",
+     "ports": [
+      {
+       "id": "in",
+       "x": 0,
+       "y": 20,
+       "side": "left"
+      },
+      {
+       "id": "out",
+       "x": 64,
+       "y": 20,
+       "side": "right"
+      }
+     ],
+     "category": "inline",
+     "legend": "INLINE FILTER",
+     "tag_prefix": "F"
+    }
+   ],
+   "tagScheme": {
+    "kind": "simple",
+    "separator": "-",
+    "sequenceLength": 4
+   },
+   "parts": [
+    {
+     "id": "00000000-0000-4000-8000-0000000000c1",
+     "part_number": "HV-BR-025",
+     "description": "Hand valve, brass",
+     "part_type": "valve",
+     "material": "Brass",
+     "pressure_rating_bar": 200,
+     "lifecycle_status": "obsolete",
+     "qualification_status": "unqualified",
+     "preferred": false
+    },
+    {
+     "id": "00000000-0000-4000-8000-0000000000c2",
+     "part_number": "PCV-SS-025",
+     "description": "Regulator, 316L",
+     "part_type": "regulator",
+     "material": "316L",
+     "pressure_rating_bar": 350,
+     "lifecycle_status": "active",
+     "qualification_status": "qualified",
+     "preferred": true
+    }
+   ],
+   "requirements": [
+    {
+     "id": "00000000-0000-4000-8000-0000000000d1",
+     "key": "REQ-7",
+     "title": "316L wetted parts",
+     "constraint": {
+      "kind": "material_in",
+      "values": [
+       "316L"
+      ],
+      "scope": {
+       "services": [
+        "GHe"
+       ]
+      }
+     }
+    },
+    {
+     "id": "00000000-0000-4000-8000-0000000000d2",
+     "key": "REQ-8",
+     "title": "Relief on every volume",
+     "constraint": {
+      "kind": "relief_required",
+      "values": []
+     }
+    },
+    {
+     "id": "00000000-0000-4000-8000-0000000000d3",
+     "key": "REQ-9",
+     "title": "Rated 300 bar",
+     "constraint": {
+      "kind": "pressure_rating_min",
+      "values": [
+       "300 bar"
+      ],
+      "scope": {
+       "categories": [
+        "regulator",
+        "valve"
+       ]
+      }
+     }
+    },
+    {
+     "id": "00000000-0000-4000-8000-0000000000d4",
+     "key": "REQ-10",
+     "title": "No constraint",
+     "constraint": null
+    }
+   ]
+  },
+  "drawings": [
+   {
+    "frameTemplate": "fsdp-standard",
+    "sheets": [
+     {
+      "sheetId": "00000000-0000-4000-8000-0000000000a1",
+      "sheetNo": 1,
+      "document": {
+       "schemaVersion": 1,
+       "sheet": {
+        "size": "A3",
+        "orientation": "landscape",
+        "frame": {
+         "kind": "basic",
+         "columns": 4,
+         "rows": 3,
+         "margin": 10
+        }
+       },
+       "layers": [
+        {
+         "id": "process",
+         "name": "Process lines",
+         "color": "#1f2937"
+        },
+        {
+         "id": "signal",
+         "name": "Signal lines",
+         "color": "#1f2937"
+        },
+        {
+         "id": "symbols",
+         "name": "Symbols",
+         "color": "#1f2937"
+        },
+        {
+         "id": "equipment",
+         "name": "Equipment",
+         "color": "#1f2937"
+        },
+        {
+         "id": "annotation",
+         "name": "Annotations",
+         "color": "#1f2937"
+        },
+        {
+         "id": "notes",
+         "name": "Review notes (not printed)",
+         "color": "#b45309"
+        }
+       ],
+       "items": [
+        {
+         "id": "bottle",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "gas_bottle",
+          "version": 1
+         },
+         "position": {
+          "x": 40,
+          "y": 150
+         },
+         "rotation": 0,
+         "fields": {},
+         "tag": "K-3201"
+        },
+        {
+         "id": "hv",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "hand_valve",
+          "version": 1
+         },
+         "position": {
+          "x": 80,
+          "y": 120
+         },
+         "rotation": 0,
+         "fields": {},
+         "tag": "HV-3201",
+         "partId": "00000000-0000-4000-8000-0000000000c1"
+        },
+        {
+         "id": "pcv",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "regulator",
+          "version": 1
+         },
+         "position": {
+          "x": 130,
+          "y": 120
+         },
+         "rotation": 0,
+         "fields": {},
+         "tag": "PCV-3202",
+         "partId": "00000000-0000-4000-8000-0000000000c2"
+        },
+        {
+         "id": "psv",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "relief_valve",
+          "version": 1
+         },
+         "position": {
+          "x": 170,
+          "y": 90
+         },
+         "rotation": 0,
+         "fields": {},
+         "tag": "PSV-3203"
+        },
+        {
+         "id": "pt",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "instrument",
+          "version": 1
+         },
+         "position": {
+          "x": 200,
+          "y": 100
+         },
+         "rotation": 0,
+         "fields": {},
+         "tag": "PT-3204"
+        },
+        {
+         "id": "l1",
+         "kind": "line",
+         "layer": "process",
+         "points": [
+          {
+           "x": 40,
+           "y": 137.5
+          },
+          {
+           "x": 40,
+           "y": 120
+          },
+          {
+           "x": 70,
+           "y": 120
+          }
+         ],
+         "lineType": "process",
+         "fields": {},
+         "service": "GHe",
+         "size": "1/4\"",
+         "lineClass": "HE-1"
+        },
+        {
+         "id": "l2",
+         "kind": "line",
+         "layer": "process",
+         "points": [
+          {
+           "x": 90,
+           "y": 120
+          },
+          {
+           "x": 120,
+           "y": 120
+          }
+         ],
+         "lineType": "process",
+         "fields": {},
+         "service": "GHe",
+         "size": "1/4\"",
+         "lineClass": "HE-1"
+        },
+        {
+         "id": "l3",
+         "kind": "line",
+         "layer": "process",
+         "points": [
+          {
+           "x": 140,
+           "y": 120
+          },
+          {
+           "x": 200,
+           "y": 120
+          },
+          {
+           "x": 200,
+           "y": 105
+          }
+         ],
+         "lineType": "process",
+         "fields": {},
+         "service": "GHe",
+         "size": "1/4\"",
+         "lineClass": "HE-1"
+        },
+        {
+         "id": "l4",
+         "kind": "line",
+         "layer": "process",
+         "points": [
+          {
+           "x": 160,
+           "y": 120
+          },
+          {
+           "x": 160,
+           "y": 90
+          }
+         ],
+         "lineType": "process",
+         "fields": {},
+         "service": "GHe",
+         "size": "1/4\"",
+         "lineClass": "HE-1"
+        },
+        {
+         "id": "flt",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "custom",
+          "key": "00000000-0000-4000-8000-0000000000b1",
+          "version": 1
+         },
+         "position": {
+          "x": 250,
+          "y": 120
+         },
+         "rotation": 0,
+         "fields": {},
+         "tag": "F-3205"
+        },
+        {
+         "id": "l5",
+         "kind": "line",
+         "layer": "process",
+         "points": [
+          {
+           "x": 200,
+           "y": 120
+          },
+          {
+           "x": 240,
+           "y": 120
+          }
+         ],
+         "lineType": "process",
+         "fields": {}
+        },
+        {
+         "id": "conn",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "off_page_connector",
+          "version": 1
+         },
+         "position": {
+          "x": 300,
+          "y": 60
+         },
+         "rotation": 0,
+         "fields": {
+          "ref": "A"
+         }
+        }
+       ],
+       "meta": {
+        "grid": 2.5
+       }
+      },
+      "waivers": [
+       {
+        "key": "duplicate_tag:hv",
+        "reason": "Shown on both sheets"
+       }
+      ]
+     },
+     {
+      "sheetId": "00000000-0000-4000-8000-0000000000a2",
+      "sheetNo": 2,
+      "document": {
+       "schemaVersion": 1,
+       "sheet": {
+        "size": "A3",
+        "orientation": "landscape",
+        "frame": {
+         "kind": "basic",
+         "columns": 4,
+         "rows": 3,
+         "margin": 10
+        }
+       },
+       "layers": [
+        {
+         "id": "process",
+         "name": "Process lines",
+         "color": "#1f2937"
+        },
+        {
+         "id": "signal",
+         "name": "Signal lines",
+         "color": "#1f2937"
+        },
+        {
+         "id": "symbols",
+         "name": "Symbols",
+         "color": "#1f2937"
+        },
+        {
+         "id": "equipment",
+         "name": "Equipment",
+         "color": "#1f2937"
+        },
+        {
+         "id": "annotation",
+         "name": "Annotations",
+         "color": "#1f2937"
+        },
+        {
+         "id": "notes",
+         "name": "Review notes (not printed)",
+         "color": "#b45309"
+        }
+       ],
+       "items": [
+        {
+         "id": "back",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "off_page_connector",
+          "version": 1
+         },
+         "position": {
+          "x": 40,
+          "y": 250
+         },
+         "rotation": 0,
+         "fields": {
+          "ref": "A"
+         }
+        },
+        {
+         "id": "dup",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "hand_valve",
+          "version": 1
+         },
+         "position": {
+          "x": 80,
+          "y": 80
+         },
+         "rotation": 0,
+         "fields": {},
+         "tag": "HV-3201"
+        },
+        {
+         "id": "pi",
+         "kind": "symbol",
+         "layer": "symbols",
+         "symbol": {
+          "library": "fsdp",
+          "key": "instrument",
+          "version": 1
+         },
+         "position": {
+          "x": 140,
+          "y": 80
+         },
+         "rotation": 0,
+         "fields": {},
+         "tag": "PI-3210"
+        }
+       ],
+       "meta": {
+        "grid": 2.5
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "response": {
+  "protocol": 1,
+  "results": [
+   {
+    "sheetId": "00000000-0000-4000-8000-0000000000a1",
+    "ok": true,
+    "counts": {
+     "error": 5,
+     "warning": 8,
+     "info": 0,
+     "waived": 1
+    },
+    "index": {
+     "items": [
+      {
+       "item_id": "bottle",
+       "kind": "symbol",
+       "category": "equipment",
+       "symbol_key": "gas_bottle",
+       "symbol_name": "Gas cylinder",
+       "tag": "K-3201",
+       "label": null,
+       "zone": "B-4",
+       "x": 40,
+       "y": 150,
+       "part_id": null,
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "size": "1/4\"",
+        "service": "GHe",
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "ref": null,
+        "target": null,
+        "notes": null
+       }
+      },
+      {
+       "item_id": "hv",
+       "kind": "symbol",
+       "category": "valve",
+       "symbol_key": "hand_valve",
+       "symbol_name": "Hand valve",
+       "tag": "HV-3201",
+       "label": null,
+       "zone": "B-4",
+       "x": 80,
+       "y": 120,
+       "part_id": "00000000-0000-4000-8000-0000000000c1",
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "size": "1/4\"",
+        "service": "GHe",
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "ref": null,
+        "target": null,
+        "notes": null
+       }
+      },
+      {
+       "item_id": "pcv",
+       "kind": "symbol",
+       "category": "regulator",
+       "symbol_key": "regulator",
+       "symbol_name": "Pressure regulator (reducing)",
+       "tag": "PCV-3202",
+       "label": null,
+       "zone": "B-3",
+       "x": 130,
+       "y": 120,
+       "part_id": "00000000-0000-4000-8000-0000000000c2",
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "size": "1/4\"",
+        "service": "GHe",
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "ref": null,
+        "target": null,
+        "notes": null
+       }
+      },
+      {
+       "item_id": "psv",
+       "kind": "symbol",
+       "category": "valve",
+       "symbol_key": "relief_valve",
+       "symbol_name": "Relief valve",
+       "tag": "PSV-3203",
+       "label": null,
+       "zone": "C-3",
+       "x": 170,
+       "y": 90,
+       "part_id": null,
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "size": "1/4\"",
+        "service": "GHe",
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "ref": null,
+        "target": null,
+        "notes": null
+       }
+      },
+      {
+       "item_id": "pt",
+       "kind": "symbol",
+       "category": "instrument",
+       "symbol_key": "instrument",
+       "symbol_name": "Instrument, field mounted",
+       "tag": "PT-3204",
+       "label": null,
+       "zone": "C-3",
+       "x": 200,
+       "y": 100,
+       "part_id": null,
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "size": "1/4\"",
+        "service": "GHe",
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "ref": null,
+        "target": null,
+        "notes": null
+       }
+      },
+      {
+       "item_id": "flt",
+       "kind": "symbol",
+       "category": "inline",
+       "symbol_key": "00000000-0000-4000-8000-0000000000b1",
+       "symbol_name": "Inline filter",
+       "tag": "F-3205",
+       "label": null,
+       "zone": "B-2",
+       "x": 250,
+       "y": 120,
+       "part_id": null,
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "size": null,
+        "service": null,
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "ref": null,
+        "target": null,
+        "notes": null
+       }
+      },
+      {
+       "item_id": "conn",
+       "kind": "symbol",
+       "category": "connector",
+       "symbol_key": "off_page_connector",
+       "symbol_name": "Off-page connector (sheet reference)",
+       "tag": null,
+       "label": null,
+       "zone": "C-2",
+       "x": 300,
+       "y": 60,
+       "part_id": null,
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "ref": "A",
+        "size": null,
+        "service": null,
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "target": "SHT 2 / A-4",
+        "notes": null
+       }
+      }
+     ],
+     "lines": [
+      {
+       "line_id": "l1",
+       "line_number": null,
+       "line_type": "process",
+       "service": "GHe",
+       "size": "1/4\"",
+       "spec": null,
+       "line_class": "HE-1",
+       "from_item": "bottle",
+       "from_tag": "K-3201",
+       "to_item": "hv",
+       "to_tag": "HV-3201",
+       "zone": "B-4",
+       "length_mm": 47.5,
+       "length_m": 0.048,
+       "connection_count": 2,
+       "tee_count": 0,
+       "design_pressure": null,
+       "design_temperature": null,
+       "operating_pressure": null,
+       "operating_temperature": null,
+       "insulation": null,
+       "tracing": null,
+       "fields": {}
+      },
+      {
+       "line_id": "l2",
+       "line_number": null,
+       "line_type": "process",
+       "service": "GHe",
+       "size": "1/4\"",
+       "spec": null,
+       "line_class": "HE-1",
+       "from_item": "hv",
+       "from_tag": "HV-3201",
+       "to_item": "pcv",
+       "to_tag": "PCV-3202",
+       "zone": "B-4",
+       "length_mm": 30,
+       "length_m": 0.03,
+       "connection_count": 2,
+       "tee_count": 0,
+       "design_pressure": null,
+       "design_temperature": null,
+       "operating_pressure": null,
+       "operating_temperature": null,
+       "insulation": null,
+       "tracing": null,
+       "fields": {}
+      },
+      {
+       "line_id": "l3",
+       "line_number": null,
+       "line_type": "process",
+       "service": "GHe",
+       "size": "1/4\"",
+       "spec": null,
+       "line_class": "HE-1",
+       "from_item": "pcv",
+       "from_tag": "PCV-3202",
+       "to_item": "pt",
+       "to_tag": "PT-3204 (process)",
+       "zone": "B-3",
+       "length_mm": 75,
+       "length_m": 0.075,
+       "connection_count": 2,
+       "tee_count": 0,
+       "design_pressure": null,
+       "design_temperature": null,
+       "operating_pressure": null,
+       "operating_temperature": null,
+       "insulation": null,
+       "tracing": null,
+       "fields": {}
+      },
+      {
+       "line_id": "l4",
+       "line_number": null,
+       "line_type": "process",
+       "service": "GHe",
+       "size": "1/4\"",
+       "spec": null,
+       "line_class": "HE-1",
+       "from_item": "l3",
+       "from_tag": "tee",
+       "to_item": "psv",
+       "to_tag": "PSV-3203",
+       "zone": "B-3",
+       "length_mm": 30,
+       "length_m": 0.03,
+       "connection_count": 1,
+       "tee_count": 1,
+       "design_pressure": null,
+       "design_temperature": null,
+       "operating_pressure": null,
+       "operating_temperature": null,
+       "insulation": null,
+       "tracing": null,
+       "fields": {}
+      },
+      {
+       "line_id": "l5",
+       "line_number": null,
+       "line_type": "process",
+       "service": null,
+       "size": null,
+       "spec": null,
+       "line_class": null,
+       "from_item": "l3",
+       "from_tag": "tee",
+       "to_item": "flt",
+       "to_tag": "F-3205",
+       "zone": "B-2",
+       "length_mm": 40,
+       "length_m": 0.04,
+       "connection_count": 1,
+       "tee_count": 1,
+       "design_pressure": null,
+       "design_temperature": null,
+       "operating_pressure": null,
+       "operating_temperature": null,
+       "insulation": null,
+       "tracing": null,
+       "fields": {}
+      }
+     ]
+    },
+    "drc": {
+     "findings": [
+      {
+       "key": "part_status:hv",
+       "rule": "part_status",
+       "severity": "error",
+       "message": "HV-3201 uses HV-BR-025, which is obsolete",
+       "itemId": "hv",
+       "subject": "HV-3201",
+       "zone": "B-4"
+      },
+      {
+       "key": "requirement:00000000-0000-4000-8000-0000000000d2:l1",
+       "rule": "requirement",
+       "severity": "error",
+       "message": "REQ-8 (Relief on every volume): isolable volume (K-3201, HV-3201) has no relief device",
+       "itemId": "l1",
+       "subject": null,
+       "zone": "B-4",
+       "requirementId": "00000000-0000-4000-8000-0000000000d2"
+      },
+      {
+       "key": "requirement:00000000-0000-4000-8000-0000000000d2:l2",
+       "rule": "requirement",
+       "severity": "error",
+       "message": "REQ-8 (Relief on every volume): isolable volume (HV-3201, PCV-3202) has no relief device",
+       "itemId": "l2",
+       "subject": null,
+       "zone": "B-4",
+       "requirementId": "00000000-0000-4000-8000-0000000000d2"
+      },
+      {
+       "key": "requirement:00000000-0000-4000-8000-0000000000d1:hv",
+       "rule": "requirement",
+       "severity": "error",
+       "message": "REQ-7 (316L wetted parts): HV-BR-025 material Brass is not one of 316L",
+       "itemId": "hv",
+       "subject": "HV-3201",
+       "zone": "B-4",
+       "requirementId": "00000000-0000-4000-8000-0000000000d1"
+      },
+      {
+       "key": "requirement:00000000-0000-4000-8000-0000000000d3:hv",
+       "rule": "requirement",
+       "severity": "error",
+       "message": "REQ-9 (Rated 300 bar): HV-BR-025 rated 200 bar, below 300 bar",
+       "itemId": "hv",
+       "subject": "HV-3201",
+       "zone": "B-4",
+       "requirementId": "00000000-0000-4000-8000-0000000000d3"
+      },
+      {
+       "key": "line_unnumbered:l1",
+       "rule": "line_unnumbered",
+       "severity": "warning",
+       "message": "Process line from (40, 137.5) mm has no line number",
+       "itemId": "l1",
+       "subject": null,
+       "zone": "B-4"
+      },
+      {
+       "key": "line_unnumbered:l2",
+       "rule": "line_unnumbered",
+       "severity": "warning",
+       "message": "Process line from (90, 120) mm has no line number",
+       "itemId": "l2",
+       "subject": null,
+       "zone": "B-4"
+      },
+      {
+       "key": "line_unnumbered:l3",
+       "rule": "line_unnumbered",
+       "severity": "warning",
+       "message": "Process line from (140, 120) mm has no line number",
+       "itemId": "l3",
+       "subject": null,
+       "zone": "B-3"
+      },
+      {
+       "key": "line_unnumbered:l4",
+       "rule": "line_unnumbered",
+       "severity": "warning",
+       "message": "Process line from (160, 120) mm has no line number",
+       "itemId": "l4",
+       "subject": null,
+       "zone": "B-3"
+      },
+      {
+       "key": "line_unnumbered:l5",
+       "rule": "line_unnumbered",
+       "severity": "warning",
+       "message": "Process line from (200, 120) mm has no line number",
+       "itemId": "l5",
+       "subject": null,
+       "zone": "B-2"
+      },
+      {
+       "key": "open_port:flt:out",
+       "rule": "open_port",
+       "severity": "warning",
+       "message": "F-3205 port out has no line",
+       "itemId": "flt",
+       "subject": "F-3205",
+       "zone": "B-2"
+      },
+      {
+       "key": "relief_coverage:l1",
+       "rule": "relief_coverage",
+       "severity": "warning",
+       "message": "Isolable volume (K-3201, HV-3201) has no relief device",
+       "itemId": "l1",
+       "subject": null,
+       "zone": "B-4"
+      },
+      {
+       "key": "relief_coverage:l2",
+       "rule": "relief_coverage",
+       "severity": "warning",
+       "message": "Isolable volume (HV-3201, PCV-3202) has no relief device",
+       "itemId": "l2",
+       "subject": null,
+       "zone": "B-4"
+      },
+      {
+       "key": "duplicate_tag:hv",
+       "rule": "duplicate_tag",
+       "severity": "error",
+       "message": "HV-3201: Duplicate of HV-3201 on another sheet",
+       "itemId": "hv",
+       "subject": "HV-3201",
+       "zone": "B-4"
+      }
+     ],
+     "checks": [
+      {
+       "requirementId": "00000000-0000-4000-8000-0000000000d1",
+       "itemId": "hv",
+       "subject": "HV-3201",
+       "zone": "B-4",
+       "status": "fail",
+       "message": "HV-BR-025 material Brass is not one of 316L"
+      },
+      {
+       "requirementId": "00000000-0000-4000-8000-0000000000d1",
+       "itemId": "pcv",
+       "subject": "PCV-3202",
+       "zone": "B-3",
+       "status": "pass",
+       "message": "PCV-SS-025 material 316L"
+      },
+      {
+       "requirementId": "00000000-0000-4000-8000-0000000000d2",
+       "itemId": "l1",
+       "subject": "K-3201, HV-3201",
+       "zone": "B-4",
+       "status": "fail",
+       "message": "isolable volume (K-3201, HV-3201) has no relief device"
+      },
+      {
+       "requirementId": "00000000-0000-4000-8000-0000000000d2",
+       "itemId": "l2",
+       "subject": "HV-3201, PCV-3202",
+       "zone": "B-4",
+       "status": "fail",
+       "message": "isolable volume (HV-3201, PCV-3202) has no relief device"
+      },
+      {
+       "requirementId": "00000000-0000-4000-8000-0000000000d2",
+       "itemId": "l3",
+       "subject": "PCV-3202, PSV-3203, PT-3204, F-3205",
+       "zone": "B-3",
+       "status": "pass",
+       "message": "volume (PCV-3202, PSV-3203, PT-3204, F-3205) is relieved"
+      },
+      {
+       "requirementId": "00000000-0000-4000-8000-0000000000d3",
+       "itemId": "hv",
+       "subject": "HV-3201",
+       "zone": "B-4",
+       "status": "fail",
+       "message": "HV-BR-025 rated 200 bar, below 300 bar"
+      },
+      {
+       "requirementId": "00000000-0000-4000-8000-0000000000d3",
+       "itemId": "pcv",
+       "subject": "PCV-3202",
+       "zone": "B-3",
+       "status": "pass",
+       "message": "PCV-SS-025 rated 350 bar"
+      }
+     ]
+    }
+   },
+   {
+    "sheetId": "00000000-0000-4000-8000-0000000000a2",
+    "ok": true,
+    "counts": {
+     "error": 1,
+     "warning": 3,
+     "info": 0,
+     "waived": 0
+    },
+    "index": {
+     "items": [
+      {
+       "item_id": "back",
+       "kind": "symbol",
+       "category": "connector",
+       "symbol_key": "off_page_connector",
+       "symbol_name": "Off-page connector (sheet reference)",
+       "tag": null,
+       "label": null,
+       "zone": "A-4",
+       "x": 40,
+       "y": 250,
+       "part_id": null,
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "ref": "A",
+        "size": null,
+        "service": null,
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "target": "SHT 1 / C-2",
+        "notes": null
+       }
+      },
+      {
+       "item_id": "dup",
+       "kind": "symbol",
+       "category": "valve",
+       "symbol_key": "hand_valve",
+       "symbol_name": "Hand valve",
+       "tag": "HV-3201",
+       "label": null,
+       "zone": "C-4",
+       "x": 80,
+       "y": 80,
+       "part_id": null,
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "size": null,
+        "service": null,
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "ref": null,
+        "target": null,
+        "notes": null
+       }
+      },
+      {
+       "item_id": "pi",
+       "kind": "symbol",
+       "category": "instrument",
+       "symbol_key": "instrument",
+       "symbol_name": "Instrument, field mounted",
+       "tag": "PI-3210",
+       "label": null,
+       "zone": "C-3",
+       "x": 140,
+       "y": 80,
+       "part_id": null,
+       "dnp": false,
+       "spare": 0,
+       "fields": {
+        "size": null,
+        "service": null,
+        "line_number": null,
+        "actuator": null,
+        "mounting": null,
+        "ref": null,
+        "target": null,
+        "notes": null
+       }
+      }
+     ],
+     "lines": []
+    },
+    "drc": {
+     "findings": [
+      {
+       "key": "duplicate_tag:dup",
+       "rule": "duplicate_tag",
+       "severity": "error",
+       "message": "HV-3201: Duplicate of HV-3201 on another sheet",
+       "itemId": "dup",
+       "subject": "HV-3201",
+       "zone": "C-4"
+      },
+      {
+       "key": "open_port:dup:in",
+       "rule": "open_port",
+       "severity": "warning",
+       "message": "HV-3201 port in has no line",
+       "itemId": "dup",
+       "subject": "HV-3201",
+       "zone": "C-4"
+      },
+      {
+       "key": "open_port:dup:out",
+       "rule": "open_port",
+       "severity": "warning",
+       "message": "HV-3201 port out has no line",
+       "itemId": "dup",
+       "subject": "HV-3201",
+       "zone": "C-4"
+      },
+      {
+       "key": "open_port:pi:process",
+       "rule": "open_port",
+       "severity": "warning",
+       "message": "PI-3210 port process has no line",
+       "itemId": "pi",
+       "subject": "PI-3210",
+       "zone": "C-3"
+      }
+     ],
+     "checks": []
+    }
+   }
+  ]
+ }
+}
