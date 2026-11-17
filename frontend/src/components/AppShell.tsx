@@ -12,7 +12,7 @@ export type NavItem = {
 const NAV_GROUPS: Array<{ title: string; paths: string[] }> = [
   { title: "Workspace", paths: ["/dashboard", "/systems", "/drafting"] },
   { title: "Data", paths: ["/parts", "/requirements", "/bom"] },
-  { title: "Assurance", paths: ["/reviews"] }
+  { title: "Assurance", paths: ["/safety", "/analysis", "/reviews"] }
 ];
 
 const ICON_PROPS = { viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
@@ -60,6 +60,19 @@ const NAV_ICONS: Record<string, ReactNode> = {
       <path d="M5 3 H15 V17 L13 15.5 L11 17 L9 15.5 L7 17 L5 15.5 Z" />
       <path d="M8 7 H12" />
       <path d="M8 10 H12" />
+    </svg>
+  ),
+  "/safety": (
+    <svg {...ICON_PROPS}>
+      <path d="M10 2.8 L16.5 5 V9.6 C16.5 13.4 13.8 16.2 10 17.4 C6.2 16.2 3.5 13.4 3.5 9.6 V5 Z" />
+      <path d="M10 6.8 V10.6" />
+      <path d="M10 13.2 V13.3" />
+    </svg>
+  ),
+  "/analysis": (
+    <svg {...ICON_PROPS}>
+      <path d="M3.5 3.5 V16.5 H16.5" />
+      <path d="M6 13.5 C8.5 13.5 9 7 11.5 7 C13.5 7 13.8 10 16.5 5.5" />
     </svg>
   ),
   "/reviews": (

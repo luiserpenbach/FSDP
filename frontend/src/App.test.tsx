@@ -212,8 +212,9 @@ describe("App", () => {
     // The project/system switcher sits in the sidebar on every page.
     expect(screen.getByLabelText("Project")).toBeInTheDocument();
     expect(screen.getByLabelText("System")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Safety" })).toHaveAttribute("href", "/safety");
+    expect(screen.getByRole("link", { name: "Analysis" })).toHaveAttribute("href", "/analysis");
     // Placeholder pages are hidden until they do something.
-    expect(screen.queryByText("Safety")).not.toBeInTheDocument();
     expect(screen.queryByText("Certification")).not.toBeInTheDocument();
   });
 

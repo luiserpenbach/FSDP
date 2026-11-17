@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.core.security import WRITER_ROLES, get_current_user
 from app.db import get_db
 from app.models import (
+    Analysis,
     BomSnapshot,
     ComponentInstance,
     Diagram,
@@ -35,6 +36,7 @@ from app.models import (
     DrawingRevision,
     DrawingSheet,
     FluidSystem,
+    Hazard,
     LineClass,
     Project,
     ProjectMember,
@@ -139,6 +141,12 @@ OBJECT_PROJECT_RESOLVERS: dict[str, Callable[[Session, str], str | None]] = {
     ),
     "diagram": _diagram_project,
     "component": _component_project,
+    "hazard": lambda db, object_id: _scalar(
+        db, select(Hazard.project_id).where(Hazard.id == object_id)
+    ),
+    "analysis": lambda db, object_id: _scalar(
+        db, select(Analysis.project_id).where(Analysis.id == object_id)
+    ),
     "bom_snapshot": _snapshot_project,
 }
 
@@ -172,6 +180,8 @@ for _name, _type in (
     ("requirement_id", "requirement"),
     ("diagram_id", "diagram"),
     ("snapshot_id", "bom_snapshot"),
+    ("hazard_id", "hazard"),
+    ("analysis_id", "analysis"),
 ):
     PATH_RESOLVERS[_name] = (
         lambda db, object_id, _type=_type: [

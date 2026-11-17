@@ -9,11 +9,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.access_routes import access_router
+from app.api.analysis_routes import analysis_router
 from app.api.auth_routes import auth_router
 from app.api.bulk_routes import bulk_router
 from app.api.drawing_routes import drawing_router
 from app.api.engine_routes import engine_router
 from app.api.export_routes import export_router
+from app.api.hazard_routes import hazard_router
 from app.api.lineage_routes import lineage_router
 from app.api.routes import router
 from app.api.search_routes import search_router
@@ -68,6 +70,8 @@ app.include_router(export_router, dependencies=GUARDS)
 app.include_router(search_router, dependencies=GUARDS)
 app.include_router(lineage_router, dependencies=GUARDS)
 app.include_router(engine_router, dependencies=GUARDS)
+app.include_router(hazard_router, dependencies=GUARDS)
+app.include_router(analysis_router, dependencies=GUARDS)
 
 
 @app.get("/health")

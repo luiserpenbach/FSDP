@@ -677,3 +677,87 @@ class CatalogDocument(TimestampMixin, Base):
     uploaded_by: Mapped[str | None] = mapped_column(String(160))
 
     part: Mapped[Part] = relationship()
+
+
+HAZARD_CATEGORIES = (
+    "overpressure",
+    "backflow",
+    "ignition",
+    "contamination",
+    "single_point_failure",
+    "trapped_fluid",
+    "other",
+)
+HAZARD_STATUSES = ("open", "mitigated", "accepted", "closed")
+
+
+def hazard_risk_level(severity: int, likelihood: int) -> str:
+    """Risk level from the severity (1-4) x likelihood (1-5) score.
+
+    Score 1-4 is low, 5-9 medium, 10-20 high; a severity 4 hazard is never
+    rated below medium, however unlikely.
+    """
+    score = severity * likelihood
+    if score >= 10:
+        return "high"
+    if score >= 5 or severity >= 4:
+        return "medium"
+    return "low"
+
+
+class Hazard(TimestampMixin, Base):
+    """Entry of a project's safety register; linked to drawing items via trace_links."""
+
+    __tablename__ = "hazards"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_hazards_project_key"),
+        Index("ix_hazards_project_id", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
+    # 1 negligible, 2 marginal, 3 critical, 4 catastrophic.
+    severity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # 1 improbable, 2 remote, 3 occasional, 4 probable, 5 frequent.
+    likelihood: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    mitigation: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="open")
+    owner: Mapped[str | None] = mapped_column(String(160))
+
+    @property
+    def risk_score(self) -> int:
+        return self.severity * self.likelihood
+
+    @property
+    def risk_level(self) -> str:
+        return hazard_risk_level(self.severity, self.likelihood)
+
+
+class Analysis(TimestampMixin, Base):
+    """A stored calculation: the inputs and the results computed from them."""
+
+    __tablename__ = "analyses"
+    __table_args__ = (
+        Index("ix_analyses_project_id", "project_id"),
+        Index("ix_analyses_drawing_id", "drawing_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    drawing_id: Mapped[str | None] = mapped_column(
+        ForeignKey("drawings.id", ondelete="SET NULL")
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    results: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
+    created_by: Mapped[str | None] = mapped_column(String(160))

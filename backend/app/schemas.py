@@ -1697,3 +1697,220 @@ class LineageDiffRead(BaseModel):
     sheets_removed: list[int]
     # Sheets whose index is out of date, so their rows may be incomplete.
     stale: list[str]
+
+# ---- Hazards (safety register) ----
+
+HazardCategory = Literal[
+    "overpressure",
+    "backflow",
+    "ignition",
+    "contamination",
+    "single_point_failure",
+    "trapped_fluid",
+    "other",
+]
+HazardStatus = Literal["open", "mitigated", "accepted", "closed"]
+
+
+class HazardCreate(BaseModel):
+    # Omit the key to get the next free HAZ-nnn of the project.
+    key: str | None = Field(default=None, max_length=80)
+    title: str = Field(max_length=200)
+    description: str | None = None
+    category: HazardCategory = "other"
+    severity: int = Field(default=1, ge=1, le=4)
+    likelihood: int = Field(default=1, ge=1, le=5)
+    mitigation: str | None = None
+    status: HazardStatus = "open"
+    owner: str | None = Field(default=None, max_length=160)
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("key")
+    @classmethod
+    def _key(cls, value: str | None) -> str | None:
+        return None if value is None or not value.strip() else value.strip()
+
+
+class HazardUpdate(BaseModel):
+    key: str | None = Field(default=None, max_length=80)
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = None
+    category: HazardCategory | None = None
+    severity: int | None = Field(default=None, ge=1, le=4)
+    likelihood: int | None = Field(default=None, ge=1, le=5)
+    mitigation: str | None = None
+    status: HazardStatus | None = None
+    owner: str | None = Field(default=None, max_length=160)
+
+    @field_validator("key", "title")
+    @classmethod
+    def _required_text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+
+class HazardRead(OrmModel):
+    id: str
+    project_id: str
+    key: str
+    title: str
+    description: str | None
+    category: str
+    severity: int
+    likelihood: int
+    # Derived: severity x likelihood, and its level (low, medium, high).
+    risk_score: int
+    risk_level: str
+    mitigation: str | None
+    status: str
+    owner: str | None
+    # Trace links with this hazard as source (drawing items, requirements, ...).
+    links: list[TraceLinkRead] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---- Analyses (stored calculations) ----
+
+AnalysisKind = Literal["pressure_drop", "relief_sizing"]
+AnalysisStatus = Literal["draft", "checked", "approved", "superseded"]
+
+
+class CvItemIn(BaseModel):
+    name: str = Field(default="", max_length=120)
+    # US flow coefficient: US gal/min of 60 degF water at 1 psi pressure drop.
+    cv: float = Field(gt=0, allow_inf_nan=False)
+
+
+class PressureDropSegmentIn(BaseModel):
+    name: str = Field(default="", max_length=120)
+    inner_diameter_mm: float = Field(gt=0, allow_inf_nan=False)
+    length_m: float = Field(default=0, ge=0, allow_inf_nan=False)
+    # Absolute roughness.
+    roughness_mm: float = Field(default=0, ge=0, allow_inf_nan=False)
+    # Sum of minor-loss K factors referred to this segment's velocity head.
+    k_sum: float = Field(default=0, ge=0, allow_inf_nan=False)
+    # Outlet height minus inlet height; positive when the line rises.
+    elevation_change_m: float = Field(default=0, allow_inf_nan=False)
+    cv_items: list[CvItemIn] = Field(default_factory=list, max_length=50)
+
+
+class PressureDropInputs(BaseModel):
+    """Inputs of `app.services.analysis.pressure_drop` (units are in the field names)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fluid_name: str = Field(default="", max_length=120)
+    density_kg_m3: float = Field(gt=0, allow_inf_nan=False)
+    # Dynamic viscosity; 1 mPa.s = 1 cP.
+    viscosity_mpa_s: float = Field(gt=0, allow_inf_nan=False)
+    mass_flow_kg_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    volumetric_flow_l_min: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    velocity_limit_m_s: float = Field(default=3.0, gt=0, allow_inf_nan=False)
+    segments: list[PressureDropSegmentIn] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _one_flow(self) -> "PressureDropInputs":
+        if (self.mass_flow_kg_s is None) == (self.volumetric_flow_l_min is None):
+            raise ValueError("give either mass_flow_kg_s or volumetric_flow_l_min, not both")
+        return self
+
+
+class ReliefSizingInputs(BaseModel):
+    """Inputs of `app.services.analysis.relief_sizing` (units are in the field names)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service: Literal["gas", "liquid"]
+    fluid_name: str = Field(default="", max_length=120)
+    set_pressure_kpag: float = Field(gt=0, allow_inf_nan=False)
+    overpressure_pct: float = Field(default=10, ge=0, le=100, allow_inf_nan=False)
+    # Total back pressure at the valve outlet while relieving.
+    back_pressure_kpag: float = Field(default=0, ge=0, allow_inf_nan=False)
+    atmospheric_pressure_kpa: float = Field(default=101.325, gt=0, le=200, allow_inf_nan=False)
+    # None: API 520 preliminary value (0.975 gas, 0.65 liquid).
+    kd: float | None = Field(default=None, gt=0, le=1, allow_inf_nan=False)
+    kc: float = Field(default=1.0, gt=0, le=1, allow_inf_nan=False)
+    # Gas or vapour.
+    mass_rate_kg_h: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    relieving_temperature_c: float | None = Field(default=None, gt=-273.15, allow_inf_nan=False)
+    molar_mass_kg_kmol: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    k: float | None = Field(default=None, gt=1, le=3, allow_inf_nan=False)
+    z: float = Field(default=1.0, gt=0, le=3, allow_inf_nan=False)
+    kb: float = Field(default=1.0, gt=0, le=1, allow_inf_nan=False)
+    # Liquid.
+    volume_rate_l_min: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    density_kg_m3: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    viscosity_mpa_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    kw: float = Field(default=1.0, gt=0, le=1, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _service_fields(self) -> "ReliefSizingInputs":
+        required = (
+            ("mass_rate_kg_h", "relieving_temperature_c", "molar_mass_kg_kmol", "k")
+            if self.service == "gas"
+            else ("volume_rate_l_min", "density_kg_m3")
+        )
+        missing = [name for name in required if getattr(self, name) is None]
+        if missing:
+            raise ValueError(f"{self.service} service needs: {', '.join(missing)}")
+        return self
+
+
+ANALYSIS_INPUT_MODELS: dict[str, type[BaseModel]] = {
+    "pressure_drop": PressureDropInputs,
+    "relief_sizing": ReliefSizingInputs,
+}
+
+
+class AnalysisPreviewIn(BaseModel):
+    kind: AnalysisKind
+    inputs: dict[str, Any]
+
+
+class AnalysisPreviewRead(BaseModel):
+    kind: str
+    # Inputs as validated and normalized (defaults filled in).
+    inputs: dict[str, Any]
+    results: dict[str, Any]
+
+
+class AnalysisCreate(AnalysisPreviewIn):
+    name: str = Field(max_length=200)
+    drawing_id: str | None = None
+    status: AnalysisStatus = "draft"
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return clean_required_text(value)
+
+
+class AnalysisUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    drawing_id: str | None = None
+    status: AnalysisStatus | None = None
+    # When given, the results are recomputed from these inputs.
+    inputs: dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+
+class AnalysisRead(OrmModel):
+    id: str
+    project_id: str
+    drawing_id: str | None
+    kind: str
+    name: str
+    inputs: dict[str, Any]
+    results: dict[str, Any]
+    status: str
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime

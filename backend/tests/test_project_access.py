@@ -334,3 +334,28 @@ def test_reindex_endpoints_are_bound_by_project_access(client: TestClient) -> No
     outsider, _ = _user(client, "outsider@fsdp.test")
     assert outsider.post(f"/projects/{secret['project']['id']}/reindex").status_code == 404
     assert outsider.post(f"/drawings/{secret['drawing']['id']}/reindex").status_code == 404
+
+
+def test_hazards_and_analyses_are_bound_by_project_access(client: TestClient) -> None:
+    secret = _secret_project(client)
+    project_id = secret["project"]["id"]
+    hazard = client.post(
+        f"/projects/{project_id}/hazards",
+        json={"title": "Overpressure", "category": "overpressure", "severity": 4, "likelihood": 2},
+    )
+    assert hazard.status_code == 201, hazard.text
+    outsider, outsider_id = _user(client, "outsider@fsdp.test")
+    assert outsider.get(f"/projects/{project_id}/hazards").status_code == 404
+    assert outsider.get(f"/projects/{project_id}/analyses").status_code == 404
+    assert outsider.put(f"/hazards/{hazard.json()['id']}", json={"title": "x"}).status_code == 404
+    assert outsider.delete(f"/hazards/{hazard.json()['id']}").status_code == 404
+    assert outsider.get(f"/objects/hazard/{hazard.json()['id']}/trace").status_code == 404
+
+    client.put(f"/projects/{project_id}/members/{outsider_id}", json={"role": "viewer"})
+    assert len(outsider.get(f"/projects/{project_id}/hazards").json()) == 1
+    denied = outsider.put(f"/hazards/{hazard.json()['id']}", json={"title": "x"})
+    assert denied.status_code == 403
+    events = client.get("/changes", params={"project_id": project_id}).json()
+    assert any(
+        "HAZ" in event["summary"] or "hazard" in event["summary"].lower() for event in events
+    )

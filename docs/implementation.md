@@ -175,6 +175,31 @@ Change impact:
 
 - `GET /changes/impact?object_type=...&object_id=...`
 
+Hazards (safety register, `app/api/hazard_routes.py`, table `hazards`, migration `0017`):
+
+- `GET /projects/{project_id}/hazards` (each hazard with its derived `risk_score`, `risk_level`, and its trace `links`)
+- `POST /projects/{project_id}/hazards` (omit `key` for the next free `HAZ-nnn`)
+- `PUT /hazards/{hazard_id}`
+- `DELETE /hazards/{hazard_id}` (also removes the hazard's trace links)
+
+A hazard has a category (`overpressure`, `backflow`, `ignition`, `contamination`, `single_point_failure`, `trapped_fluid`, `other`), severity 1-4, likelihood 1-5, mitigation, status (`open`, `mitigated`, `accepted`, `closed`), and owner. Risk is derived, not stored: score = severity x likelihood; 10 and above is high, 5 to 9 medium, below that low, and a severity 4 hazard is never below medium (`models.hazard_risk_level`). Hazards link to drawing items and requirements through `trace_links` with `source_type="hazard"` (`POST /trace-links`; same-project check as for requirements).
+
+Analyses (stored calculations, `app/api/analysis_routes.py`, `app/services/analysis.py`, table `analyses`, migration `0017`):
+
+- `POST /analysis/preview` (`{kind, inputs}`; computes without storing; open to viewers)
+- `GET /projects/{project_id}/analyses`
+- `POST /projects/{project_id}/analyses` (`{kind, name, inputs, drawing_id?, status?}`)
+- `GET /analyses/{analysis_id}`
+- `PUT /analyses/{analysis_id}` (always recomputes the results from the stored or new inputs)
+- `DELETE /analyses/{analysis_id}`
+
+Results are computed on the server by pure functions and stored next to the validated inputs (defaults filled in) with a `calc_version`, so a stored analysis is reproducible. Invalid inputs return 422 with one readable line per field. Kinds:
+
+- `pressure_drop`: incompressible flow through line segments in series. Darcy-Weisbach with f = 64/Re below Re 2300 and the Swamee-Jain correlation from Re 4000 (the larger of the two in between, with a warning); minor losses K rho v^2/2 per segment; elevation head rho g dz; valves and components by US Cv (US gal/min of 60 degF water at 1 psi, specific gravity referred to 999.0 kg/m^3; Cv = 1.156 Kv). Inputs carry their unit in the name (`density_kg_m3`, `viscosity_mpa_s`, `mass_flow_kg_s` or `volumetric_flow_l_min`, `inner_diameter_mm`, `length_m`, `roughness_mm`, `k_sum`, `elevation_change_m`, `cv_items`); results are pressure drops in kPa per segment and in total, with velocity, Reynolds number, regime, and friction factor, plus warnings (velocity above the limit, transitional flow, correlation range).
+- `relief_sizing`: API Standard 520 Part I preliminary sizing in SI units. Gas or vapour, critical flow: A = W / (C Kd P1 Kb Kc) sqrt(T Z / M) with C = 0.03948 sqrt(k (2/(k+1))^((k+1)/(k-1))); subcritical flow: A = 17.9 W / (F2 Kd Kc) sqrt(Z T / (M P1 (P1 - P2))). Liquid (certified valves): A = 11.78 Q / (Kd Kw Kc Kv) sqrt(G / (P1 - P2)), with the 10th-edition viscosity correction Kv = (1 + 170/Re)^-0.5 when a viscosity is given, else Kv = 1 with a warning. A in mm^2, W in kg/h, Q in L/min, pressures in kPa, T in K, M in kg/kmol. The result names the next API 526 orifice letter (D to T) and lists its assumptions; steam, two-phase flow, the relief scenario itself, and inlet and outlet piping are out of scope.
+
+`backend/tests/test_analysis_service.py` checks every formula against a hand calculation, a first-principles derivation, or the published API 520 example values.
+
 Search:
 
 - `GET /search?q=...&project_id=...&limit=...`: tags, line numbers, drawings, parts,
@@ -214,7 +239,7 @@ Project access (see `backend/app/core/access.py`):
 - Every data route is checked by one router-level dependency, `enforce_project_access`,
   which resolves the project from the path parameter names (`project_id`, `system_id`,
   `drawing_id`, `sheet_id`, `revision_id`, `requirement_id`, `snapshot_id`,
-  `line_class_id`, `diagram_id`, `link_id`). **A new route for a project-owned object
+  `line_class_id`, `diagram_id`, `link_id`, `hazard_id`, `analysis_id`). **A new route for a project-owned object
   must use one of these names or register its own with `register_path_resolver`**;
   handlers that take a project in the body, or return rows from several projects, call
   `require_project_write` / `hidden_project_ids` themselves. A project the caller may not
@@ -264,6 +289,8 @@ Current explicit validations:
 - Duplicate part numbers return `409`.
 - Duplicate requirement keys within a project return `409`.
 - Trace links validate that both endpoints exist and belong to the same project (catalog parts are shared).
+- Duplicate hazard keys within a project return `409`; hazard category, status, severity, and likelihood are validated (`422`).
+- Analysis inputs are validated per kind (ranges, required fields, unknown fields refused) and return `422` with the field path.
 
 Future validation should add stronger field constraints, engineering-unit validation, and object-type validation for trace links.
 
@@ -290,6 +317,8 @@ The current page supports this workflow:
 7. Trace a requirement to a tagged drawing item or a whole drawing.
 8. Generate drawing BoM snapshots and download CSV/XLSX.
 9. Inspect the change impact of a part or requirement and open affected tags in Drafting.
+10. Record hazards on the Safety page (`pages/SafetyPage.tsx`): a sortable, filterable, inline-editable register, a severity x likelihood risk matrix, and links from a hazard to tagged drawing items (opening them in Drafting) and requirements.
+11. Run the calculators on the Analysis page (`pages/AnalysisPage.tsx`): pressure drop over a table of line segments (optionally filled from a drawing's line list) and relief valve sizing, with a live server-side preview, units, warnings, stated assumptions, and stored analyses.
 
 ### Legacy Diagrams
 
@@ -391,8 +420,11 @@ organization with many projects and hundreds of engineers.
 - **Tag uniqueness is per drawing**, not per project.
 - **Sign-in lockout is per account**, with no per-IP throttling; put the API behind a
   rate-limiting proxy when it is exposed to the internet.
-- Engineering analysis (pressure drop, relief sizing, trapped volume), hazards, and
-  certification packages are not implemented.
+- **Engineering analysis is a first slice.** Pressure drop covers liquids in series
+  segments (no networks or compressible line flow); relief sizing covers the API 520
+  orifice equations for gas and liquid (no steam, two-phase flow, or calculation of the
+  required relieving rate); the trapped-volume rule is topological (it ignores valve
+  positions and the fluid). Certification packages are not implemented.
 
 ## Recommended Next Implementation Areas
 
@@ -401,10 +433,10 @@ organization with many projects and hundreds of engineers.
 3. Re-index on the server after part and requirement changes too, and make the engine
    the default, so lists, search, and checks never depend on a browser.
 4. Apply selected changes from a template to its copies.
-5. Pressure-drop analysis for simple incompressible line networks.
-6. Hazard objects linked to components, lines, and requirements.
-7. Trapped-volume detection from valve states and graph connectivity.
-8. Relief valve sizing with stored assumptions and calculation reports.
+5. Pressure drop for branched networks and compressible gas flow.
+6. Hazards linked to lines and analyses, shown on the drawing and in change impact.
+7. Valve states (normally open, locked open) and line fluid in trapped-volume detection.
+8. Relief scenarios (required relieving rate), steam and two-phase sizing, and printable calculation reports.
 
 ## Schematic Engine (Drafting page)
 
@@ -428,7 +460,7 @@ The Drafting page is the first slice of the [P&ID professional upgrade plan](pid
 
 **Drawing BoM and parts** (`POST /drawings/{id}/bom`, `app/services/bom.py`; `components/schematic/AssignPartModal.tsx`, `engine/parts.ts`): BoM snapshots from the sheet index roll tagged items up by assigned part (`SymbolItem.partId`), list DNP items without counting them, add spares, and add tubing/fitting/tee bulk rows from lines; readiness issues carry codes and severities. Parts are assigned from the inspector with warn-only checks; the canvas shows part badges (not exported) and the catalog's where-used panel lists drawing placements. XLSX export uses openpyxl.
 
-**Design rule checks and requirements** (`frontend/src/engine/drc.ts`, `sizes.ts`, `drcSheet.ts`; `components/schematic/DrcPanel.tsx`; `app/services/drc.py`, migration `0012`): the engine checks connectivity, tags, line data, port sizes, spec continuity, part status and rating, relief coverage of isolable volumes, and requirement constraints (`requirements.constraint`). Findings carry a stable key; saving a sheet stores them and the per-item requirement checks (`drc_results`, `drc_requirement_checks`); waivers by key live in `drc_waivers` (`PUT/DELETE /sheets/{id}/drc/waivers`). `GET /sheets/{id}/drc`, `GET /drawings/{id}/drc`, and `GET /projects/{id}/verification-matrix` serve counts, findings, and the requirement verdicts; trace links accept `drawing`, `sheet_item`, and `sheet_line` targets. The PDF export accepts extra SVG pages (merged with pypdf) for the findings sheet.
+**Design rule checks and requirements** (`frontend/src/engine/drc.ts`, `sizes.ts`, `drcSheet.ts`; `components/schematic/DrcPanel.tsx`; `app/services/drc.py`, migration `0012`): the engine checks connectivity, tags, line data, port sizes, spec continuity, part status and rating, relief coverage of isolable volumes, trapped volumes, and requirement constraints (`requirements.constraint`). The `trapped_volume` rule (warning, waivable) reports a process line section whose every way out ends at a closable isolation valve or at the outlet of a check valve, bounded by at least two valves, with no relief device, vent, drain, or connector on it; it stays silent when a boundary is a regulator, a multi-way or custom valve, when a line end or port is left open, and for dead legs behind a single valve, and it ignores valve positions and the fluid (see `trappedVolumes` in `drc.ts`). Findings carry a stable key; saving a sheet stores them and the per-item requirement checks (`drc_results`, `drc_requirement_checks`); waivers by key live in `drc_waivers` (`PUT/DELETE /sheets/{id}/drc/waivers`). `GET /sheets/{id}/drc`, `GET /drawings/{id}/drc`, and `GET /projects/{id}/verification-matrix` serve counts, findings, and the requirement verdicts; trace links accept `drawing`, `sheet_item`, and `sheet_line` targets. The PDF export accepts extra SVG pages (merged with pypdf) for the findings sheet.
 
 **Export** (`POST /sheets/{id}/export`): the browser renders the sheet SVG with the shared renderer and the server converts it with Cairo (`app/services/export.py`) to PDF at paper size or PNG at a DPI; the image installs `libcairo2`.
 

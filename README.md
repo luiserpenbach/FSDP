@@ -77,6 +77,19 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
   undo/redo; connectivity and tag checks; and PDF, PNG, and SVG export at paper
   size. Writers draw or import (SVG, including Inkscape files) custom symbols with
   connection ports from the library panel.
+- Keep a safety register per project on the Safety page: hazards with category,
+  severity, likelihood, derived risk, mitigation, status, and owner in a sortable,
+  inline-editable table with a risk matrix, linked to tagged drawing items (opening
+  them in Drafting) and to requirements.
+- Run engineering calculations on the Analysis page with results computed and stored
+  on the server next to their inputs: pressure drop of a liquid through line segments
+  in series (Darcy-Weisbach, fittings, valve Cv, elevation; segments can be filled
+  from a drawing's line list) and relief valve orifice sizing for gas and liquid
+  service following API 520 Part I, with the next API 526 orifice letter, warnings,
+  and stated assumptions. These are preliminary sizing aids, not a substitute for a
+  checked design calculation.
+- The drawing design rule check also warns about trapped volumes: line sections that
+  can be closed in by valves on every side with no relief device or vent.
 - Diagrams from the retired Diagrams editor are import-only: Drafting lists every
   legacy diagram of the project, grouped by system, and converts them into drawings
   (a hint shows while some are unconverted); converted diagrams can be deleted.

@@ -604,3 +604,42 @@ export function bulkDeleteRequirements(projectId: string, ids: string[]): Promis
     body: JSON.stringify({ ids })
   });
 }
+
+/* ---------- Hazards and analyses ---------- */
+
+type Hazard = import("./types").Hazard;
+type HazardInput = import("./types").HazardInput;
+type Analysis = import("./types").Analysis;
+type AnalysisKind = import("./types").AnalysisKind;
+type AnalysisPreview = import("./types").AnalysisPreview;
+type AnalysisStatus = import("./types").AnalysisStatus;
+
+/** Loose input payload: the server validates it and fills in defaults. */
+export type AnalysisInputPayload = Record<string, unknown>;
+
+export const hazardApi = {
+  list: (projectId: string) => request<Hazard[]>(`/projects/${projectId}/hazards`),
+  create: (projectId: string, body: HazardInput) =>
+    request<Hazard>(`/projects/${projectId}/hazards`, { method: "POST", body: JSON.stringify(body) }),
+  update: (hazardId: string, body: Partial<HazardInput>) =>
+    request<Hazard>(`/hazards/${hazardId}`, { method: "PUT", body: JSON.stringify(body) }),
+  remove: (hazardId: string) => requestNoContent(`/hazards/${hazardId}`, { method: "DELETE" })
+};
+
+export const analysisApi = {
+  list: (projectId: string) => request<Analysis[]>(`/projects/${projectId}/analyses`),
+  get: (analysisId: string) => request<Analysis>(`/analyses/${analysisId}`),
+  /** Compute without storing. */
+  preview: (kind: AnalysisKind, inputs: AnalysisInputPayload, signal?: AbortSignal) =>
+    request<AnalysisPreview>("/analysis/preview", { method: "POST", body: JSON.stringify({ kind, inputs }), signal }),
+  create: (
+    projectId: string,
+    body: { kind: AnalysisKind; name: string; inputs: AnalysisInputPayload; drawing_id?: string | null; status?: AnalysisStatus }
+  ) => request<Analysis>(`/projects/${projectId}/analyses`, { method: "POST", body: JSON.stringify(body) }),
+  /** Saving always recomputes the results on the server. */
+  update: (
+    analysisId: string,
+    body: { name?: string; inputs?: AnalysisInputPayload; drawing_id?: string | null; status?: AnalysisStatus }
+  ) => request<Analysis>(`/analyses/${analysisId}`, { method: "PUT", body: JSON.stringify(body) }),
+  remove: (analysisId: string) => requestNoContent(`/analyses/${analysisId}`, { method: "DELETE" })
+};

@@ -36,6 +36,7 @@ from app.models import (
     Drawing,
     DrawingSheet,
     FluidSystem,
+    Hazard,
     Part,
     PidSymbolDef,
     Project,
@@ -181,6 +182,8 @@ def _project_trace_endpoints(db: Session, project_id: str) -> list[tuple[str, st
         endpoints.extend(_system_trace_endpoints(db, system.id))
     for requirement in db.scalars(select(Requirement).where(Requirement.project_id == project_id)):
         endpoints.append(("requirement", requirement.id))
+    for hazard_id in db.scalars(select(Hazard.id).where(Hazard.project_id == project_id)):
+        endpoints.append(("hazard", hazard_id))
     drawing_ids = db.scalars(select(Drawing.id).where(Drawing.project_id == project_id))
     endpoints.extend(drawing_trace_endpoints(db, drawing_ids))
     return endpoints
@@ -1101,6 +1104,7 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
     "sheet_line": SheetLine,
     "part": Part,
     "requirement": Requirement,
+    "hazard": Hazard,
 }
 
 # Legacy diagram objects: existing links to them still read and delete; new ones are refused.
@@ -1111,7 +1115,7 @@ def _trace_object_project_id(obj: object) -> str | None:
     """Project a trace endpoint belongs to; None for catalog parts, which are shared."""
     if isinstance(obj, Project):
         return obj.id
-    if isinstance(obj, FluidSystem | Drawing | Requirement):
+    if isinstance(obj, FluidSystem | Drawing | Requirement | Hazard):
         return obj.project_id
     if isinstance(obj, SheetItem | SheetLine):
         return obj.sheet.drawing.project_id
