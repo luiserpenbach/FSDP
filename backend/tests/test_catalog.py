@@ -146,3 +146,38 @@ def test_document_upload_download_delete(client: TestClient, tmp_path: Path, mon
     deleted = client.delete(f"/parts/{part['id']}/documents/{document['id']}")
     assert deleted.status_code == 204
     assert client.get(f"/parts/{part['id']}/documents").json() == []
+
+
+def test_parts_list_pages_sorts_and_counts(client: TestClient) -> None:
+    for index in range(7):
+        created = client.post(
+            "/parts",
+            json={
+                "part_number": f"PG-{index:02d}",
+                "description": f"Paged part {index}",
+                "part_type": "valve" if index % 2 else "fitting",
+                "pressure_rating_bar": 100 + index,
+            },
+        )
+        assert created.status_code == 201, created.text
+
+    everything = client.get("/parts")
+    assert len(everything.json()) == 7
+    assert everything.headers["X-Total-Count"] == "7"
+
+    seen: list[str] = []
+    for offset in (0, 3, 6):
+        page = client.get("/parts", params={"limit": 3, "offset": offset})
+        assert page.headers["X-Total-Count"] == "7"
+        seen.extend(part["part_number"] for part in page.json())
+    assert seen == [f"PG-{index:02d}" for index in range(7)]
+
+    top = client.get("/parts", params={"limit": 2, "sort": "-pressure_rating_bar"}).json()
+    assert [part["part_number"] for part in top] == ["PG-06", "PG-05"]
+
+    valves = client.get("/parts", params={"limit": 2, "part_type": "valve"})
+    assert valves.headers["X-Total-Count"] == "3"
+    assert len(valves.json()) == 2
+
+    assert client.get("/parts", params={"sort": "password_hash"}).status_code == 422
+    assert client.get("/parts", params={"limit": 0}).status_code == 422

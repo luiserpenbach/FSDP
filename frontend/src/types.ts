@@ -13,6 +13,7 @@ export type ChangeEvent = {
   action: string;
   summary: string;
   actor?: string | null;
+  project_id?: string | null;
   created_at: string;
 };
 
@@ -22,6 +23,8 @@ export type Project = {
   description?: string | null;
   owner?: string | null;
   part_name_prefix?: string | null;
+  /** Members-only project: other users cannot see it. */
+  restricted?: boolean;
 };
 
 export type FluidSystem = {
@@ -172,6 +175,10 @@ export type Drawing = {
   sheets: DrawingSheetSummary[];
   revisions: DrawingRevision[];
   current_revision?: DrawingRevision | null;
+  /** Lineage: the drawing this one was copied from (number and revision at that time). */
+  copied_from_id?: string | null;
+  copied_from_number?: string | null;
+  copied_from_revision?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -614,3 +621,71 @@ export type SearchHit = {
 };
 
 export type SearchResults = { query: string; hits: SearchHit[] };
+
+export type MemberRole = "viewer" | "engineer" | "owner";
+
+export type ProjectMember = {
+  user_id: string;
+  email: string;
+  name: string;
+  role: MemberRole;
+  /** The account's own role; a viewer account stays read-only whatever its membership. */
+  account_role: string;
+  is_active: boolean;
+};
+
+export type ProjectAccess = {
+  project_id: string;
+  restricted: boolean;
+  members: ProjectMember[];
+  can_manage: boolean;
+  can_write: boolean;
+};
+
+export type UserDirectoryEntry = { id: string; email: string; name: string; role: string };
+
+export type AuthConfig = { sso_enabled: boolean; sso_label: string; password_login_enabled: boolean };
+
+export type LineageDrawing = {
+  id: string;
+  number: string;
+  title: string;
+  status: string;
+  revision: string | null;
+  project_id: string;
+  project_name: string;
+  created_at: string;
+};
+
+export type Lineage = {
+  drawing_id: string;
+  source: LineageDrawing | null;
+  copied_from_number: string | null;
+  copied_from_revision: string | null;
+  source_revision_changed: boolean;
+  copies: LineageDrawing[];
+};
+
+export type LineageRowDiff = {
+  kind: "item" | "line";
+  change: "added" | "removed" | "changed";
+  sheet_no: number;
+  item_id: string;
+  label: string;
+  description: string;
+  changes: Array<{ field: string; source: string | null; copy: string | null }>;
+};
+
+export type LineageDiff = {
+  drawing_id: string;
+  source_id: string;
+  source_number: string;
+  counts: { added: number; removed: number; changed: number };
+  rows: LineageRowDiff[];
+  sheets_added: number[];
+  sheets_removed: number[];
+  stale: string[];
+};
+
+/** One page of a list, with the size of the whole list. */
+export type Page<T> = { rows: T[]; total: number };

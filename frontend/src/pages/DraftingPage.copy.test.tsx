@@ -12,6 +12,7 @@ const apiMock = vi.hoisted(() => ({
   listLineClasses: vi.fn(),
   getSheetDrc: vi.fn(),
   listProjectDiagrams: vi.fn(),
+  getLineage: vi.fn(),
   copyDrawing: vi.fn()
 }));
 
@@ -111,6 +112,7 @@ describe("DraftingPage duplicate drawing", () => {
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.listLineClasses.mockResolvedValue([]);
     apiMock.listProjectDiagrams.mockResolvedValue([]);
+    apiMock.getLineage.mockImplementation(async (id: string) => ({ drawing_id: id, source: null, copied_from_number: null, copied_from_revision: null, source_revision_changed: false, copies: [] }));
     apiMock.getSheetDrc.mockResolvedValue({ sheet_id: "sh1", sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] });
   });
 

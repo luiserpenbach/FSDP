@@ -42,6 +42,7 @@ import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, P
 import type { BomReadiness, BomSnapshot, DiagramSummary, Drawing, DrawingRead, DrawingRevision, DrawingSheet, FluidSystem, LineClass, Part, PidSymbolDef, Project, ReleaseBlocker, ReleaseSnapshotSheet, Requirement, RevisionSnapshot, User } from "../types";
 import { useUnsavedChanges } from "../unsavedChanges";
 import { useWorkspace } from "../workspace/WorkspaceContext";
+import { DrawingLineage } from "../components/schematic/DrawingLineage";
 import { draftingHref, parseDraftingTarget, type DraftingTarget } from "./draftingLinks";
 import { PageLayout } from "./PageLayout";
 
@@ -1971,6 +1972,7 @@ function DrawingPanel({
             <strong>Revisions</strong> · {sheetCount} sheet(s)
           </p>
           <RevisionTable revisions={drawing.revisions} onView={onViewRevision} />
+          <DrawingLineage drawing={drawing} />
           <p className="hint">Signatures are stamped by the workflow: drawn when a revision opens, submitted on review, approved on release.</p>
         </>
       )}

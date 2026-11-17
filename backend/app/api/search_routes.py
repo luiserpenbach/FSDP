@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.core.access import hidden_project_ids
+from app.core.security import get_current_user
 from app.db import get_db
 from app.models import (
     Drawing,
@@ -16,6 +18,7 @@ from app.models import (
     Requirement,
     SheetItem,
     SheetLine,
+    User,
 )
 from app.schemas import SearchRead
 
@@ -59,8 +62,9 @@ def search(
     project_id: str | None = None,
     limit: int = Query(default=8, ge=1, le=50),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> dict:
-    """Find anything by tag, number, or name.
+    """Find anything by tag, number, or name, in the projects the user may see.
 
     `limit` caps the hits per kind. `project_id` only affects ordering: hits in
     that project come first, so the palette favours the project being worked on.
@@ -70,6 +74,8 @@ def search(
         return {"query": q.strip(), "hits": []}
 
     scored: list[tuple[int, dict]] = []
+    # Restricted projects the user is not a member of stay out of every query.
+    hidden = hidden_project_ids(db, user)
 
     def collect(rows, build) -> None:
         for row in rows:
@@ -82,7 +88,10 @@ def search(
             .join(DrawingSheet, SheetItem.sheet_id == DrawingSheet.id)
             .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
             .join(Project, Drawing.project_id == Project.id)
-            .where(or_(_matches(SheetItem.tag, term), _matches(SheetItem.label, term)))
+            .where(
+                or_(_matches(SheetItem.tag, term), _matches(SheetItem.label, term)),
+                Project.id.notin_(hidden),
+            )
             .order_by(rank, SheetItem.tag)
             .limit(limit)
         ).all(),
@@ -113,7 +122,7 @@ def search(
             .join(DrawingSheet, SheetLine.sheet_id == DrawingSheet.id)
             .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
             .join(Project, Drawing.project_id == Project.id)
-            .where(_matches(SheetLine.line_number, term))
+            .where(_matches(SheetLine.line_number, term), Project.id.notin_(hidden))
             .order_by(rank, SheetLine.line_number)
             .limit(limit)
         ).all(),
@@ -142,7 +151,10 @@ def search(
         db.execute(
             select(Drawing, Project.name, rank)
             .join(Project, Drawing.project_id == Project.id)
-            .where(or_(_matches(Drawing.number, term), _matches(Drawing.title, term)))
+            .where(
+                or_(_matches(Drawing.number, term), _matches(Drawing.title, term)),
+                Project.id.notin_(hidden),
+            )
             .order_by(rank, Drawing.number)
             .limit(limit)
         ).all(),
@@ -187,7 +199,10 @@ def search(
         db.execute(
             select(Requirement, Project.name, rank)
             .join(Project, Requirement.project_id == Project.id)
-            .where(or_(_matches(Requirement.key, term), _matches(Requirement.title, term)))
+            .where(
+                or_(_matches(Requirement.key, term), _matches(Requirement.title, term)),
+                Project.id.notin_(hidden),
+            )
             .order_by(rank, Requirement.key)
             .limit(limit)
         ).all(),
@@ -207,7 +222,7 @@ def search(
         db.execute(
             select(FluidSystem, Project.name, rank)
             .join(Project, FluidSystem.project_id == Project.id)
-            .where(_matches(FluidSystem.name, term))
+            .where(_matches(FluidSystem.name, term), Project.id.notin_(hidden))
             .order_by(rank, FluidSystem.name)
             .limit(limit)
         ).all(),
@@ -226,7 +241,7 @@ def search(
     collect(
         db.execute(
             select(Project, rank)
-            .where(_matches(Project.name, term))
+            .where(_matches(Project.name, term), Project.id.notin_(hidden))
             .order_by(rank, Project.name)
             .limit(limit)
         ).all(),

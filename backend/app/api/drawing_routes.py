@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.routes import record_change, require_model
+from app.core.access import require_project_write
 from app.core.security import require_writer
 from app.db import get_db
 from app.models import (
@@ -332,7 +333,10 @@ def copy_drawing(
     """
     source = _load_drawing(db, drawing_id)
     options = payload
-    project = require_model(db, Project, options.project_id or source.project_id)
+    # The path check covered the source; a copy only needs to read it, and to
+    # write the destination.
+    project = require_project_write(db, user, options.project_id or source.project_id)
+    db.info["project_id"] = project.id
     same_project = project.id == source.project_id
     system_id = options.system_id or (source.system_id if same_project else None)
     if system_id:
@@ -362,6 +366,9 @@ def copy_drawing(
         frame_template=source.frame_template,
         fields=copy.deepcopy(source.fields or {}),
         notes=list(source.notes or []),
+        copied_from_id=source.id,
+        copied_from_number=source.number,
+        copied_from_revision=source.current_revision.label if source.current_revision else None,
     )
     for sheet in source.sheets:
         document = copy.deepcopy(sheet.document or {})

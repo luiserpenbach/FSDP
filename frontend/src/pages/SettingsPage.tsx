@@ -7,6 +7,7 @@ import { ApiTokensPanel } from "./ApiTokensPanel";
 import { CatalogSettingsPanel } from "./CatalogSettingsPanel";
 import { LineClassPanel } from "./LineClassPanel";
 import { PageLayout } from "./PageLayout";
+import { ProjectAccessPanel } from "./ProjectAccessPanel";
 import { TagSchemePanel } from "./TagSchemePanel";
 
 const roleOptions = ["engineer", "viewer", "admin"].map((value) => ({ value, label: value }));
@@ -96,6 +97,7 @@ export function SettingsPage() {
             <p className="hint">You are signed in as {user.email} ({user.role}). Ask an administrator to manage accounts.</p>
           </Panel>
         )}
+        <ProjectAccessPanel project={selectedProject} onProjectChanged={replaceProject} />
         <CatalogSettingsPanel project={selectedProject} isAdmin={isAdmin} onProjectUpdated={replaceProject} />
         <TagSchemePanel project={selectedProject} canWrite={canWrite} />
         <LineClassPanel project={selectedProject} canWrite={canWrite} />

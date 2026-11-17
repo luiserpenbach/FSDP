@@ -93,6 +93,7 @@ class UserRead(OrmModel):
 
 class ChangeEventRead(OrmModel):
     id: str
+    project_id: str | None = None
     object_type: str
     object_id: str
     action: str
@@ -117,6 +118,7 @@ class ProjectUpdate(BaseModel):
 
 class ProjectRead(ProjectCreate, OrmModel):
     id: str
+    restricted: bool = False
     created_at: datetime
     updated_at: datetime
     part_name_next_sequence: int = 1
@@ -1210,6 +1212,9 @@ class DrawingRead(OrmModel):
     sheets: list[DrawingSheetSummary]
     revisions: list[DrawingRevisionRead]
     current_revision: DrawingRevisionRead | None = None
+    copied_from_id: str | None = None
+    copied_from_number: str | None = None
+    copied_from_revision: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1566,3 +1571,102 @@ class DrawingCopyIn(BaseModel):
     @classmethod
     def _text(cls, value: str | None) -> str | None:
         return clean_optional_text(value)
+
+
+MemberRole = Literal["viewer", "engineer", "owner"]
+
+
+class ProjectMemberRead(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    role: MemberRole
+    # The account's own role; a viewer account stays read-only whatever its membership.
+    account_role: str
+    is_active: bool
+
+
+class ProjectAccessRead(BaseModel):
+    project_id: str
+    restricted: bool
+    members: list[ProjectMemberRead]
+    # Whether the caller may change the restriction and the member list.
+    can_manage: bool
+    # The caller's own access.
+    can_write: bool
+
+
+class ProjectAccessUpdate(BaseModel):
+    restricted: bool
+
+
+class ProjectMemberIn(BaseModel):
+    role: MemberRole
+
+
+class UserDirectoryEntry(OrmModel):
+    id: str
+    email: str
+    name: str
+    role: str
+
+
+class AuthConfigRead(BaseModel):
+    sso_enabled: bool
+    sso_label: str
+    password_login_enabled: bool
+
+
+class LineageDrawingRead(BaseModel):
+    id: str
+    number: str
+    title: str
+    status: str
+    revision: str | None
+    project_id: str
+    project_name: str
+    created_at: datetime
+
+
+class LineageRead(BaseModel):
+    drawing_id: str
+    # The drawing this one was copied from; null when it is not a copy, or when the
+    # source was deleted or is in a project the caller may not see (the number and
+    # revision at the time of the copy remain in copied_from_*).
+    source: LineageDrawingRead | None
+    copied_from_number: str | None
+    copied_from_revision: str | None
+    # Whether the source has been released again or revised since the copy was taken.
+    source_revision_changed: bool = False
+    copies: list[LineageDrawingRead]
+
+
+class LineageFieldChange(BaseModel):
+    field: str
+    source: str | None
+    copy_value: str | None = Field(serialization_alias="copy")
+
+
+class LineageRowDiff(BaseModel):
+    kind: Literal["item", "line"]
+    change: Literal["added", "removed", "changed"]
+    sheet_no: int
+    # Document id of the item or line; the same on both sides, as a copy keeps ids.
+    item_id: str
+    # Tag or line number: the copy's for added and changed rows, the source's for removed.
+    label: str
+    description: str = ""
+    changes: list[LineageFieldChange] = Field(default_factory=list)
+
+
+class LineageDiffRead(BaseModel):
+    drawing_id: str
+    source_id: str
+    source_number: str
+    counts: dict[str, int]
+    rows: list[LineageRowDiff]
+    # Sheets present on one side only (sheet numbers).
+    sheets_added: list[int]
+    sheets_removed: list[int]
+    # Sheets whose index is out of date, so their rows may be incomplete.
+    stale: list[str]

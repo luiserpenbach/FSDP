@@ -17,12 +17,17 @@ export function ReviewsPage() {
   const [requirementId, setRequirementId] = useState(selectedRequirementId);
   const [impact, setImpact] = useState<Impact | null>(null);
   const [changes, setChanges] = useState<ChangeLogEvent[]>([]);
+  const [changeTotal, setChangeTotal] = useState(0);
+  const [changeScope, setChangeScope] = useState<"all" | "project">("all");
+  const scopedProjectId = changeScope === "project" ? selectedProjectId : "";
 
   useEffect(() => {
     void runAction("Loaded change history.", async () => {
-      setChanges(await api.listChanges());
+      const page = await api.listChanges({ projectId: scopedProjectId || undefined });
+      setChanges(page.rows);
+      setChangeTotal(page.total);
     });
-  }, [runAction]);
+  }, [runAction, scopedProjectId]);
 
   // An impact result belongs to the project it was inspected in.
   useEffect(() => {
@@ -45,7 +50,19 @@ export function ReviewsPage() {
 
   function refreshChanges() {
     void runAction("Refreshed change history.", async () => {
-      setChanges(await api.listChanges());
+      const page = await api.listChanges({ projectId: scopedProjectId || undefined });
+      setChanges(page.rows);
+      setChangeTotal(page.total);
+    });
+  }
+
+  function loadMoreChanges() {
+    void runAction("Loaded older changes.", async () => {
+      const page = await api.listChanges({ projectId: scopedProjectId || undefined, offset: changes.length });
+      // Skip events already listed: new changes shift the pages while the list is open.
+      const known = new Set(changes.map((event) => event.id));
+      setChanges([...changes, ...page.rows.filter((event) => !known.has(event.id))]);
+      setChangeTotal(page.total);
     });
   }
 
@@ -93,7 +110,13 @@ export function ReviewsPage() {
           {inspected && <ImpactReport impact={inspected} />}
         </Panel>
         <Panel title="Recent Changes">
-          <button disabled={busy} onClick={refreshChanges}>Refresh</button>
+          <div className="changeToolbar">
+            <select value={changeScope} onChange={(event) => setChangeScope(event.target.value as "all" | "project")} aria-label="Change history scope">
+              <option value="all">All projects and the catalog</option>
+              <option value="project" disabled={!selectedProjectId}>This project only</option>
+            </select>
+            <button disabled={busy} onClick={refreshChanges}>Refresh</button>
+          </div>
           <DataTable
             rows={changes}
             getKey={(change) => change.id}
@@ -104,6 +127,14 @@ export function ReviewsPage() {
               { header: "When", render: (change) => <span className="mono">{new Date(change.created_at).toLocaleString()}</span> }
             ]}
           />
+          <p className="changeFooter">
+            <span>
+              Showing {changes.length} of {Math.max(changeTotal, changes.length)}
+            </span>
+            {changes.length < changeTotal && (
+              <button disabled={busy} onClick={loadMoreChanges}>Load older changes</button>
+            )}
+          </p>
         </Panel>
         <PlaceholderCard title="Review Workflows" body="Design review packages, comments, decisions, and approval routing will live here." />
       </section>

@@ -987,7 +987,7 @@ export function PartsCatalog({
 
 /** The /parts route: the catalog bound to the workspace's parts and selection. */
 export function PartsPage() {
-  const { parts, setParts, selectedPartId, setSelectedPartId, selectedProjectId, canWrite } = useWorkspace();
+  const { parts, setParts, selectedPartId, setSelectedPartId, selectedProjectId, canWriteCatalog: canWrite } = useWorkspace();
   // Deep link from drawing part badges: /parts?part=<id>.
   const location = useLocation();
   useEffect(() => {

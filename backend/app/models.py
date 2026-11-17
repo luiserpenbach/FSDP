@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
     true,
 )
@@ -82,6 +83,10 @@ class Project(TimestampMixin, Base):
     owner: Mapped[str | None] = mapped_column(String(160))
     part_name_prefix: Mapped[str | None] = mapped_column(String(40))
     part_name_next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Restricted projects are visible to their members (and administrators) only.
+    restricted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     systems: Mapped[list[FluidSystem]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
@@ -89,6 +94,24 @@ class Project(TimestampMixin, Base):
     requirements: Mapped[list[Requirement]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+
+
+class ProjectMember(TimestampMixin, Base):
+    """Membership of a user in a project, with a per-project role (see core/access.py)."""
+
+    __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "user_id", name="uq_project_member"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(40), nullable=False, default="engineer")
+
+    user: Mapped[User] = relationship()
 
 
 class FluidSystem(TimestampMixin, Base):
@@ -260,6 +283,13 @@ class Drawing(TimestampMixin, Base):
     # Title-block extras (company, bldg/sys, area, scale) and general notes.
     fields: Mapped[dict] = mapped_column(JSON, default=dict)
     notes: Mapped[list] = mapped_column(JSON, default=list)
+    # Lineage: the drawing this one was copied from. The number and revision are kept
+    # as text so the origin stays readable after the source is deleted or revised.
+    copied_from_id: Mapped[str | None] = mapped_column(
+        ForeignKey("drawings.id", ondelete="SET NULL"), index=True
+    )
+    copied_from_number: Mapped[str | None] = mapped_column(String(80))
+    copied_from_revision: Mapped[str | None] = mapped_column(String(16))
 
     sheets: Mapped[list[DrawingSheet]] = relationship(
         back_populates="drawing",
@@ -591,6 +621,9 @@ class ChangeEvent(TimestampMixin, Base):
     action: Mapped[str] = mapped_column(String(80), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     actor: Mapped[str | None] = mapped_column(String(160))
+    # Project the change belongs to; null for catalog-wide objects (parts, symbols).
+    # Not a foreign key: the history outlives a deleted project.
+    project_id: Mapped[str | None] = mapped_column(String(36), index=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
