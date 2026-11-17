@@ -415,6 +415,176 @@ def test_released_drawings_stay_current_until_revised(client: TestClient) -> Non
     assert _sheet_stale(client, drawing["id"]) == [True]
 
 
+def _unrelieved_segment_document() -> dict:
+    """Hand valve ↔ regulator process line: one isolable unrelieved volume (line l2)."""
+    return {
+        "schemaVersion": 1,
+        "sheet": {
+            "size": "A3",
+            "orientation": "landscape",
+            "frame": {"kind": "basic", "columns": 4, "rows": 3, "margin": 10},
+        },
+        "layers": [],
+        "items": [
+            {
+                "id": "hv",
+                "kind": "symbol",
+                "layer": "symbols",
+                "symbol": {"library": "fsdp", "key": "hand_valve", "version": 1},
+                "position": {"x": 80, "y": 120},
+                "rotation": 0,
+                "tag": "HV-1",
+                "fields": {},
+            },
+            {
+                "id": "pcv",
+                "kind": "symbol",
+                "layer": "symbols",
+                "symbol": {"library": "fsdp", "key": "regulator", "version": 1},
+                "position": {"x": 130, "y": 120},
+                "rotation": 0,
+                "tag": "PCV-1",
+                "fields": {},
+            },
+            {
+                "id": "l2",
+                "kind": "line",
+                "layer": "process",
+                "points": [{"x": 90, "y": 120}, {"x": 120, "y": 120}],
+                "lineType": "process",
+                "lineNumber": "3102",
+                "size": '1/4"',
+                "lineClass": "HE-1",
+                "service": "GHe",
+                "fields": {},
+            },
+        ],
+        "meta": {"grid": 2.5},
+    }
+
+
+def _unrelieved_segment_index() -> dict:
+    return {
+        "items": [
+            {
+                "item_id": "hv",
+                "kind": "symbol",
+                "category": "valve",
+                "symbol_key": "hand_valve",
+                "symbol_name": "Hand valve",
+                "tag": "HV-1",
+                "zone": "D-4",
+                "part_id": None,
+            },
+            {
+                "item_id": "pcv",
+                "kind": "symbol",
+                "category": "regulator",
+                "symbol_key": "regulator",
+                "symbol_name": "Regulator",
+                "tag": "PCV-1",
+                "zone": "D-4",
+                "part_id": None,
+            },
+        ],
+        "lines": [
+            {
+                "line_id": "l2",
+                "line_number": "3102",
+                "line_type": "process",
+                "size": '1/4"',
+                "line_class": "HE-1",
+                "service": "GHe",
+                "from_item": "hv",
+                "to_item": "pcv",
+                "length_m": 0.03,
+            }
+        ],
+    }
+
+
+def test_late_save_after_relief_required_keeps_sheet_stale_and_blocks_release(
+    client: TestClient,
+) -> None:
+    """A Save that omits relief_required errors must not clear stale after the constraint appears.
+
+    Concrete trigger: sheet with an isolable unrelieved HV↔PCV segment saved clean
+    (native relief_coverage is warning-only) → add relief_required (index_stale=true)
+    → PUT the same clean index+empty findings (2nd Drafting tab / stale requirements)
+    → tip cleared stale and Release 200 froze findings=[] while live DRC would report
+    requirement:{id}:l2. Open #81 re-checks index-evaluable kinds only and skips this.
+    """
+    project_id = _project(client)
+    document = _unrelieved_segment_document()
+    drawing = client.post(
+        f"/projects/{project_id}/drawings",
+        json={"title": "P&ID", "first_sheet": {"document": document}},
+    ).json()
+    sheet_id = drawing["sheets"][0]["id"]
+    index = _unrelieved_segment_index()
+
+    def save(findings: list[dict] | None = None) -> dict:
+        saved = client.put(
+            f"/sheets/{sheet_id}",
+            json={
+                "document": document,
+                "index": index,
+                "drc": {"findings": findings or [], "checks": []},
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        return saved.json()
+
+    save()
+    assert _sheet_stale(client, drawing["id"]) == [False]
+
+    req = client.post(
+        "/requirements",
+        json={
+            "project_id": project_id,
+            "key": "REQ-RELIEF",
+            "title": "Relief",
+            "text": "every isolable volume has relief",
+            "requirement_type": "safety",
+            "constraint": {"kind": "relief_required", "values": []},
+        },
+    )
+    assert req.status_code == 201, req.text
+    req_id = req.json()["id"]
+    assert _sheet_stale(client, drawing["id"]) == [True]
+
+    # Late / stale-requirements Save: same index, no requirement error finding.
+    save()
+    assert _sheet_stale(client, drawing["id"]) == [True]
+
+    refused = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused.status_code == 409, refused.text
+    assert any(
+        reason["code"] == "index_stale" for reason in refused.json()["detail"]["reasons"]
+    )
+
+    # Fresh Save that reports the relief_required error clears the gap; Release then
+    # blocks on the open DRC error instead (waiveable as before).
+    save(
+        [
+            {
+                "key": f"requirement:{req_id}:l2",
+                "rule": "requirement",
+                "severity": "error",
+                "message": "REQ-RELIEF: isolable volume has no relief device",
+                "item_id": "l2",
+                "requirement_id": req_id,
+            }
+        ]
+    )
+    assert _sheet_stale(client, drawing["id"]) == [False]
+    refused_drc = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused_drc.status_code == 409, refused_drc.text
+    assert any(
+        reason["code"] == "drc_errors" for reason in refused_drc.json()["detail"]["reasons"]
+    )
+
+
 def test_requirement_constraint_changes_mark_project_sheets_stale(client: TestClient) -> None:
     project_id = _project(client)
     other_project = _project(client, "Other")
