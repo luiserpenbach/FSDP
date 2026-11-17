@@ -948,6 +948,33 @@ class StaleSheetRead(BaseModel):
     drawing_number: str
 
 
+class EngineStatusRead(BaseModel):
+    """Whether the server can index and check sheets itself (FSDP_ENGINE_CLI)."""
+
+    enabled: bool
+    # Enabled and the bundle exists at the configured path.
+    available: bool
+
+
+class ReindexErrorRead(StaleSheetRead):
+    message: str
+
+
+class ReindexRead(BaseModel):
+    """Result of a server-side re-index run."""
+
+    # Drawings that had stale sheets, and how many sheets were stale when the run started.
+    drawings: int
+    stale: int
+    indexed: int
+    # Left alone: saved, re-flagged, or changed while the engine ran.
+    skipped: int
+    failed: int
+    errors: list[ReindexErrorRead] = []
+    # Sheets of those drawings that are still stale after the run.
+    stale_sheets: list[StaleSheetRead] = []
+
+
 class ListColumnRead(BaseModel):
     key: str
     label: str

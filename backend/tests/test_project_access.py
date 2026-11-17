@@ -327,3 +327,10 @@ def test_change_history_is_paged_and_filtered_by_project(client: TestClient) -> 
     assert {event["project_id"] for event in scoped.json()} == {second["id"]}
     assert any("drawing" in event["summary"].lower() for event in scoped.json())
     assert client.get("/auth/me").json()["email"] == TEST_USER_EMAIL
+
+
+def test_reindex_endpoints_are_bound_by_project_access(client: TestClient) -> None:
+    secret = _secret_project(client)
+    outsider, _ = _user(client, "outsider@fsdp.test")
+    assert outsider.post(f"/projects/{secret['project']['id']}/reindex").status_code == 404
+    assert outsider.post(f"/drawings/{secret['drawing']['id']}/reindex").status_code == 404

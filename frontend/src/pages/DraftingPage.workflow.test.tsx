@@ -244,6 +244,24 @@ describe("DraftingPage release workflow", () => {
     await waitFor(() => expect(screen.getByText("Index up to date")).toBeInTheDocument());
   });
 
+  it("does not re-index a sheet the server has refreshed since the drawing list was loaded", async () => {
+    apiMock.listDrawings.mockResolvedValue([
+      makeDrawing({
+        sheets: [
+          { id: "sh1", sheet_no: 1, title: null, source_diagram_id: null, index_stale: true, indexed_at: null },
+          { id: "sh2", sheet_no: 2, title: "Vent", source_diagram_id: null, index_stale: true, indexed_at: null }
+        ]
+      })
+    ]);
+    // The server's own engine run (POST /projects/{id}/reindex, or its background task) got to sheet 2 first.
+    apiMock.getSheet.mockImplementation(async (id: string) => ({ ...sheets[id], index_stale: id === "sh1", indexed_at: id === "sh1" ? null : "2026-09-10T11:00:00Z" }));
+    renderPage();
+    await openCanvas();
+    await waitFor(() => expect(screen.getByText("Index up to date")).toBeInTheDocument());
+    expect(apiMock.updateSheet.mock.calls.map(([id]) => id)).toEqual(["sh1"]);
+    expect(screen.getByRole("tab", { name: "2" }).className).not.toContain("stale");
+  });
+
   it("keeps edits made while a save is in flight unsaved", async () => {
     let resolveSave!: (value: DrawingSheet) => void;
     apiMock.updateSheet.mockReturnValue(new Promise<DrawingSheet>((resolve) => (resolveSave = resolve)));

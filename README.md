@@ -152,3 +152,13 @@ Run frontend checks from `frontend/`:
 npm test
 npm run build
 ```
+
+To let the API index and check sheets without a browser (optional; the Docker image
+does this itself), bundle the engine and point the API at it:
+
+```powershell
+cd frontend; npm run build:engine
+$env:FSDP_ENGINE_CLI = "<repo>/frontend/dist-engine/engine-cli.mjs"   # needs Node on PATH
+```
+
+See "Server-side index and DRC" in the [implementation guide](docs/implementation.md).

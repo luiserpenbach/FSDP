@@ -432,6 +432,23 @@ export type StaleSheet = {
   drawing_number: string;
 };
 
+/** GET /engine/status: whether the server can index and check sheets itself. */
+export type EngineStatus = { enabled: boolean; available: boolean };
+
+/** Result of a server-side re-index (POST /projects/{id}/reindex, /drawings/{id}/reindex). */
+export type ReindexResult = {
+  drawings: number;
+  /** Sheets that were stale when the run started. */
+  stale: number;
+  indexed: number;
+  /** Saved or changed while the engine ran; left to that writer or the next run. */
+  skipped: number;
+  failed: number;
+  errors: Array<StaleSheet & { message: string }>;
+  /** Sheets still stale after the run. */
+  stale_sheets: StaleSheet[];
+};
+
 export type DrawingRevisionRead = Omit<DrawingRevision, "status" | "submitted_by" | "submitted_at" | "approved_at"> & {
   status: DrawingStatus;
   submitted_by: string | null;

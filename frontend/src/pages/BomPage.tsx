@@ -15,6 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, bomCsvUrl, bomXlsxUrl, setBomStatusChecked, WorkflowConflictError } from "../api";
 import { DataGrid, type DataGridColumn } from "../components/datagrid";
+import { ReindexProjectButton } from "../components/ReindexProjectButton";
 import { StaleSheetsWarning } from "../components/StaleSheetsWarning";
 import { Panel, StatusPill } from "../components/ui";
 import type { BomDiff, BomReadiness, BomReadinessIssue, BomSnapshot, Drawing, ProjectBom, ProjectSheetItem } from "../types";
@@ -509,7 +510,16 @@ export function BomPage() {
       </section>
       {drawing && (
         <StaleSheetsWarning sheets={drawing.sheets.filter((sheet) => sheet.index_stale).map((sheet) => ({ sheet_no: sheet.sheet_no, drawing_number: drawing.number }))}>
-          Open the drawing in Drafting to re-index them before generating a BoM to release.
+          Open the drawing in Drafting to re-index them before generating a BoM to release.{" "}
+          <ReindexProjectButton
+            projectId={selectedProjectId}
+            canWrite={canWrite}
+            notify={notify}
+            onDone={() => {
+              if (!selectedProjectId) return;
+              api.listDrawings(selectedProjectId).then(setDrawings).catch(() => undefined);
+            }}
+          />
         </StaleSheetsWarning>
       )}
       <section className="grid bomGrid">

@@ -8,7 +8,7 @@
  * drawing is revised without touching the document.
  */
 import { frameRect } from "./sheet";
-import type { Rect, Sheet, SymbolDef } from "./types";
+import type { Rect, SchematicDocument, Sheet, SymbolDef } from "./types";
 
 export type FrameTemplateId = "none" | "basic" | "fsdp-standard";
 
@@ -171,4 +171,15 @@ export const DEFAULT_PROPRIETARY_NOTICE =
 export function proprietaryText(ctx: DrawingContext): string {
   const template = ctx.proprietaryNotice ?? DEFAULT_PROPRIETARY_NOTICE;
   return template.replace("{company}", ctx.company ?? ctx.projectName ?? "THE OWNER");
+}
+
+/**
+ * The document with the drawing's frame template applied. The drawing owns the
+ * template; a stored document may still carry an older one.
+ */
+export function withFrameTemplate(document: SchematicDocument, template: string): SchematicDocument {
+  const frameTemplate = (template as FrameTemplateId) ?? "basic";
+  const kind = frameTemplate === "none" ? "none" : "basic";
+  if (document.sheet.frame.template === frameTemplate && document.sheet.frame.kind === kind) return document;
+  return { ...document, sheet: { ...document.sheet, frame: { ...document.sheet.frame, kind, template: frameTemplate } } };
 }

@@ -19,10 +19,23 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: pip install -e ".[dev]"
+      # The server-side index tests run the real TypeScript engine under Node:
+      # without the bundle they would be skipped.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build the engine bundle
+        working-directory: frontend
+        run: npm ci && npm run build:engine
       - name: Lint
         run: python -m ruff check .
       - name: Test
         run: python -m pytest -q
+        env:
+          # Fail instead of skipping when Node or the bundle is missing.
+          FSDP_REQUIRE_ENGINE: "1"
 
   frontend:
     runs-on: ubuntu-latest

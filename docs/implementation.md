@@ -190,7 +190,18 @@ Reuse:
   its first revision, in the same or another project. Tags, part assignments, and line
   data are copied; approvals, revision history, DRC waivers, and trace links are not.
   Sheets with content are flagged stale so they are re-indexed and re-checked against
-  the destination project's tag scheme, line classes, and requirements.
+  the destination project's tag scheme, line classes, and requirements: by the server
+  right after the copy when `FSDP_ENGINE_CLI` is set, else when the copy is opened.
+
+Server-side index (see "Server-side index and DRC" below):
+
+- `GET /engine/status`: `{enabled, available}` — whether this server runs the engine
+  itself (`FSDP_ENGINE_CLI` set, bundle present).
+- `POST /projects/{project_id}/reindex` (writers): re-indexes and re-checks every stale
+  sheet of the project's unreleased drawings; returns `drawings`, `stale`, `indexed`,
+  `skipped`, `failed`, `errors` (per sheet), and the `stale_sheets` that remain.
+- `POST /drawings/{drawing_id}/reindex` (writers): the same for one drawing; 409 for a
+  released drawing. Both return 503 when the engine is not configured.
 
 Project access (see `backend/app/core/access.py`):
 
@@ -332,8 +343,14 @@ Frontend:
 ```powershell
 cd frontend
 npm test
+npm run lint
 npm run build
+npm run build:engine   # bundles the engine CLI to dist-engine/engine-cli.mjs
 ```
+
+`backend/tests/test_server_index.py` runs the real engine when Node and
+`frontend/dist-engine/engine-cli.mjs` exist (build it first; the tests are skipped
+otherwise, and CI builds it and sets `FSDP_REQUIRE_ENGINE=1` so they cannot skip there).
 
 Current backend tests cover:
 
@@ -363,9 +380,11 @@ organization with many projects and hundreds of engineers.
   (`pg_trgm`) or a search service before the index tables reach millions of rows.
 - **One editor per sheet at a time.** Saves are versioned, so a second writer gets a
   conflict rather than overwriting, but there is no presence, locking, or merge.
-- **The sheet index and DRC are computed in the browser.** A copied or converted sheet is
-  not listed, searchable, or checked until someone opens the drawing; a server-side
-  engine (the TypeScript engine under Node) would close that gap and allow batch checks.
+- **The server-side index is opt-in and partial.** With `FSDP_ENGINE_CLI` set, new,
+  copied, and revised drawings are indexed and checked by the server; sheets flagged
+  stale by a part or requirement change still wait for `POST /projects/{id}/reindex`
+  (the "Re-index project" action) or for someone to open the drawing. Without the
+  setting everything is computed in the browser, as before.
 - **Lineage compares, it does not merge.** A copy records its source and can be
   compared with it, but changes are carried over by hand; there is no "update from
   template".
@@ -379,7 +398,8 @@ organization with many projects and hundreds of engineers.
 
 1. Map identity-provider groups to project membership; SCIM provisioning.
 2. A server-backed catalog grid and part pickers (the API already pages and sorts).
-3. Server-side indexing and DRC, so lists, search, and checks never depend on a browser.
+3. Re-index on the server after part and requirement changes too, and make the engine
+   the default, so lists, search, and checks never depend on a browser.
 4. Apply selected changes from a template to its copies.
 5. Pressure-drop analysis for simple incompressible line networks.
 6. Hazard objects linked to components, lines, and requirements.
@@ -431,6 +451,69 @@ A drawing and its current revision move through three states, changed only by ex
 - **Released drawings are locked.** Sheet create/update/delete, drawing metadata, revisions, and waivers return 409 until a new revision is started. Release stores an immutable snapshot of every sheet (document, index rows, DRC findings and waivers) on the revision, served by `GET /revisions/{id}/snapshot`; Drafting's "View" opens it read-only with a sheet preview and SVG download.
 - **Read-only editing.** For released drawings and for viewers the canvas runs the editor in read-only mode (`Editor.setReadOnly`, `SchematicCanvas readOnly`): every document command, undo/redo, paste, and drawing tool is dropped, while select, pan, zoom, find, copy, and measure keep working. The inspector, toolbar, and drawing form are disabled, and released drawings show a "Released — start a new revision to edit" banner.
 
-**Staleness.** A sheet's stored index and DRC are stale when its document changed without them (a new or converted sheet with content), when an assigned part changes, or when a project requirement changes (`app/services/sheet_index.py`). List, BoM, and verification-matrix responses carry `stale_sheets`, BoM snapshots record the sheets that were stale when they were generated, and exports print a warning row. When a writer opens a drawing that is not released, Drafting re-indexes its stale sheets in the background (`components/schematic/useStaleReindex.ts`): one sheet at a time, from the stored document, through the same `deriveSheetData` (`engine/derived.ts`) that save uses (registry, tag scheme, parts, requirement constraints, waivers, reserved tags and connector targets from the other sheets), then `PUT /sheets/{id}` with document, index, and DRC. The run stops when the drawing changes, and the open sheet is left alone while it has unsaved edits (its save indexes it). Saves are versioned (`DocumentStore.markSaved(version)`), so edits made while a save is in flight stay unsaved.
+**Staleness.** A sheet's stored index and DRC are stale when its document changed without them (a new or converted sheet with content), when an assigned part changes, or when a project requirement changes (`app/services/sheet_index.py`). List, BoM, and verification-matrix responses carry `stale_sheets`, BoM snapshots record the sheets that were stale when they were generated, and exports print a warning row. When the server runs the engine itself (`FSDP_ENGINE_CLI`, see "Server-side index and DRC" below) it refreshes new, copied, and revised drawings on its own and any project on request. Otherwise, and for whatever is still stale, when a writer opens a drawing that is not released, Drafting re-indexes its stale sheets in the background (`components/schematic/useStaleReindex.ts`): one sheet at a time, from the stored document, through the same `computeSheetPayload` (`engine/sheetPayload.ts`, over `deriveSheetData` in `engine/derived.ts`) that save uses (registry, tag scheme, parts, requirement constraints, waivers, reserved tags and connector targets from the other sheets), then `PUT /sheets/{id}` with document, index, and DRC. The run stops when the drawing changes, and the open sheet is left alone while it has unsaved edits (its save indexes it). Saves are versioned (`DocumentStore.markSaved(version)`), so edits made while a save is in flight stay unsaved.
+
+### Server-side index and DRC
+
+The index rows and DRC results are always computed by the TypeScript engine; the server
+can run that same engine under Node, so a sheet does not have to wait for a browser.
+
+- **One function.** `computeSheetPayload` (`frontend/src/engine/sheetPayload.ts`) turns
+  plain data — the sheet document, the drawing's frame template and other sheets, custom
+  symbol rows, the stored tag scheme, parts, requirements with constraints, waivers —
+  into the `index` and `drc` of `PUT /sheets/{id}`. It is a thin adapter over
+  `deriveSheetData` and has no DOM, React, or network dependency. The Drafting page's
+  save and background re-index call it, and so does the server, through the CLI.
+  Custom symbols need a DOM parser only to sanitize their SVG for painting
+  (`sanitizeSvgInner` returns `""` without one); the index and DRC read their ports,
+  category, tag prefix, and size, so under Node they are registered without markup.
+- **CLI.** `frontend/src/engine/cli.ts` reads one JSON request on stdin
+  (`engineRequest.ts`: `{context: {customSymbols, tagScheme, parts, requirements},
+  drawings: [{frameTemplate, sheets: [{sheetId, sheetNo, document, waivers, compute}]}]}`)
+  and writes `{protocol, results: [{sheetId, ok, index, drc, counts} | {sheetId, ok:
+  false, error}]}` on stdout. A sheet that fails reports its error and the others go on;
+  exit code 2 means the request itself was unreadable. `npm run build:engine`
+  (`vite.engine.config.ts`) bundles it into one dependency-free file,
+  `frontend/dist-engine/engine-cli.mjs` (about 100 kB, Node 18 or later).
+- **Service.** `backend/app/services/server_index.py` gathers the request from the
+  database (all sheets of the drawing, the project's tag scheme and requirements, the
+  parts and custom symbols the documents reference, the sheet's waivers), runs
+  `node <bundle>` with `subprocess` (argument list, no shell, a minimal environment, a
+  timeout, a 32 MB request cap, stderr logged; one engine process at a time per API
+  process), validates each result through `SheetIndexIn` / `DrcIn`, and stores it with
+  `replace_sheet_index` / `replace_sheet_drc`, clearing `index_stale` and setting
+  `indexed_at` as a save does. It writes a change-log entry ("Re-indexed sheet … on the
+  server"). The stored document is not rewritten.
+- **Safety.** Released drawings are never touched. No transaction is open while Node
+  runs; the write then takes row locks on the drawing and its sheets and stores a sheet
+  only if it is still stale, its `updated_at` is the one read before the run, and no
+  sheet document of the drawing changed. Otherwise the sheet is counted as `skipped`
+  and left to whoever changed it (a save indexes it; anything else leaves it stale for
+  the next run). `PUT /sheets/{id}` takes the same row lock, so a save and a server
+  re-index of one sheet never interleave.
+- **Triggers.** `POST /projects/{project_id}/reindex` and `POST
+  /drawings/{drawing_id}/reindex`; and, as FastAPI background tasks with a database
+  session of their own, after creating a drawing or sheet from a document (conversion
+  included), `POST /drawings/{id}/copy`, `POST /drawings/{id}/revise`, and a
+  `PUT /sheets/{id}` that stores a document without its index (an API client). The
+  background runs are best effort: a failure is logged and the sheet stays stale.
+- **Browser.** The Drafting page's background re-index refetches each sheet and skips
+  one the server has refreshed meanwhile, so the two do not rewrite each other's work.
+  Where a page warns about stale sheets (BoM page), writers get "Re-index project",
+  hidden when `GET /engine/status` reports the engine off.
+- **Configuration** (`backend/app/core/config.py`): `FSDP_ENGINE_CLI` (path to the
+  bundle; empty, the default, turns all of the above off), `FSDP_ENGINE_NODE` (default
+  `node`), `FSDP_ENGINE_TIMEOUT_SECONDS` (default 60, per drawing). The API Docker image
+  builds the bundle, ships Node, and sets `FSDP_ENGINE_CLI`.
+- **Parity tests.** `frontend/src/engine/cli.bundle.test.mjs` builds the bundle, runs it
+  under Node, and compares with the same request computed in jsdom (as in the browser);
+  it also keeps `frontend/src/engine/testdata/engine-parity.json` (request and expected
+  response) in step. `backend/tests/test_server_index.py` loads that request into a
+  database, runs the real engine through the service, and expects the stored rows to
+  equal the expected response; fake CLI scripts cover timeout, non-zero exit, bad JSON,
+  per-sheet errors, and schema violations.
+- **Not covered.** Sheets flagged stale by part or requirement changes are not
+  re-indexed automatically (use the endpoint); line classes are not an engine input
+  (neither the index nor the DRC reads them today).
 
 **BoM release.** `PUT /bom/{id}/status` with `released` is refused (409, `detail.issues`) while readiness has blocking issues: rows without a catalog part, obsolete or restricted parts, or a snapshot generated from stale sheets. It stamps `released_by/at`; released BoMs are immutable (no return to draft; generate a new snapshot instead). The BoM page lists a drawing's snapshots, splits readiness into blocking issues and warnings, diffs two snapshots of the same drawing, and exports CSV and XLSX (`GET /bom/{id}/xlsx`, with a header block for project, drawing, revision, and status). Legacy diagram BoMs stay visible there as read-only history.

@@ -1,0 +1,24 @@
+# For the API image, which is built from the repository root
+# (docker build -f backend/Dockerfile .). The web image is built from frontend/
+# and uses frontend/.dockerignore.
+.git
+.github
+.claude
+docs
+infra
+**/node_modules
+**/dist
+**/dist-engine
+**/coverage
+**/*.tsbuildinfo
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+backend/tests
+backend/var
+**/.env
+**/.env.*

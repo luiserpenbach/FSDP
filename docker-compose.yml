@@ -16,7 +16,11 @@ services:
       retries: 10
 
   api:
-    build: ./backend
+    # Built from the repository root: the image bundles the schematic engine from
+    # frontend/ and runs it under Node (FSDP_ENGINE_CLI is set in the image).
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     environment:
       FSDP_DATABASE_URL: postgresql+psycopg://fsdp:${FSDP_DB_PASSWORD:-fsdp}@db:5432/fsdp
