@@ -1507,3 +1507,62 @@ class ImpactRead(BaseModel):
     affected_sheet_items: list[ImpactSheetItemRead] = []
     affected_requirements: list[ImpactRequirementRead] = []
     affected_parts: list[ImpactPartRead] = []
+
+
+class ApiTokenCreate(BaseModel):
+    name: str
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return clean_required_text(value)[:120]
+
+
+class ApiTokenRead(OrmModel):
+    id: str
+    name: str
+    prefix: str
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    created_at: datetime
+
+
+class ApiTokenCreated(ApiTokenRead):
+    # The secret itself: returned once at creation and never stored.
+    token: str
+
+
+class SearchHit(BaseModel):
+    """One search result with everything the client needs to open it."""
+
+    kind: Literal["tag", "line", "drawing", "part", "requirement", "system", "project"]
+    id: str
+    title: str
+    subtitle: str = ""
+    status: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
+    system_id: str | None = None
+    drawing_id: str | None = None
+    sheet_id: str | None = None
+    # Document item id on the sheet (what Drafting centres on).
+    item_id: str | None = None
+
+
+class SearchRead(BaseModel):
+    query: str
+    hits: list[SearchHit]
+
+
+class DrawingCopyIn(BaseModel):
+    # Defaults: same project, next free number, "<title> (copy)".
+    project_id: str | None = None
+    system_id: str | None = None
+    number: str | None = None
+    title: str | None = None
+
+    @field_validator("number", "title")
+    @classmethod
+    def _text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)

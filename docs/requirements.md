@@ -299,6 +299,9 @@ Implemented as of the current MVP:
 - Requirement trace links to tagged drawing items and whole drawings.
 - Drawing BoM snapshot generation, release, diff, and CSV/XLSX export; project-level BoM history.
 - Change impact of parts and requirements on drawings, tags, requirements, parts, and BoMs.
+- Global search across projects (tags, lines, drawings, parts, requirements, systems) with jump-to-item, the first part of Epic 11.
+- Drawing reuse: copy a drawing with all sheets into a new draft in any project (Epic 11 templates, without lineage tracking).
+- Personal API tokens for scripts and integrations, and sign-in lockout.
 
 Not yet implemented:
 

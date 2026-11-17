@@ -33,12 +33,26 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
   `PUT /auth/users/{id}` (roles: `admin`, `engineer`, `viewer`).
 - Every create/update/delete is recorded in the change log with the acting user;
   recent changes are visible on the Reviews page and via `GET /changes`.
+- Repeated failed sign-ins lock the account for a few minutes
+  (`FSDP_LOGIN_MAX_FAILURES`, `FSDP_LOGIN_LOCK_MINUTES`).
+- Scripts and integrations authenticate with personal API tokens created under
+  Settings → API Tokens and sent as `Authorization: Bearer fsdp_pat_...`. A token acts
+  with its owner's role:
+
+  ```bash
+  curl -H "Authorization: Bearer $FSDP_TOKEN" "https://fsdp.example.com/api/search?q=HV-1042"
+  ```
 
 ## Current MVP Capabilities
 
 - Sign in/out with per-user accounts (admin/engineer/viewer; viewers are read-only) and
   an actor-stamped change history; admins manage accounts from the Settings page.
 - Create, select, update, and delete projects and fluid systems.
+- Find anything from anywhere with Ctrl+K: tags, line numbers, drawings, parts,
+  requirements, and systems across all projects, opening the drawing and sheet with the
+  item centred.
+- Reuse drawings: duplicate any drawing, released ones included, with all its sheets
+  into a new draft in the same or another project.
 - Draft P&IDs in paper space on the Drafting page, the single P&ID editor: controlled drawings with numbers,
   titles, sheets, and revisions; frames with zones, a bound title block, revision
   table, general notes, proprietary notice, and generated symbol and instrument

@@ -1,18 +1,31 @@
+import datetime as dt
+
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import (
+    as_utc,
     create_session_token,
     get_current_user,
+    hash_api_token,
     hash_password,
+    new_api_token,
     require_admin,
     verify_password,
 )
 from app.db import get_db
-from app.models import User
-from app.schemas import LoginRequest, UserCreate, UserRead, UserUpdate
+from app.models import ApiToken, User
+from app.schemas import (
+    ApiTokenCreate,
+    ApiTokenCreated,
+    ApiTokenRead,
+    LoginRequest,
+    UserCreate,
+    UserRead,
+    UserUpdate,
+)
 
 auth_router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -32,13 +45,31 @@ def _active_admin_count(db: Session) -> int:
 def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> User:
     email = payload.email.strip().lower()
     user = db.scalar(select(User).where(User.email == email))
+    now = dt.datetime.now(dt.UTC)
+    if user is not None and user.locked_until is not None and as_utc(user.locked_until) > now:
+        # Checked before the password, so a locked account cannot be guessed at all.
+        minutes = max(1, round((as_utc(user.locked_until) - now).total_seconds() / 60))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed sign-ins. Try again in {minutes} minute(s).",
+        )
     valid = (
         user is not None
         and user.is_active
         and verify_password(payload.password, user.password_hash)
     )
     if not valid:
+        if user is not None and user.is_active:
+            user.failed_logins += 1
+            if user.failed_logins >= settings.login_max_failures:
+                user.failed_logins = 0
+                user.locked_until = now + dt.timedelta(minutes=settings.login_lock_minutes)
+            db.commit()
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user.failed_logins or user.locked_until is not None:
+        user.failed_logins = 0
+        user.locked_until = None
+        db.commit()
     response.set_cookie(
         key=settings.session_cookie_name,
         value=create_session_token(user.id),
@@ -124,6 +155,10 @@ def update_user(
     password = data.pop("password", None)
     if password:
         user.password_hash = hash_password(password)
+    if password or data.get("is_active"):
+        # An admin reset or reactivation also lifts a sign-in lock.
+        user.failed_logins = 0
+        user.locked_until = None
     for field, value in data.items():
         setattr(user, field, value)
     # Reject any update that would leave the deployment with zero active admins
@@ -137,3 +172,65 @@ def update_user(
     db.commit()
     db.refresh(user)
     return user
+
+
+MAX_TOKENS_PER_USER = 20
+
+
+@auth_router.get("/tokens", response_model=list[ApiTokenRead])
+def list_api_tokens(
+    user: User = Depends(get_current_user), db: Session = Depends(get_db)
+) -> list[ApiToken]:
+    return list(
+        db.scalars(
+            select(ApiToken).where(ApiToken.user_id == user.id).order_by(ApiToken.created_at)
+        )
+    )
+
+
+@auth_router.post("/tokens", response_model=ApiTokenCreated, status_code=201)
+def create_api_token(
+    payload: ApiTokenCreate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Create a personal access token; the secret is in this response only."""
+    count = db.scalar(
+        select(func.count()).select_from(ApiToken).where(ApiToken.user_id == user.id)
+    )
+    if (count or 0) >= MAX_TOKENS_PER_USER:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Token limit reached ({MAX_TOKENS_PER_USER}); revoke one you no longer use.",
+        )
+    secret = new_api_token()
+    expires_at = (
+        dt.datetime.now(dt.UTC) + dt.timedelta(days=payload.expires_in_days)
+        if payload.expires_in_days
+        else None
+    )
+    token = ApiToken(
+        user_id=user.id,
+        name=payload.name,
+        prefix=secret[:14],
+        token_hash=hash_api_token(secret),
+        expires_at=expires_at,
+    )
+    db.add(token)
+    db.commit()
+    db.refresh(token)
+    return {**ApiTokenRead.model_validate(token).model_dump(), "token": secret}
+
+
+@auth_router.delete("/tokens/{token_id}", status_code=204)
+def revoke_api_token(
+    token_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    token = db.get(ApiToken, token_id)
+    if token is None or token.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Token not found")
+    db.delete(token)
+    db.commit()
+    return Response(status_code=204)

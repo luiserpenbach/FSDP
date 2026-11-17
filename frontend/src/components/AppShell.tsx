@@ -144,6 +144,7 @@ export function AppShell({
   error,
   user,
   onSignOut,
+  onSearch,
   switcher
 }: {
   children: ReactNode;
@@ -153,6 +154,8 @@ export function AppShell({
   error: string;
   user: { name: string; email: string; role: string };
   onSignOut: () => void;
+  /** Opens the global search palette (also on Ctrl+K). */
+  onSearch?: () => void;
   /** Project/system switcher under the brand; `expand` opens a collapsed sidebar. */
   switcher?: (collapsed: boolean, expand: () => void) => ReactNode;
 }) {
@@ -195,6 +198,16 @@ export function AppShell({
           </button>
         </div>
         {switcher?.(collapsed, () => setCollapsed(false))}
+        {onSearch && (
+          <button type="button" className="sidebarSearch" onClick={onSearch} title="Search everything (Ctrl+K)" aria-label="Search">
+            <svg {...ICON_PROPS}>
+              <circle cx="9" cy="9" r="5.2" />
+              <path d="M13 13 L17 17" />
+            </svg>
+            {!collapsed && <span className="sidebarSearchLabel">Search</span>}
+            {!collapsed && <kbd>Ctrl K</kbd>}
+          </button>
+        )}
         <nav className="sideNav" aria-label="Primary navigation">
           {grouped.map((group) => (
             <div className="navGroup" key={group.title}>

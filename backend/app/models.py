@@ -46,6 +46,31 @@ class User(TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(40), nullable=False, default="engineer")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Consecutive failed sign-ins and the resulting temporary lock (see auth_routes.login).
+    failed_logins: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ApiToken(TimestampMixin, Base):
+    """Personal access token for scripts and integrations.
+
+    Only the SHA-256 of the secret is stored; the token acts with its owner's role.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # First characters of the secret, shown so the owner can tell tokens apart.
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Project(TimestampMixin, Base):

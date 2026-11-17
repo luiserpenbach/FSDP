@@ -175,6 +175,35 @@ Change impact:
 
 - `GET /changes/impact?object_type=...&object_id=...`
 
+Search:
+
+- `GET /search?q=...&project_id=...&limit=...`: tags, line numbers, drawings, parts,
+  requirements, systems, and projects across all projects. Hits are ranked exact, then
+  prefix, then substring; `project_id` only orders hits of that project first; `limit`
+  caps hits per kind. Each hit carries the ids needed to open it (project, drawing,
+  sheet, item). The frontend's Ctrl+K palette is built on it.
+
+Reuse:
+
+- `POST /drawings/{drawing_id}/copy` with optional `project_id`, `system_id`, `number`,
+  `title`: copies a drawing (released ones included) with all sheets into a new draft at
+  its first revision, in the same or another project. Tags, part assignments, and line
+  data are copied; approvals, revision history, DRC waivers, and trace links are not.
+  Sheets with content are flagged stale so they are re-indexed and re-checked against
+  the destination project's tag scheme, line classes, and requirements.
+
+API tokens and sign-in:
+
+- `GET /auth/tokens`, `POST /auth/tokens` (`name`, optional `expires_in_days`),
+  `DELETE /auth/tokens/{token_id}`: personal access tokens for scripts and integrations.
+  The secret (`fsdp_pat_...`) is returned once and stored only as a SHA-256 hash. Send
+  it as `Authorization: Bearer <token>`; the request then runs as the token's owner with
+  that user's role, and stops working when the token is revoked or expires, or the user
+  is deactivated.
+- `POST /auth/login` locks an account for `FSDP_LOGIN_LOCK_MINUTES` after
+  `FSDP_LOGIN_MAX_FAILURES` consecutive failures (429 while locked). An admin password
+  reset or reactivation lifts the lock.
+
 ### Validation and Error Handling
 
 Current explicit validations:
@@ -276,21 +305,41 @@ Current backend tests cover:
 
 ## Current Limitations
 
-- The frontend is still a single-page MVP workspace, not a production navigation model.
-- There is no authentication, authorization, or role-based approval workflow.
-- Change impact is shallow and only follows direct trace links plus part/component BoM usage.
-- Engineering analysis modules are not implemented yet.
-- Configuration baselines, branches, and releases are not implemented yet.
-- Certification package generation is not implemented beyond BoM CSV export and future-oriented stubs.
+Status as of 2026-11. The single-project workflow (draft, check, release, BoM, change
+impact) is complete; the gaps below are what stands between it and use by a large
+organization with many projects and hundreds of engineers.
+
+- **No per-project access control.** Roles are global (admin, engineer, viewer): every
+  signed-in user sees every project. Export-controlled programs need project membership.
+- **Single tenant, password sign-in only.** No organizations, SSO (OIDC/SAML), or SCIM.
+- **Lists load whole.** The parts catalog is fetched in full at startup and held in the
+  browser, and project lists, change history, and BoM history are unpaginated. Fine for
+  thousands of rows, not for a catalog of 100k parts.
+- **Search is a substring scan** (`ILIKE`) across seven tables. Add trigram indexes
+  (`pg_trgm`) or a search service before the index tables reach millions of rows.
+- **One editor per sheet at a time.** Saves are versioned, so a second writer gets a
+  conflict rather than overwriting, but there is no presence, locking, or merge.
+- **The sheet index and DRC are computed in the browser.** A copied or converted sheet is
+  not listed, searchable, or checked until someone opens the drawing; a server-side
+  engine (the TypeScript engine under Node) would close that gap and allow batch checks.
+- **A copy does not track its source.** Copies are independent; there is no
+  "update from template" or where-used view of a template's descendants.
+- **Tag uniqueness is per drawing**, not per project.
+- **Sign-in lockout is per account**, with no per-IP throttling; put the API behind a
+  rate-limiting proxy when it is exposed to the internet.
+- Engineering analysis (pressure drop, relief sizing, trapped volume), hazards, and
+  certification packages are not implemented.
 
 ## Recommended Next Implementation Areas
 
-1. Add pressure-drop analysis for simple incompressible line networks.
-2. Introduce hazard objects linked to components, lines, and requirements.
-3. Add trapped-volume detection from valve states and graph connectivity.
-4. Add relief valve sizing with stored assumptions and calculation reports.
-5. Add verification matrix views from requirements and trace links.
-6. Add release/baseline snapshots for diagrams, BoMs, requirements, and analyses.
+1. Project membership and per-project roles, then SSO.
+2. Server-side pagination and filtering for parts, and a paged change history.
+3. Server-side indexing and DRC, so lists, search, and checks never depend on a browser.
+4. Template lineage: record the source of a copy and offer a diff against it.
+5. Pressure-drop analysis for simple incompressible line networks.
+6. Hazard objects linked to components, lines, and requirements.
+7. Trapped-volume detection from valve states and graph connectivity.
+8. Relief valve sizing with stored assumptions and calculation reports.
 
 ## Schematic Engine (Drafting page)
 

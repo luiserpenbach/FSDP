@@ -3,6 +3,7 @@ import { api } from "../api";
 import { DataTable, FormError, Panel, Select, StatusPill, TextInput } from "../components/ui";
 import type { User } from "../types";
 import { useWorkspace } from "../workspace/WorkspaceContext";
+import { ApiTokensPanel } from "./ApiTokensPanel";
 import { CatalogSettingsPanel } from "./CatalogSettingsPanel";
 import { LineClassPanel } from "./LineClassPanel";
 import { PageLayout } from "./PageLayout";
@@ -98,6 +99,7 @@ export function SettingsPage() {
         <CatalogSettingsPanel project={selectedProject} isAdmin={isAdmin} onProjectUpdated={replaceProject} />
         <TagSchemePanel project={selectedProject} canWrite={canWrite} />
         <LineClassPanel project={selectedProject} canWrite={canWrite} />
+        <ApiTokensPanel />
       </section>
     </PageLayout>
   );

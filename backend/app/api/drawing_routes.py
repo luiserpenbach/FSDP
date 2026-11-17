@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import io
 from datetime import UTC, datetime
@@ -30,6 +31,7 @@ from app.models import (
 )
 from app.schemas import (
     BomSnapshotRead,
+    DrawingCopyIn,
     DrawingCreate,
     DrawingDrcRead,
     DrawingRead,
@@ -311,6 +313,87 @@ def delete_drawing(
     db.delete(drawing)
     db.commit()
     return Response(status_code=204)
+
+
+@drawing_router.post("/drawings/{drawing_id}/copy", response_model=DrawingRead, status_code=201)
+def copy_drawing(
+    drawing_id: str,
+    payload: DrawingCopyIn = Body(default_factory=DrawingCopyIn),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Drawing:
+    """Copy a drawing with all its sheets into a new draft, in this or another project.
+
+    The reuse path: a released drawing serves as a template for the next vehicle,
+    stand, or subsystem. Tags, part assignments, and line data come along; approvals,
+    revision history, DRC waivers, and trace links do not, so the copy is reviewed on
+    its own. Its sheets are flagged stale and are re-indexed and re-checked against
+    the target project's tag scheme, line classes, and requirements.
+    """
+    source = _load_drawing(db, drawing_id)
+    options = payload
+    project = require_model(db, Project, options.project_id or source.project_id)
+    same_project = project.id == source.project_id
+    system_id = options.system_id or (source.system_id if same_project else None)
+    if system_id:
+        system = require_model(db, FluidSystem, system_id)
+        if system.project_id != project.id:
+            raise HTTPException(status_code=422, detail="System belongs to another project")
+    number = options.number or _next_drawing_number(db, project)
+    duplicate = db.scalar(
+        select(Drawing.id).where(Drawing.project_id == project.id, Drawing.number == number)
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Drawing number already exists in project")
+    title = options.title
+    if not title:
+        lines = source.title.split("\n")
+        lines[0] = f"{lines[0]} (copy)"
+        title = "\n".join(lines)
+
+    drawing = Drawing(
+        project_id=project.id,
+        system_id=system_id,
+        number=number,
+        title=title,
+        size=source.size,
+        units=source.units,
+        discipline=source.discipline,
+        frame_template=source.frame_template,
+        fields=copy.deepcopy(source.fields or {}),
+        notes=list(source.notes or []),
+    )
+    for sheet in source.sheets:
+        document = copy.deepcopy(sheet.document or {})
+        drawing.sheets.append(
+            DrawingSheet(
+                sheet_no=sheet.sheet_no,
+                title=sheet.title,
+                document=document,
+                index_stale=document_needs_index(document),
+            )
+        )
+    drawing.revisions.append(
+        DrawingRevision(
+            sequence=1,
+            description=f"Copied from {source.number}",
+            drawn_by=user.name,
+            drawn_date=_now().date().isoformat(),
+        )
+    )
+    db.add(drawing)
+    db.flush()
+    origin = source.number if same_project else f"{source.number} (another project)"
+    record_change(
+        db,
+        "drawing",
+        drawing.id,
+        "created",
+        f"Created drawing {number} as a copy of {origin}",
+        actor=user.email,
+    )
+    db.commit()
+    return _load_drawing(db, drawing.id)
 
 
 @drawing_router.post(

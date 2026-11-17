@@ -583,3 +583,34 @@ export type BulkDeleteResult = {
   refused: number;
   results: Array<{ id: string; deleted: boolean; reason: string | null }>;
 };
+
+export type ApiToken = {
+  id: string;
+  name: string;
+  prefix: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+};
+
+/** A new token with its secret, which the server returns only once. */
+export type ApiTokenCreated = ApiToken & { token: string };
+
+export type SearchHitKind = "tag" | "line" | "drawing" | "part" | "requirement" | "system" | "project";
+
+export type SearchHit = {
+  kind: SearchHitKind;
+  id: string;
+  title: string;
+  subtitle: string;
+  status: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  system_id: string | null;
+  drawing_id: string | null;
+  sheet_id: string | null;
+  /** Document item id on the sheet (what Drafting centres on). */
+  item_id: string | null;
+};
+
+export type SearchResults = { query: string; hits: SearchHit[] };

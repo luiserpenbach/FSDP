@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 12
     session_cookie_name: str = "fsdp_session"
     session_cookie_secure: bool = False
+    # Consecutive failed sign-ins before an account is locked, and for how long.
+    login_max_failures: int = 5
+    login_lock_minutes: int = 5
 
     admin_email: str | None = None
     admin_password: str | None = None

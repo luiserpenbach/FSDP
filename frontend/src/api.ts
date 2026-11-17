@@ -1,4 +1,7 @@
 import type {
+  ApiToken,
+  ApiTokenCreated,
+  SearchResults,
   BomDiff,
   BomReadiness,
   BomSnapshot,
@@ -142,6 +145,9 @@ export const api = {
   getDrawing: (drawingId: string) => request<Drawing>(`/drawings/${drawingId}`),
   updateDrawing: (drawingId: string, body: Partial<Omit<Drawing, "id" | "project_id" | "sheets" | "revisions" | "created_at" | "updated_at">>) =>
     request<Drawing>(`/drawings/${drawingId}`, { method: "PUT", body: JSON.stringify(body) }),
+  /** Copy a drawing with all sheets into a new draft, in this or another project. */
+  copyDrawing: (drawingId: string, body: { project_id?: string; system_id?: string | null; number?: string; title?: string }) =>
+    request<Drawing>(`/drawings/${drawingId}/copy`, { method: "POST", body: JSON.stringify(body) }),
   deleteDrawing: (drawingId: string) => requestNoContent(`/drawings/${drawingId}`, { method: "DELETE" }),
   createSheet: (drawingId: string, body: { title?: string | null; source_diagram_id?: string | null; document?: unknown }) =>
     request<DrawingSheet>(`/drawings/${drawingId}/sheets`, { method: "POST", body: JSON.stringify(body) }),
@@ -288,6 +294,16 @@ export const api = {
   getBomReadiness: (snapshotId: string) => request<BomReadiness>(`/bom/${snapshotId}/readiness`),
   getBomDiff: (snapshotId: string, againstId: string) =>
     request<BomDiff>(`/bom/${snapshotId}/diff?against_id=${againstId}`),
+  search: (query: string, options: { projectId?: string; limit?: number; signal?: AbortSignal } = {}) => {
+    const params = new URLSearchParams({ q: query });
+    if (options.projectId) params.set("project_id", options.projectId);
+    if (options.limit) params.set("limit", String(options.limit));
+    return request<SearchResults>(`/search?${params.toString()}`, { signal: options.signal });
+  },
+  listApiTokens: () => request<ApiToken[]>("/auth/tokens"),
+  createApiToken: (body: { name: string; expires_in_days?: number }) =>
+    request<ApiTokenCreated>("/auth/tokens", { method: "POST", body: JSON.stringify(body) }),
+  revokeApiToken: (tokenId: string) => requestNoContent(`/auth/tokens/${tokenId}`, { method: "DELETE" }),
   listUsers: () => request<User[]>("/auth/users"),
   createUser: (body: { email: string; name: string; password: string; role: string }) =>
     request<User>("/auth/users", { method: "POST", body: JSON.stringify(body) }),

@@ -3786,3 +3786,234 @@ textarea.importPaste {
 .assignPartMulti {
   margin: 0 0 8px;
 }
+
+/* ---------- Global search palette ---------- */
+
+.sidebarSearch {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--text-3);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  gap: 8px;
+  margin: 2px 0 8px;
+  min-height: 32px;
+  padding: 0 8px 0 10px;
+  width: 100%;
+}
+
+.sidebarSearch:hover {
+  border-color: var(--accent);
+  color: var(--text-2);
+}
+
+.sidebarSearch svg {
+  flex: none;
+  height: 16px;
+  width: 16px;
+}
+
+.sidebarSearchLabel {
+  flex: 1;
+  text-align: left;
+}
+
+.sidebarCollapsed .sidebarSearch {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebarSearch kbd,
+.paletteFooter kbd {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-3);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 5px;
+}
+
+.paletteBackdrop {
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+
+.modal.palette {
+  max-height: 68vh;
+  max-width: calc(100vw - 32px);
+  width: 640px;
+}
+
+.paletteInput {
+  border: none;
+  border-bottom: 1px solid var(--line-soft);
+  border-radius: 0;
+  font-size: 16px;
+  outline: none;
+  padding: 16px 18px;
+  width: 100%;
+}
+
+.paletteInput:focus {
+  box-shadow: none;
+}
+
+.paletteResults {
+  list-style: none;
+  margin: 0;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.paletteHit {
+  align-items: center;
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  padding: 8px 10px;
+}
+
+.paletteHit.active {
+  background: var(--accent-soft);
+}
+
+.paletteKind {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  justify-self: start;
+  padding: 2px 8px;
+}
+
+.paletteText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.paletteTitle {
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paletteSubtitle {
+  color: var(--text-2);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.paletteMeta {
+  align-items: center;
+  color: var(--text-2);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.paletteProject.elsewhere {
+  color: var(--amber-deep);
+}
+
+.paletteReleased {
+  background: var(--green-soft);
+  border-radius: 999px;
+  color: var(--green-deep);
+  font-size: 11px;
+  padding: 1px 7px;
+}
+
+.paletteStatus {
+  color: var(--text-2);
+  font-size: 13px;
+  margin: 0;
+  padding: 16px 18px;
+}
+
+.paletteFooter {
+  border-top: 1px solid var(--line-soft);
+  color: var(--text-3);
+  display: flex;
+  font-size: 11.5px;
+  gap: 16px;
+  padding: 8px 14px;
+}
+
+.paletteFooter span {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+}
+
+/* ---------- Duplicate drawing, API tokens ---------- */
+
+.modal.copyDrawingDialog {
+  max-width: calc(100vw - 32px);
+  width: 460px;
+}
+
+.copyDrawingBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  padding: 14px 18px;
+}
+
+.copyDrawingDialog .modalActions {
+  margin-top: 0;
+  padding: 4px 18px 16px;
+}
+
+.copyDrawingDialog button.quiet,
+.copyDrawingDialog button.quiet:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.copyDrawingBody label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12.5px;
+  gap: 4px;
+}
+
+.copyDrawingBody .hint {
+  margin: 0;
+}
+
+.tokenSecret {
+  background: var(--amber-soft);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+  padding: 10px 12px;
+}
+
+.tokenSecret code {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+  user-select: all;
+}
