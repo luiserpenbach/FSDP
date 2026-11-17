@@ -17,6 +17,8 @@ const DraftingPage = lazy(() => import("./pages/DraftingPage").then((module) => 
 const PartsPage = lazy(() => import("./pages/PartsCatalog").then((module) => ({ default: module.PartsPage })));
 const RequirementsPage = lazy(() => import("./pages/RequirementsPage").then((module) => ({ default: module.RequirementsPage })));
 const BomPage = lazy(() => import("./pages/BomPage").then((module) => ({ default: module.BomPage })));
+const SafetyPage = lazy(() => import("./pages/SafetyPage").then((module) => ({ default: module.SafetyPage })));
+const AnalysisPage = lazy(() => import("./pages/AnalysisPage").then((module) => ({ default: module.AnalysisPage })));
 const ReviewsPage = lazy(() => import("./pages/ReviewsPage").then((module) => ({ default: module.ReviewsPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 
@@ -27,6 +29,8 @@ const navItems: NavItem[] = [
   { path: "/parts", label: "Parts Catalog", description: "Internal and vendor parts" },
   { path: "/requirements", label: "Requirements", description: "Traceable requirements" },
   { path: "/bom", label: "BoM & Procurement", description: "Snapshots and exports" },
+  { path: "/safety", label: "Safety", description: "Hazard register" },
+  { path: "/analysis", label: "Analysis", description: "Pressure drop and relief sizing" },
   { path: "/reviews", label: "Reviews", description: "Impact and approvals" },
   { path: "/settings", label: "Settings", description: "Project configuration" }
 ];
@@ -188,6 +192,8 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/parts" element={<PartsPage />} />
           <Route path="/requirements" element={<RequirementsPage />} />
           <Route path="/bom" element={<BomPage />} />
+          <Route path="/safety" element={<SafetyPage />} />
+          <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/reviews" element={<ReviewsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

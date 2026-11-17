@@ -4017,3 +4017,265 @@ textarea.importPaste {
   padding: 6px 8px;
   user-select: all;
 }
+
+/* ---------- Safety: hazard register ---------- */
+
+.fieldPair {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.riskMatrix table {
+  border-collapse: separate;
+  border-spacing: 3px;
+  min-width: 0;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.riskMatrix th {
+  background: transparent;
+  border: none;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  position: static;
+  white-space: normal;
+}
+
+.riskMatrix thead th {
+  text-align: center;
+}
+
+.riskMatrix tbody tr,
+.segmentTable tbody tr {
+  cursor: default;
+}
+
+.riskMatrix tbody tr:hover,
+.segmentTable tbody tr:hover {
+  background: transparent;
+}
+
+.riskMatrix td.riskCell {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  height: 38px;
+  padding: 4px;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.riskCell.risk-low {
+  background: var(--green-soft);
+  color: var(--green-deep);
+}
+
+.riskCell.risk-medium {
+  background: var(--amber-soft);
+  color: var(--amber-deep);
+}
+
+.riskCell.risk-high {
+  background: var(--red-soft);
+  color: var(--red-deep);
+}
+
+/* Cells with hazards read stronger than the empty background of the matrix. */
+.riskCell:not(.riskCellEmpty) {
+  border-color: currentColor;
+}
+
+.riskCell.riskCellEmpty {
+  opacity: 0.55;
+}
+
+.riskSummary {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+/* ---------- Analysis: calculators ---------- */
+
+.calcForm {
+  display: grid;
+  gap: 4px 14px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+.calcField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.calcFieldWide {
+  grid-column: span 2;
+}
+
+.calcUnit {
+  color: var(--text-3);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.calcHeading {
+  border-top: 1px solid var(--line-soft);
+  margin: 14px 0 10px;
+  padding-top: 12px;
+}
+
+.calcKinds button {
+  margin: 0 0 0 6px;
+}
+
+.segmentTable {
+  min-width: 900px;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.segmentTable th {
+  white-space: normal;
+}
+
+.segmentTable th:last-child {
+  width: 92px;
+}
+
+.segmentTable td {
+  padding: 4px 6px;
+  vertical-align: middle;
+}
+
+.segmentTable td input {
+  margin: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+button.tableButton {
+  margin: 0;
+  padding: 3px 10px;
+}
+
+.segmentTable td button {
+  margin: 0;
+}
+
+.calcSegmentActions {
+  margin-top: 6px;
+}
+
+.calcStats {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.calcStat {
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+}
+
+.calcStatLabel {
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.calcStatValue {
+  font-family: var(--font-mono);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.calcStatValue small {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.calcStatAlt {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.calcResults td.num {
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.calcResults tfoot th,
+.calcResults tfoot td {
+  background: var(--surface-2);
+  border-top: 1px solid var(--line);
+  font-weight: 700;
+  position: static;
+}
+
+.calcDetails {
+  display: grid;
+  gap: 4px 14px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  margin: 12px 0 0;
+}
+
+.calcDetails dt {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.calcDetails dd {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  margin: 0;
+}
+
+.calcWarnings {
+  background: var(--amber-soft);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius-sm);
+  color: var(--amber-deep);
+  font-size: 13px;
+  margin: 12px 0 0;
+  padding: 8px 12px;
+}
+
+.calcWarnings ul,
+.calcAssumptions ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.calcWarnings li,
+.calcAssumptions li {
+  margin: 3px 0;
+}
+
+.calcAssumptions {
+  color: var(--text-2);
+  font-size: 13px;
+  margin: 12px 0;
+}
+
+.calcAssumptions summary {
+  cursor: pointer;
+  font-weight: 600;
+}

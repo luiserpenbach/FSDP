@@ -614,3 +614,178 @@ export type SearchHit = {
 };
 
 export type SearchResults = { query: string; hits: SearchHit[] };
+
+/* ---------- Hazards (safety register) ---------- */
+
+export type HazardCategory =
+  | "overpressure"
+  | "backflow"
+  | "ignition"
+  | "contamination"
+  | "single_point_failure"
+  | "trapped_fluid"
+  | "other";
+
+export type HazardStatus = "open" | "mitigated" | "accepted" | "closed";
+
+export type RiskLevel = "low" | "medium" | "high";
+
+export type Hazard = {
+  id: string;
+  project_id: string;
+  key: string;
+  title: string;
+  description: string | null;
+  category: HazardCategory;
+  /** 1 negligible … 4 catastrophic. */
+  severity: number;
+  /** 1 improbable … 5 frequent. */
+  likelihood: number;
+  /** Derived by the server: severity × likelihood, and its level. */
+  risk_score: number;
+  risk_level: RiskLevel;
+  mitigation: string | null;
+  status: HazardStatus;
+  owner: string | null;
+  /** Trace links with this hazard as source. */
+  links: TraceLink[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type HazardInput = {
+  /** Omit or leave blank for the next free HAZ-nnn. */
+  key?: string | null;
+  title: string;
+  description?: string | null;
+  category?: HazardCategory;
+  severity?: number;
+  likelihood?: number;
+  mitigation?: string | null;
+  status?: HazardStatus;
+  owner?: string | null;
+};
+
+/* ---------- Analyses (stored calculations) ---------- */
+
+export type AnalysisKind = "pressure_drop" | "relief_sizing";
+
+export type AnalysisStatus = "draft" | "checked" | "approved" | "superseded";
+
+export type PressureDropSegmentInput = {
+  name: string;
+  inner_diameter_mm: number;
+  length_m: number;
+  roughness_mm: number;
+  k_sum: number;
+  elevation_change_m: number;
+  /** US flow coefficient (US gal/min of water at 1 psi). */
+  cv_items: Array<{ name: string; cv: number }>;
+};
+
+export type PressureDropInputs = {
+  fluid_name: string;
+  density_kg_m3: number;
+  viscosity_mpa_s: number;
+  mass_flow_kg_s: number | null;
+  volumetric_flow_l_min: number | null;
+  velocity_limit_m_s: number;
+  segments: PressureDropSegmentInput[];
+};
+
+export type PressureDropSegmentResult = {
+  name: string;
+  velocity_m_s: number;
+  reynolds: number;
+  flow_regime: "laminar" | "transitional" | "turbulent";
+  relative_roughness: number;
+  friction_factor: number;
+  dp_friction_kpa: number;
+  dp_minor_kpa: number;
+  dp_components_kpa: number;
+  dp_elevation_kpa: number;
+  dp_total_kpa: number;
+};
+
+export type PressureDropResults = {
+  calc_version: number;
+  kind: "pressure_drop";
+  flow: { mass_flow_kg_s: number; volumetric_flow_l_min: number };
+  segments: PressureDropSegmentResult[];
+  totals: {
+    dp_friction_kpa: number;
+    dp_minor_kpa: number;
+    dp_components_kpa: number;
+    dp_elevation_kpa: number;
+    dp_total_kpa: number;
+    dp_total_bar: number;
+    head_loss_m: number;
+  };
+  warnings: string[];
+  assumptions: string[];
+};
+
+export type ReliefSizingInputs = {
+  service: "gas" | "liquid";
+  fluid_name: string;
+  set_pressure_kpag: number;
+  overpressure_pct: number;
+  back_pressure_kpag: number;
+  atmospheric_pressure_kpa: number;
+  /** null: API 520 preliminary value (0.975 gas, 0.65 liquid). */
+  kd: number | null;
+  kc: number;
+  mass_rate_kg_h: number | null;
+  relieving_temperature_c: number | null;
+  molar_mass_kg_kmol: number | null;
+  k: number | null;
+  z: number;
+  kb: number;
+  volume_rate_l_min: number | null;
+  density_kg_m3: number | null;
+  viscosity_mpa_s: number | null;
+  kw: number;
+};
+
+export type ReliefSizingResults = {
+  calc_version: number;
+  kind: "relief_sizing";
+  service: "gas" | "liquid";
+  flow_regime: "critical" | "subcritical" | "liquid";
+  relieving_pressure_kpag: number;
+  relieving_pressure_kpa_abs?: number;
+  back_pressure_kpa_abs?: number;
+  relieving_temperature_k?: number;
+  critical_flow_pressure_kpa_abs?: number;
+  coefficient_c?: number;
+  coefficient_f2?: number;
+  specific_gravity?: number;
+  preliminary_area_mm2?: number;
+  reynolds?: number | null;
+  factors: Record<string, number | null>;
+  required_area_mm2: number;
+  required_area_in2: number;
+  /** Next API 526 orifice; null when the area exceeds the largest (T). */
+  orifice: { letter: string; area_mm2: number; area_in2: number } | null;
+  warnings: string[];
+  assumptions: string[];
+};
+
+export type AnalysisInputs = PressureDropInputs | ReliefSizingInputs;
+export type AnalysisResults = PressureDropResults | ReliefSizingResults;
+
+export type Analysis = {
+  id: string;
+  project_id: string;
+  drawing_id: string | null;
+  kind: AnalysisKind;
+  name: string;
+  inputs: AnalysisInputs;
+  results: AnalysisResults;
+  status: AnalysisStatus;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AnalysisPreview = { kind: AnalysisKind; inputs: AnalysisInputs; results: AnalysisResults };
