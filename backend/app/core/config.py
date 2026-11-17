@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     expose_docs: bool = True
     catalog_files_dir: str = "var/catalog-files"
 
+    # Server-side sheet index and DRC: path to the bundled engine CLI
+    # (frontend: npm run build:engine -> dist-engine/engine-cli.mjs), run under Node.
+    # Empty turns the feature off: sheets are then indexed by the browser only.
+    engine_cli: str = ""
+    engine_node: str = "node"
+    engine_timeout_seconds: float = 60.0
+
     model_config = SettingsConfigDict(env_file=".env", env_prefix="FSDP_")
 
     @field_validator("database_url")

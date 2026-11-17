@@ -14,6 +14,7 @@ import type {
   Drawing,
   DrawingRevision,
   DrawingSheet,
+  EngineStatus,
   FluidSystem,
   Impact,
   LineClass,
@@ -28,6 +29,7 @@ import type {
   Project,
   ProjectBom,
   ProjectSheetItem,
+  ReindexResult,
   Requirement,
   SchematicRead,
   TagSchemeRead,
@@ -149,6 +151,11 @@ export const api = {
   copyDrawing: (drawingId: string, body: { project_id?: string; system_id?: string | null; number?: string; title?: string }) =>
     request<Drawing>(`/drawings/${drawingId}/copy`, { method: "POST", body: JSON.stringify(body) }),
   deleteDrawing: (drawingId: string) => requestNoContent(`/drawings/${drawingId}`, { method: "DELETE" }),
+  /** Whether the server runs the engine itself (FSDP_ENGINE_CLI). */
+  getEngineStatus: () => request<EngineStatus>("/engine/status"),
+  /** Re-index every stale sheet of the project's unreleased drawings on the server (503 when it has no engine). */
+  reindexProject: (projectId: string) => request<ReindexResult>(`/projects/${projectId}/reindex`, { method: "POST" }),
+  reindexDrawing: (drawingId: string) => request<ReindexResult>(`/drawings/${drawingId}/reindex`, { method: "POST" }),
   createSheet: (drawingId: string, body: { title?: string | null; source_diagram_id?: string | null; document?: unknown }) =>
     request<DrawingSheet>(`/drawings/${drawingId}/sheets`, { method: "POST", body: JSON.stringify(body) }),
   getSheet: (sheetId: string) => request<DrawingSheet>(`/sheets/${sheetId}`),
