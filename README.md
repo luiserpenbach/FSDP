@@ -33,6 +33,16 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
   `PUT /auth/users/{id}` (roles: `admin`, `engineer`, `viewer`).
 - Every create/update/delete is recorded in the change log with the acting user;
   recent changes are visible on the Reviews page and via `GET /changes`.
+- Projects are open to every user by default. An owner or an administrator can make a
+  project **members only** (Settings → Project Access): it then disappears for everyone
+  else, including from search, part where-used, change impact, and the change history.
+  Members are viewers, engineers, or owners of that project; the creator of a project is
+  its first owner.
+- Single sign-on with any OpenID Connect provider (Okta, Entra ID, Google Workspace,
+  Keycloak): set `FSDP_OIDC_ISSUER`, `FSDP_OIDC_CLIENT_ID`, `FSDP_OIDC_CLIENT_SECRET`, and
+  `FSDP_OIDC_REDIRECT_URL` (the public URL of `/auth/sso/callback`). A first sign-in
+  creates a viewer account (`FSDP_OIDC_DEFAULT_ROLE`); set
+  `FSDP_PASSWORD_LOGIN_ENABLED=false` to leave passwords to administrators only.
 - Repeated failed sign-ins lock the account for a few minutes
   (`FSDP_LOGIN_MAX_FAILURES`, `FSDP_LOGIN_LOCK_MINUTES`).
 - Scripts and integrations authenticate with personal API tokens created under
@@ -52,7 +62,9 @@ JWTs stored in an httpOnly cookie; the frontend shows a login page until a sessi
   requirements, and systems across all projects, opening the drawing and sheet with the
   item centred.
 - Reuse drawings: duplicate any drawing, released ones included, with all its sheets
-  into a new draft in the same or another project.
+  into a new draft in the same or another project. A copy remembers its source; the
+  drawing panel links both ways and compares a copy with its source (tags, parts, line
+  data), matching items by id so a renamed tag reads as a change.
 - Draft P&IDs in paper space on the Drafting page, the single P&ID editor: controlled drawings with numbers,
   titles, sheets, and revisions; frames with zones, a bound title block, revision
   table, general notes, proprietary notice, and generated symbol and instrument

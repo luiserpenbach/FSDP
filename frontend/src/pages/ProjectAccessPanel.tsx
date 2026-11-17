@@ -129,8 +129,15 @@ export function ProjectAccessPanel({ project, onProjectChanged }: { project: Pro
               rows={shown.members}
               getKey={(member) => member.user_id}
               columns={[
-                { header: "Name", render: (member) => member.name },
-                { header: "Email", render: (member) => <span className="mono">{member.email}</span> },
+                {
+                  header: "Member",
+                  render: (member) => (
+                    <span className="memberName">
+                      {member.name}
+                      <span className="mono">{member.email}</span>
+                    </span>
+                  )
+                },
                 {
                   header: "Role",
                   render: (member) =>

@@ -4166,3 +4166,14 @@ textarea.importPaste {
   color: var(--text-3);
   text-decoration: line-through;
 }
+
+.memberName {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.memberName .mono {
+  color: var(--text-2);
+  font-size: 11.5px;
+}

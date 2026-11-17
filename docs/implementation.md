@@ -192,6 +192,47 @@ Reuse:
   Sheets with content are flagged stale so they are re-indexed and re-checked against
   the destination project's tag scheme, line classes, and requirements.
 
+Project access (see `backend/app/core/access.py`):
+
+- `GET /projects/{project_id}/access`: the restriction, the members, and what the caller
+  may do (`can_write`, `can_manage`).
+- `PUT /projects/{project_id}/access` (`restricted`), `PUT` and `DELETE
+  /projects/{project_id}/members/{user_id}` (`role`: viewer, engineer, owner): owners and
+  administrators only. A members-only project keeps at least one owner.
+- `GET /users/directory`: active accounts, for picking members (writers).
+- Every data route is checked by one router-level dependency, `enforce_project_access`,
+  which resolves the project from the path parameter names (`project_id`, `system_id`,
+  `drawing_id`, `sheet_id`, `revision_id`, `requirement_id`, `snapshot_id`,
+  `line_class_id`, `diagram_id`, `link_id`). **A new route for a project-owned object
+  must use one of these names or register its own with `register_path_resolver`**;
+  handlers that take a project in the body, or return rows from several projects, call
+  `require_project_write` / `hidden_project_ids` themselves. A project the caller may not
+  see answers 404.
+
+Lineage:
+
+- `GET /drawings/{drawing_id}/lineage`: the source a drawing was copied from (omitted if
+  deleted or not visible to the caller; the number and revision at the time of the copy
+  stay on the drawing) and the copies taken of it.
+- `GET /drawings/{drawing_id}/lineage/diff`: added, removed, and changed items and lines
+  of a copy against its source as both stand now, matched by sheet number and document
+  id, with the sheets whose index is stale named.
+
+Paging:
+
+- `GET /parts` accepts `limit` (up to 2000), `offset`, and `sort` (a column name, `-` for
+  descending) next to its filters and reports the number of matches in `X-Total-Count`.
+- `GET /changes` accepts `limit`, `offset`, and `project_id`, with `X-Total-Count`.
+
+Single sign-on:
+
+- `GET /auth/config` (public): whether SSO is on and what the button says.
+- `GET /auth/sso/login` redirects to the provider (authorization code flow with PKCE,
+  state, and nonce held in a short-lived signed cookie); `GET /auth/sso/callback` verifies
+  the ID token against the provider's keys, issuer, audience, and nonce, matches or
+  creates the account by verified email, and starts the same cookie session as a
+  password sign-in. Failures return to the frontend with `?sso_error=`.
+
 API tokens and sign-in:
 
 - `GET /auth/tokens`, `POST /auth/tokens` (`name`, optional `expires_in_days`),
@@ -309,12 +350,15 @@ Status as of 2026-11. The single-project workflow (draft, check, release, BoM, c
 impact) is complete; the gaps below are what stands between it and use by a large
 organization with many projects and hundreds of engineers.
 
-- **No per-project access control.** Roles are global (admin, engineer, viewer): every
-  signed-in user sees every project. Export-controlled programs need project membership.
-- **Single tenant, password sign-in only.** No organizations, SSO (OIDC/SAML), or SCIM.
-- **Lists load whole.** The parts catalog is fetched in full at startup and held in the
-  browser, and project lists, change history, and BoM history are unpaginated. Fine for
-  thousands of rows, not for a catalog of 100k parts.
+- **Single tenant.** One organization per deployment; SSO is OpenID Connect only (no
+  SAML), and accounts are not provisioned or removed by SCIM. Group claims from the
+  identity provider are not mapped to roles or project membership.
+- **Access is per project, not per drawing or per field.** The shared parts catalog and
+  symbol library are visible to every signed-in user.
+- **The parts catalog is still held in the browser.** It is fetched in pages of 1,000 and
+  the API sorts and pages (`limit`, `offset`, `sort`), but the catalog grid, the part
+  pickers in Drafting, and the DRC work on the whole list in memory. A catalog well beyond
+  roughly 50k parts needs the grid and pickers to query the server instead.
 - **Search is a substring scan** (`ILIKE`) across seven tables. Add trigram indexes
   (`pg_trgm`) or a search service before the index tables reach millions of rows.
 - **One editor per sheet at a time.** Saves are versioned, so a second writer gets a
@@ -322,8 +366,9 @@ organization with many projects and hundreds of engineers.
 - **The sheet index and DRC are computed in the browser.** A copied or converted sheet is
   not listed, searchable, or checked until someone opens the drawing; a server-side
   engine (the TypeScript engine under Node) would close that gap and allow batch checks.
-- **A copy does not track its source.** Copies are independent; there is no
-  "update from template" or where-used view of a template's descendants.
+- **Lineage compares, it does not merge.** A copy records its source and can be
+  compared with it, but changes are carried over by hand; there is no "update from
+  template".
 - **Tag uniqueness is per drawing**, not per project.
 - **Sign-in lockout is per account**, with no per-IP throttling; put the API behind a
   rate-limiting proxy when it is exposed to the internet.
@@ -332,10 +377,10 @@ organization with many projects and hundreds of engineers.
 
 ## Recommended Next Implementation Areas
 
-1. Project membership and per-project roles, then SSO.
-2. Server-side pagination and filtering for parts, and a paged change history.
+1. Map identity-provider groups to project membership; SCIM provisioning.
+2. A server-backed catalog grid and part pickers (the API already pages and sorts).
 3. Server-side indexing and DRC, so lists, search, and checks never depend on a browser.
-4. Template lineage: record the source of a copy and offer a diff against it.
+4. Apply selected changes from a template to its copies.
 5. Pressure-drop analysis for simple incompressible line networks.
 6. Hazard objects linked to components, lines, and requirements.
 7. Trapped-volume detection from valve states and graph connectivity.
