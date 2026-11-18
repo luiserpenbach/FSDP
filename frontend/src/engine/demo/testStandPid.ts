@@ -12,11 +12,11 @@
 import { SymbolRegistry } from "../library";
 import { createEmptyDocument, type Item, type LineItem, type LineType, type Point, type Rotation, type SchematicDocument, type SymbolItem } from "../types";
 
-type Dir = "E" | "S" | "W" | "N";
+export type Dir = "E" | "S" | "W" | "N";
 
-const VEC: Record<Dir, Point> = { E: { x: 1, y: 0 }, S: { x: 0, y: 1 }, W: { x: -1, y: 0 }, N: { x: 0, y: -1 } };
+export const VEC: Record<Dir, Point> = { E: { x: 1, y: 0 }, S: { x: 0, y: 1 }, W: { x: -1, y: 0 }, N: { x: 0, y: -1 } };
 /** How an inline symbol is turned so its `in` port faces back along the run. */
-const ORIENT: Record<Dir, { rotation: Rotation; mirror?: boolean }> = {
+export const ORIENT: Record<Dir, { rotation: Rotation; mirror?: boolean }> = {
   E: { rotation: 0 },
   S: { rotation: 90 },
   // Mirrored rather than rotated, so actuators stay above the line.
@@ -24,9 +24,9 @@ const ORIENT: Record<Dir, { rotation: Rotation; mirror?: boolean }> = {
   N: { rotation: 270 }
 };
 
-type LineData = { number: string; service: string; size: string; lineClass: string; designPressure?: string };
+export type LineData = { number: string; service: string; size: string; lineClass: string; designPressure?: string };
 
-type SymbolSpec = {
+export type SymbolSpec = {
   key: string;
   tag?: string;
   /** Free caption for items that carry no tag (terminators). */
@@ -39,9 +39,11 @@ type SymbolSpec = {
   /** Entry and exit ports for symbols that are not plain in/out. */
   from?: string;
   to?: string;
+  /** Pair id of an off-page connector (`fields.ref`). */
+  ref?: string;
 };
 
-type Step =
+export type Step =
   | number
   | { run: number; label: true }
   | { mark: string }
@@ -63,17 +65,20 @@ export type DemoDrawing = {
   document: SchematicDocument;
 };
 
-class Builder {
+export class Builder {
   readonly registry = SymbolRegistry.withBuiltins();
   readonly items: Item[] = [];
   readonly marks: Record<string, Point> = {};
   readonly parts: Record<string, string> = {};
   private readonly ids = new Map<string, number>();
 
+  /** `scope` prefixes generated ids, so the sheets of one drawing do not share any. */
+  constructor(private readonly scope = "") {}
+
   private id(prefix: string): string {
     const next = (this.ids.get(prefix) ?? 0) + 1;
     this.ids.set(prefix, next);
-    return `${prefix}-${next}`;
+    return `${this.scope}${prefix}-${next}`;
   }
 
   /** Place a symbol so that one of its ports lands on `at`; returns its ports in sheet coordinates. */
@@ -90,7 +95,7 @@ class Builder {
       ...(spec.tag ? { tag: spec.tag } : {}),
       ...(spec.label ? { label: spec.label } : {}),
       ...(spec.actuator ? { actuator: { library: "fsdp", key: spec.actuator, version: 1 } } : {}),
-      fields: {}
+      fields: spec.ref ? { ref: spec.ref } : {}
     };
     const port = this.registry.portsOf(item).find((entry) => entry.id === portId);
     if (!port) throw new Error(`${spec.key} has no port ${portId}`);
@@ -201,7 +206,7 @@ class Builder {
   }
 }
 
-const at = (x: number, y: number): Point => ({ x, y });
+export const at = (x: number, y: number): Point => ({ x, y });
 
 const HP: LineData = { number: "GHE-101", service: "GHe", size: '1/2"', lineClass: "HP-316", designPressure: "400 bar" };
 const HEADER: LineData = { number: "GHE-102", service: "GHe", size: '1/2"', lineClass: "MP-316", designPressure: "60 bar" };

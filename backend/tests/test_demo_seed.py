@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Project
-from app.seed import DEMO_PROJECT_NAME, seed_demo, seed_test_stand
+from app.seed import DEMO_PROJECT_NAME, seed_booster, seed_demo, seed_test_stand
 from tests.test_server_index import real_engine
 
 pytest_plugins = ["tests.test_server_index"]
@@ -71,3 +71,39 @@ def test_seeded_drawing_indexes_on_the_server_without_errors(
     bom = client.post(f"/drawings/{drawing['id']}/bom")
     assert bom.status_code == 201, bom.text
     assert any(row.get("part_number") == "AMPH-RV-001" for row in bom.json()["rows"])
+
+
+def test_seed_adds_the_booster_scale_demo_once(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    with session_factory() as db:
+        assert seed_booster(db) is True
+        assert seed_booster(db) is False
+        project_id = db.scalar(
+            select(Project.id).where(Project.name == "Super Heavy Booster (illustrative)")
+        )
+    drawing = client.get(f"/projects/{project_id}/drawings").json()[0]
+    assert (drawing["number"], drawing["size"], len(drawing["sheets"])) == ("SHB-0100", "A0", 7)
+    assert drawing["sheets"][4]["title"] == "Engines E01-E11"
+    sheet = client.get(f"/sheets/{drawing['sheets'][4]['id']}").json()
+    assert len(sheet["document"]["items"]) > 1000
+    # The stored document passes the same validation as a save from the editor.
+    saved = client.put(f"/sheets/{sheet['id']}", json={"document": sheet["document"]})
+    assert saved.status_code == 200, saved.text
+
+
+@real_engine
+def test_booster_indexes_on_the_server_without_errors(
+    client: TestClient, session_factory: sessionmaker[Session], engine: None
+) -> None:
+    with session_factory() as db:
+        seed_booster(db)
+        project_id = db.scalar(
+            select(Project.id).where(Project.name == "Super Heavy Booster (illustrative)")
+        )
+    report = client.post(f"/projects/{project_id}/reindex").json()
+    assert (report["indexed"], report["failed"]) == (7, 0)
+    drawing = client.get(f"/projects/{project_id}/drawings").json()[0]
+    assert client.get(f"/drawings/{drawing['id']}/drc").json()["counts"]["error"] == 0
+    hits = client.get("/search", params={"q": "MCC-3326"}).json()["hits"]
+    assert [(hit["kind"], hit["title"]) for hit in hits] == [("tag", "MCC-3326")]
