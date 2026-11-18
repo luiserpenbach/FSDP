@@ -59,7 +59,9 @@ of network access — keep both layers.
 
 ### Backups
 
-Engineering data lives in the Postgres volume. Install a nightly dump:
+Engineering data lives in the Postgres volume, and uploaded part documents (datasheets,
+certificates) in the `catalog-files` volume, mounted at `/app/var` in the API container.
+Back up both. Install a nightly dump:
 
 ```bash
 sudo tee /etc/cron.daily/fsdp-backup > /dev/null <<'EOF'
@@ -69,7 +71,8 @@ BACKUP_DIR=/var/backups/fsdp
 mkdir -p "$BACKUP_DIR"
 cd /path/to/FSDP
 docker compose exec -T db pg_dump -U fsdp fsdp | gzip > "$BACKUP_DIR/fsdp-$(date +%F).sql.gz"
-find "$BACKUP_DIR" -name 'fsdp-*.sql.gz' -mtime +30 -delete
+docker compose exec -T api tar -czf - -C /app/var . > "$BACKUP_DIR/fsdp-files-$(date +%F).tar.gz"
+find "$BACKUP_DIR" -name 'fsdp-*.gz' -mtime +30 -delete
 EOF
 sudo chmod +x /etc/cron.daily/fsdp-backup
 ```

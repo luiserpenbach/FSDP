@@ -37,9 +37,14 @@ RUN node --version \
     && echo '{"drawings":[]}' | node /opt/fsdp/engine-cli.mjs | grep -q '"results":\[\]'
 
 COPY backend/ .
+# var/ holds uploaded part documents. It is created here, owned by the app user, so
+# that a volume mounted on it (docker-compose.yml) starts out writable.
 RUN pip install --no-cache-dir . \
     && useradd --create-home appuser \
+    && mkdir -p var/catalog-files \
     && chown -R appuser:appuser /app
+
+VOLUME /app/var
 
 USER appuser
 EXPOSE 8000

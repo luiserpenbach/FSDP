@@ -30,6 +30,21 @@ services:
       FSDP_ADMIN_PASSWORD: ${FSDP_ADMIN_PASSWORD:-}
       FSDP_ADMIN_NAME: ${FSDP_ADMIN_NAME:-FSDP Admin}
       FSDP_CORS_ORIGINS: '["http://localhost:5173","http://localhost:8080"]'
+      # Load the demo project and drawing TS-0100 at start (idempotent).
+      FSDP_SEED_DEMO: ${FSDP_SEED_DEMO:-false}
+      # Single sign-on (OpenID Connect); off while the issuer is empty. See backend/.env.example.
+      FSDP_OIDC_ISSUER: ${FSDP_OIDC_ISSUER:-}
+      FSDP_OIDC_CLIENT_ID: ${FSDP_OIDC_CLIENT_ID:-}
+      FSDP_OIDC_CLIENT_SECRET: ${FSDP_OIDC_CLIENT_SECRET:-}
+      FSDP_OIDC_REDIRECT_URL: ${FSDP_OIDC_REDIRECT_URL:-}
+      FSDP_OIDC_POST_LOGIN_URL: ${FSDP_OIDC_POST_LOGIN_URL:-/}
+      FSDP_OIDC_LABEL: ${FSDP_OIDC_LABEL:-Sign in with SSO}
+      FSDP_OIDC_DEFAULT_ROLE: ${FSDP_OIDC_DEFAULT_ROLE:-viewer}
+      FSDP_OIDC_ALLOWED_DOMAINS: ${FSDP_OIDC_ALLOWED_DOMAINS:-[]}
+      FSDP_PASSWORD_LOGIN_ENABLED: ${FSDP_PASSWORD_LOGIN_ENABLED:-true}
+    volumes:
+      # Uploaded part documents (datasheets, certificates) outlive the container.
+      - catalog-files:/app/var
     depends_on:
       db:
         condition: service_healthy
@@ -57,3 +72,4 @@ services:
 
 volumes:
   postgres-data:
+  catalog-files:
