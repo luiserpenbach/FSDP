@@ -415,6 +415,146 @@ def test_released_drawings_stay_current_until_revised(client: TestClient) -> Non
     assert _sheet_stale(client, drawing["id"]) == [True]
 
 
+def test_late_save_after_symbol_category_expand_keeps_sheet_stale_and_blocks_release(
+    client: TestClient,
+) -> None:
+    """A Save with a stale out-of-scope index category must not clear after expand.
+
+    Concrete trigger: custom symbol category=custom (out of default requirement
+    scope) + CS part + material_in [316L] saved clean → PUT category=valve → tip
+    never marks stale (#67 would) and a late Save resubmitting category=custom
+    with empty findings clears/keeps false-fresh → Release 200 froze findings=[]
+    while live DRC would fail. Open #81 rechecks SheetItem.category only, so it
+    still trusts the stale index category after that late Save.
+    """
+    project_id = _project(client)
+    part = _part(client, material="CS")
+    symbol = client.post(
+        "/symbols",
+        json={
+            "name": "Custom out-of-scope",
+            "view_box": "0 0 64 40",
+            "svg": '<path d="M12 10 L32 20 L12 30 Z" />',
+            "ports": [
+                {"id": "in", "x": 2, "y": 20, "side": "left"},
+                {"id": "out", "x": 62, "y": 20, "side": "right"},
+            ],
+            "category": "custom",
+        },
+    )
+    assert symbol.status_code == 201, symbol.text
+    symbol = symbol.json()
+
+    req = client.post(
+        "/requirements",
+        json={
+            "project_id": project_id,
+            "key": "REQ-MAT",
+            "title": "Wetted",
+            "text": "316L wetted parts",
+            "requirement_type": "materials",
+            "constraint": {"kind": "material_in", "values": ["316L"]},
+        },
+    )
+    assert req.status_code == 201, req.text
+    req_id = req.json()["id"]
+
+    drawing = _drawing(client, project_id)
+    sheet_id = drawing["sheets"][0]["id"]
+    document = {
+        "schemaVersion": 1,
+        "sheet": {
+            "size": "A3",
+            "orientation": "landscape",
+            "frame": {"kind": "basic", "columns": 4, "rows": 3, "margin": 10},
+        },
+        "layers": [],
+        "items": [
+            {
+                "id": "cv",
+                "kind": "symbol",
+                "layer": "symbols",
+                "symbol": {"library": "custom", "key": symbol["id"], "version": 1},
+                "position": {"x": 50, "y": 50},
+                "rotation": 0,
+                "tag": "CV-1",
+                "fields": {},
+                "partId": part["id"],
+            }
+        ],
+        "meta": {"grid": 2.5},
+    }
+    stale_index = {
+        "items": [
+            {
+                "item_id": "cv",
+                "kind": "symbol",
+                "category": "custom",
+                "symbol_key": symbol["id"],
+                "symbol_name": symbol["name"],
+                "tag": "CV-1",
+                "zone": "D-4",
+                "part_id": part["id"],
+            }
+        ],
+        "lines": [],
+    }
+
+    def save(index: dict, findings: list[dict] | None = None) -> dict:
+        saved = client.put(
+            f"/sheets/{sheet_id}",
+            json={
+                "document": document,
+                "index": index,
+                "drc": {"findings": findings or [], "checks": []},
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        return saved.json()
+
+    # Out of scope: empty findings are correct.
+    save(stale_index)
+    assert _sheet_stale(client, drawing["id"]) == [False]
+
+    assert client.put(f"/symbols/{symbol['id']}", json={"category": "valve"}).status_code == 200
+
+    # Late / stale-registry Save: still sends category=custom, no requirement error.
+    save(stale_index)
+    assert _sheet_stale(client, drawing["id"]) == [True]
+
+    refused = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused.status_code == 409, refused.text
+    assert any(
+        reason["code"] == "index_stale" for reason in refused.json()["detail"]["reasons"]
+    )
+
+    # Fresh Save that reports the requirement error clears the gap; Release then
+    # blocks on the open DRC error instead (waiveable as before).
+    fresh_index = {
+        "items": [{**stale_index["items"][0], "category": "valve"}],
+        "lines": [],
+    }
+    save(
+        fresh_index,
+        [
+            {
+                "key": f"requirement:{req_id}:cv",
+                "rule": "requirement",
+                "severity": "error",
+                "message": "REQ-MAT: material not allowed",
+                "item_id": "cv",
+                "requirement_id": req_id,
+            }
+        ],
+    )
+    assert _sheet_stale(client, drawing["id"]) == [False]
+    refused_drc = client.post(f"/drawings/{drawing['id']}/release")
+    assert refused_drc.status_code == 409, refused_drc.text
+    assert any(
+        reason["code"] == "drc_errors" for reason in refused_drc.json()["detail"]["reasons"]
+    )
+
+
 def test_requirement_constraint_changes_mark_project_sheets_stale(client: TestClient) -> None:
     project_id = _project(client)
     other_project = _project(client, "Other")
