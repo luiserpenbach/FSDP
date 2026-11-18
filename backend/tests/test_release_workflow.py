@@ -192,6 +192,37 @@ def test_submit_withdraw_and_release_from_review(client: TestClient) -> None:
     assert ("released", "engineer@fsdp.test") in actions
 
 
+def test_create_revision_refused_while_in_review(client: TestClient) -> None:
+    """Adding a revision row under review would orphan the submitted revision and let
+    release stamp a never-reviewed current revision (no submitted_by, no snapshot on
+    the reviewed row)."""
+    drawing = _drawing(client, _project(client), "hv")
+    drawing_id = drawing["id"]
+    _save(client, drawing["sheets"][0]["id"])
+    submitted = client.post(f"/drawings/{drawing_id}/submit").json()
+    submitted_id = submitted["current_revision"]["id"]
+    assert submitted["current_revision"]["submitted_by"] == "engineer@fsdp.test"
+
+    refused = client.post(
+        f"/drawings/{drawing_id}/revisions", json={"label": "A", "description": "sneak"}
+    )
+    assert refused.status_code == 409, refused.text
+    assert "in_review" in refused.json()["detail"]
+    assert "draft" in refused.json()["detail"]
+
+    body = client.get(f"/drawings/{drawing_id}").json()
+    assert body["current_revision"]["id"] == submitted_id
+    assert [rev["label"] for rev in body["revisions"]] == ["-"]
+
+    released = client.post(f"/drawings/{drawing_id}/release")
+    assert released.status_code == 200, released.text
+    revision = released.json()["current_revision"]
+    assert revision["id"] == submitted_id
+    assert revision["submitted_by"] == "engineer@fsdp.test"
+    assert revision["approved_by"] == "engineer@fsdp.test"
+    assert client.get(f"/revisions/{submitted_id}/snapshot").status_code == 200
+
+
 def test_release_refused_for_stale_index_and_open_drc_errors(client: TestClient) -> None:
     drawing = _drawing(client, _project(client), "hv")
     drawing_id = drawing["id"]
