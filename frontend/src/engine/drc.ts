@@ -10,7 +10,7 @@
  */
 import { computeConnectivity, indexPorts, type Connectivity, type LineEnd } from "./connectivity";
 import { polylineLength } from "./geometry";
-import type { SymbolRegistry } from "./library";
+import { BUILTIN_LIBRARY, type SymbolRegistry } from "./library";
 import { pointAlong } from "./lines";
 import { partWarnings, pressureToBar, type PartLike } from "./parts";
 import { zoneAt } from "./sheet";
@@ -105,6 +105,7 @@ export const DRC_RULES: Record<string, { title: string; description: string }> =
   part_rating: { title: "Part rating", description: "An assigned part is rated below the connected line's design pressure." },
   part_missing: { title: "Part not in catalog", description: "An item references a part id that is not in the catalog." },
   relief_coverage: { title: "Relief coverage", description: "An isolable volume has no relief device." },
+  trapped_volume: { title: "Trapped volume", description: "A line section can be closed in by valves on every side and has no relief device or vent." },
   required_fields: { title: "Required fields", description: "A symbol field defined by the library has no value." },
   requirement: { title: "Requirement", description: "A requirement constraint is violated." }
 };
@@ -225,6 +226,166 @@ export function isolableVolumes(doc: SchematicDocument, registry: SymbolRegistry
   return volumes;
 }
 
+/**
+ * Trapped volumes: process line sections that can be closed in completely.
+ *
+ * A section is the set of process nets joined through pass-through items
+ * (inline components, instruments, equipment and their nozzles, caps and
+ * plugs). It is reported when ALL of the following hold:
+ *
+ *  - every way out of it ends at a closable valve (gate, globe, ball,
+ *    butterfly, needle, plug, diaphragm, angle, hand, solenoid, pneumatic or
+ *    motor operated valve from the built-in library) or at the outlet of a
+ *    check valve, which blocks flow back out of the section;
+ *  - at least two different valves bound it;
+ *  - nothing in it relieves or opens it: no relief valve, safety valve or
+ *    rupture disc, no vent, drain, terminator, off-page connector, utility
+ *    connection or tie-in, no spray nozzle, silencer or quick disconnect.
+ *
+ * Deliberately NOT reported (the rule prefers a missed case to a noisy one):
+ *
+ *  - sections touching a regulator, a 3-way, 4-way, cross-over or excess-flow
+ *    valve, or any custom (non built-in) symbol: whether those isolate is not
+ *    known from the symbol;
+ *  - sections with the inlet of a check valve on them (fluid can leave
+ *    through it), with a dangling line end, or with an unconnected process
+ *    port or nozzle on a pass-through item: the drawing does not say where
+ *    they lead;
+ *  - dead legs behind a single valve (an instrument root valve, a capped
+ *    stub), and sections that continue on another sheet;
+ *  - valve positions (normally open / locked open) and what the fluid is:
+ *    the rule is purely topological, so a gas section is reported too.
+ *
+ * The existing `relief_coverage` rule is broader (any volume with a valve or
+ * regulator on it and no relief); a fully closed-in section is reported by
+ * both rules and each can be waived on its own.
+ */
+export type TrappedVolume = { id: string; lineIds: string[]; itemIds: string[]; valveIds: string[] };
+
+const CLOSABLE_VALVE_KEYS = new Set([
+  "valve",
+  "globe_valve",
+  "ball_valve",
+  "butterfly_valve",
+  "needle_valve",
+  "plug_valve",
+  "diaphragm_valve",
+  "angle_valve",
+  "hand_valve",
+  "solenoid_valve",
+  "pneumatic_valve",
+  "motor_valve"
+]);
+const CHECK_VALVE_KEYS = new Set(["check_valve", "check_valve_swing"]);
+const CLOSED_END_KEYS = new Set(["cap", "plug", "blind_flange"]);
+const OPENING_INLINE_KEYS = new Set(["spray_nozzle", "silencer", "quick_disconnect"]);
+
+type SectionRole = "pass" | "closed_end" | "closable" | "check" | "relief" | "open" | "unknown";
+
+function sectionRole(item: Item, registry: SymbolRegistry): SectionRole {
+  if (item.kind === "equipment") return "pass";
+  if (item.kind !== "symbol") return "unknown";
+  if (item.symbol.library !== BUILTIN_LIBRARY || !registry.has(item.symbol)) return "unknown";
+  const key = item.symbol.key;
+  if (RELIEF_KEYS.has(key)) return "relief";
+  if (CLOSABLE_VALVE_KEYS.has(key)) return "closable";
+  if (CHECK_VALVE_KEYS.has(key)) return "check";
+  if (CLOSED_END_KEYS.has(key)) return "closed_end";
+  if (OPENING_INLINE_KEYS.has(key)) return "open";
+  const category = registry.resolve(item.symbol).category;
+  if (category === "connector") return "open";
+  if (category === "inline" || category === "instrument" || category === "equipment") return "pass";
+  // Regulators, multi-way and special valves, actuators, anything else.
+  return "unknown";
+}
+
+export function trappedVolumes(doc: SchematicDocument, registry: SymbolRegistry, connectivity: Connectivity): TrappedVolume[] {
+  const byId = new Map(doc.items.map((item) => [item.id, item]));
+  const processNets = new Set<string>();
+  for (const net of connectivity.nets) {
+    const first = net.lineIds.map((id) => byId.get(id)).find((item): item is LineItem => item?.kind === "line");
+    if (first && PROCESS_LINE_TYPES.has(first.lineType)) processNets.add(net.id);
+  }
+  const isFluidPort = (kind: string | undefined) => kind === undefined || kind === "process" || kind === "nozzle";
+  const portKinds = new Map(indexPorts(doc, registry).map((port) => [`${port.itemId}:${port.id}`, port.kind]));
+
+  // Fluid ports of each item that sit on a process net: port id -> net id.
+  const attached = new Map<string, Map<string, string>>();
+  for (const [key, netId] of connectivity.portNet) {
+    if (!processNets.has(netId) || !isFluidPort(portKinds.get(key))) continue;
+    const split = key.lastIndexOf(":");
+    const itemId = key.slice(0, split);
+    const ports = attached.get(itemId) ?? new Map<string, string>();
+    ports.set(key.slice(split + 1), netId);
+    attached.set(itemId, ports);
+  }
+  const roles = new Map<string, SectionRole>();
+  const union = new Union();
+  for (const [itemId, ports] of attached) {
+    const item = byId.get(itemId);
+    const role = item ? sectionRole(item, registry) : "unknown";
+    roles.set(itemId, role);
+    if (role !== "pass" && role !== "closed_end") continue;
+    const nets = [...ports.values()];
+    for (let index = 1; index < nets.length; index += 1) union.union(nets[0], nets[index]);
+  }
+
+  type Section = { nets: Set<string>; items: Set<string>; valves: Set<string>; disqualified: boolean };
+  const sections = new Map<string, Section>();
+  const sectionOf = (netId: string): Section => {
+    const root = union.find(netId);
+    let section = sections.get(root);
+    if (!section) {
+      section = { nets: new Set<string>(), items: new Set<string>(), valves: new Set<string>(), disqualified: false };
+      sections.set(root, section);
+    }
+    return section;
+  };
+  for (const netId of processNets) sectionOf(netId).nets.add(netId);
+
+  for (const [itemId, ports] of attached) {
+    const role = roles.get(itemId)!;
+    const touched = new Map<Section, string[]>();
+    for (const [portId, netId] of ports) {
+      const section = sectionOf(netId);
+      touched.set(section, [...(touched.get(section) ?? []), portId]);
+    }
+    for (const [section, portIds] of touched) {
+      section.items.add(itemId);
+      if (role === "relief" || role === "open" || role === "unknown") section.disqualified = true;
+      // A valve with every connected port on the same section (a bypass loop) does not bound it.
+      else if (role === "closable" && touched.size > 1) section.valves.add(itemId);
+      else if (role === "closable" && ports.size === 1) section.valves.add(itemId);
+      else if (role === "check" && (touched.size > 1 || ports.size === 1)) {
+        // Flow leaves through the inlet side; only the outlet side is closed.
+        if (portIds.includes("in")) section.disqualified = true;
+        else section.valves.add(itemId);
+      }
+    }
+  }
+  // Unknown ends: dangling lines, and unconnected ports of pass-through items.
+  for (const end of connectivity.danglingEnds) {
+    const netId = connectivity.lineNet.get(end.lineId);
+    if (netId && processNets.has(netId)) sectionOf(netId).disqualified = true;
+  }
+  for (const port of connectivity.openPorts) {
+    if (!isFluidPort(port.kind) || roles.get(port.itemId) !== "pass") continue;
+    for (const netId of attached.get(port.itemId)?.values() ?? []) sectionOf(netId).disqualified = true;
+  }
+
+  const trapped: TrappedVolume[] = [];
+  for (const [root, section] of sections) {
+    if (section.disqualified || section.valves.size < 2) continue;
+    trapped.push({
+      id: root,
+      lineIds: connectivity.nets.filter((net) => section.nets.has(net.id)).flatMap((net) => net.lineIds),
+      itemIds: [...section.items],
+      valveIds: [...section.valves]
+    });
+  }
+  return trapped;
+}
+
 function withinScope(item: SymbolItem | EquipmentItem, registry: SymbolRegistry, scope: RequirementConstraint["scope"], servicesOf: (id: string) => string[]): boolean {
   const categories = scope?.categories?.length ? scope.categories : DEFAULT_SCOPE_CATEGORIES;
   const category = item.kind === "symbol" ? (registry.has(item.symbol) ? registry.resolve(item.symbol).category : "custom") : "equipment";
@@ -285,6 +446,12 @@ export function runDrc(input: DrcInput): DrcResult {
     if (item?.kind === "symbol" && registry.has(item.symbol) && registry.resolve(item.symbol).category === "connector") continue;
     // Relief outlets vent to atmosphere without a drawn line.
     if (item?.kind === "symbol" && isRelief(item) && port.id === "vent") continue;
+    // A function bubble (interlock, controller, PLC) wired by signal lines has no process tap to miss.
+    if (item?.kind === "symbol" && registry.has(item.symbol) && registry.resolve(item.symbol).category === "instrument") {
+      const signalPorts = registry.portsOf(item).filter((entry) => entry.kind === "signal");
+      const openSignals = connectivity.openPorts.filter((entry) => entry.itemId === item.id && entry.kind === "signal").length;
+      if (signalPorts.length > openSignals) continue;
+    }
     add("open_port", "warning", item, `${describe(item)} port ${port.id} has no line`, `${port.itemId}:${port.id}`);
   }
 
@@ -371,6 +538,21 @@ export function runDrc(input: DrcInput): DrcResult {
   for (const volume of volumes) {
     if (!volume.isolable || volume.relieved) continue;
     add("relief_coverage", "warning", volumeLines(volume)[0], `Isolable volume (${volumeName(volume)}) has no relief device`, volume.lineIds.slice().sort()[0]);
+  }
+
+  // ---- trapped volumes ----
+  for (const volume of trappedVolumes(doc, registry, connectivity)) {
+    const lines = volume.lineIds.map((id) => byId.get(id)).filter((item): item is LineItem => item?.kind === "line");
+    const inside = volume.itemIds.filter((id) => !volume.valveIds.includes(id));
+    const names = [...lines.map((line) => line.lineNumber), ...inside.map((id) => caption(byId.get(id)))].filter(Boolean);
+    const valves = volume.valveIds.map((id) => describe(byId.get(id))).sort();
+    add(
+      "trapped_volume",
+      "warning",
+      lines[0],
+      `Section (${names.slice(0, 6).join(", ") || `${lines.length} line(s)`}) can be closed in by ${valves.join(", ")} and has no relief device or vent; fluid trapped there can overpressure as it warms`,
+      volume.lineIds.slice().sort()[0]
+    );
   }
 
   // ---- required fields ----

@@ -15,6 +15,27 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 12
     session_cookie_name: str = "fsdp_session"
     session_cookie_secure: bool = False
+    # Consecutive failed sign-ins before an account is locked, and for how long.
+    login_max_failures: int = 5
+    login_lock_minutes: int = 5
+
+    # Single sign-on (OpenID Connect); on when issuer, client id and redirect URL are set.
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    # The public URL of GET /auth/sso/callback, as registered with the provider,
+    # e.g. https://fsdp.example.com/api/auth/sso/callback
+    oidc_redirect_url: str = ""
+    oidc_scopes: str = "openid email profile"
+    # Role of an account created by its first SSO sign-in.
+    oidc_default_role: str = "viewer"
+    # Email domains allowed to sign in with SSO; empty allows every account of the provider.
+    oidc_allowed_domains: list[str] = []
+    oidc_label: str = "Sign in with SSO"
+    # Where the browser lands after SSO (the frontend).
+    oidc_post_login_url: str = "/"
+    # Set false to make SSO the only way in; administrators can still use a password.
+    password_login_enabled: bool = True
 
     admin_email: str | None = None
     admin_password: str | None = None
@@ -23,7 +44,22 @@ class Settings(BaseSettings):
     expose_docs: bool = True
     catalog_files_dir: str = "var/catalog-files"
 
+    # Server-side sheet index and DRC: path to the bundled engine CLI
+    # (frontend: npm run build:engine -> dist-engine/engine-cli.mjs), run under Node.
+    # Empty turns the feature off: sheets are then indexed by the browser only.
+    engine_cli: str = ""
+    engine_node: str = "node"
+    engine_timeout_seconds: float = 60.0
+
     model_config = SettingsConfigDict(env_file=".env", env_prefix="FSDP_")
+
+    @field_validator("oidc_default_role")
+    @classmethod
+    def _sso_role(cls, value: str) -> str:
+        # Administrators are made by administrators, never by a first sign-in.
+        if value not in ("viewer", "engineer"):
+            raise ValueError("oidc_default_role must be 'viewer' or 'engineer'")
+        return value
 
     @field_validator("database_url")
     @classmethod

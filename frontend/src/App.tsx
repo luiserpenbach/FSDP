@@ -1,10 +1,12 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { Navigate, Route, RouterProvider, Routes, createBrowserRouter, useBlocker } from "react-router-dom";
+import { Navigate, Route, RouterProvider, Routes, createBrowserRouter, useBlocker, useNavigate } from "react-router-dom";
 import { api, setUnauthorizedHandler } from "./api";
 import { AppShell, type NavItem } from "./components/AppShell";
+import { CommandPalette, isPaletteShortcut } from "./components/CommandPalette";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LoginPage } from "./pages/LoginPage";
-import type { User } from "./types";
+import { draftingHref } from "./pages/draftingLinks";
+import type { SearchHit, User } from "./types";
 import { UnsavedChangesContext, createUnsavedChangesRegistry, unsavedPrompt, useUnsavedChangesRegistry } from "./unsavedChanges";
 import { WorkspaceProvider, useWorkspace } from "./workspace/WorkspaceContext";
 import { WorkspaceSwitcher } from "./workspace/WorkspaceSwitcher";
@@ -15,6 +17,8 @@ const DraftingPage = lazy(() => import("./pages/DraftingPage").then((module) => 
 const PartsPage = lazy(() => import("./pages/PartsCatalog").then((module) => ({ default: module.PartsPage })));
 const RequirementsPage = lazy(() => import("./pages/RequirementsPage").then((module) => ({ default: module.RequirementsPage })));
 const BomPage = lazy(() => import("./pages/BomPage").then((module) => ({ default: module.BomPage })));
+const SafetyPage = lazy(() => import("./pages/SafetyPage").then((module) => ({ default: module.SafetyPage })));
+const AnalysisPage = lazy(() => import("./pages/AnalysisPage").then((module) => ({ default: module.AnalysisPage })));
 const ReviewsPage = lazy(() => import("./pages/ReviewsPage").then((module) => ({ default: module.ReviewsPage })));
 const SettingsPage = lazy(() => import("./pages/SettingsPage").then((module) => ({ default: module.SettingsPage })));
 
@@ -25,6 +29,8 @@ const navItems: NavItem[] = [
   { path: "/parts", label: "Parts Catalog", description: "Internal and vendor parts" },
   { path: "/requirements", label: "Requirements", description: "Traceable requirements" },
   { path: "/bom", label: "BoM & Procurement", description: "Snapshots and exports" },
+  { path: "/safety", label: "Safety", description: "Hazard register" },
+  { path: "/analysis", label: "Analysis", description: "Pressure drop and relief sizing" },
   { path: "/reviews", label: "Reviews", description: "Impact and approvals" },
   { path: "/settings", label: "Settings", description: "Project configuration" }
 ];
@@ -126,7 +132,42 @@ function UnsavedNavigationGuard() {
 }
 
 function Workspace({ onSignOut }: { onSignOut: () => void }) {
-  const { user, busy, message, error } = useWorkspace();
+  const { user, busy, message, error, selectedProjectId, selectProject, selectSystem, setSelectedPartId, setSelectedRequirementId } = useWorkspace();
+  const navigate = useNavigate();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!isPaletteShortcut(event)) return;
+      event.preventDefault();
+      setPaletteOpen((current) => !current);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  /** Open a search result where it lives, switching project when it is in another one. */
+  function openHit(hit: SearchHit) {
+    if (hit.kind === "part") {
+      setSelectedPartId(hit.id);
+      navigate("/parts");
+      return;
+    }
+    if (hit.drawing_id) {
+      // Drafting follows the link itself, asking before it drops unsaved edits.
+      navigate(draftingHref({ projectId: hit.project_id ?? undefined, drawingId: hit.drawing_id, sheetId: hit.sheet_id ?? undefined, itemId: hit.item_id ?? undefined }));
+      return;
+    }
+    if (hit.project_id && !selectProject(hit.project_id)) return;
+    if (hit.kind === "requirement") {
+      setSelectedRequirementId(hit.id);
+      navigate("/requirements");
+    } else {
+      if (hit.kind === "system") selectSystem(hit.id, { confirmed: true });
+      navigate("/systems");
+    }
+  }
+
   return (
     <AppShell
       navItems={navItems}
@@ -135,8 +176,10 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
       error={error}
       user={user}
       onSignOut={onSignOut}
+      onSearch={() => setPaletteOpen(true)}
       switcher={(collapsed, expand) => <WorkspaceSwitcher collapsed={collapsed} onExpand={expand} />}
     >
+      <CommandPalette open={paletteOpen} projectId={selectedProjectId} onClose={() => setPaletteOpen(false)} onOpenHit={openHit} />
       <UnsavedNavigationGuard />
       <Suspense fallback={<main className="page"><p className="hint">Loading…</p></main>}>
         <Routes>
@@ -149,6 +192,8 @@ function Workspace({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/parts" element={<PartsPage />} />
           <Route path="/requirements" element={<RequirementsPage />} />
           <Route path="/bom" element={<BomPage />} />
+          <Route path="/safety" element={<SafetyPage />} />
+          <Route path="/analysis" element={<AnalysisPage />} />
           <Route path="/reviews" element={<ReviewsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />

@@ -349,7 +349,7 @@ describe("PartsCatalog", () => {
           ]
         });
       }
-      if (path === "/parts" && (init?.method ?? "GET") === "GET") return jsonResponse([samplePart]);
+      if (path.startsWith("/parts?limit=") && (init?.method ?? "GET") === "GET") return jsonResponse([samplePart]);
       return null;
     });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);

@@ -175,6 +175,112 @@ Change impact:
 
 - `GET /changes/impact?object_type=...&object_id=...`
 
+Hazards (safety register, `app/api/hazard_routes.py`, table `hazards`, migration `0017`):
+
+- `GET /projects/{project_id}/hazards` (each hazard with its derived `risk_score`, `risk_level`, and its trace `links`)
+- `POST /projects/{project_id}/hazards` (omit `key` for the next free `HAZ-nnn`)
+- `PUT /hazards/{hazard_id}`
+- `DELETE /hazards/{hazard_id}` (also removes the hazard's trace links)
+
+A hazard has a category (`overpressure`, `backflow`, `ignition`, `contamination`, `single_point_failure`, `trapped_fluid`, `other`), severity 1-4, likelihood 1-5, mitigation, status (`open`, `mitigated`, `accepted`, `closed`), and owner. Risk is derived, not stored: score = severity x likelihood; 10 and above is high, 5 to 9 medium, below that low, and a severity 4 hazard is never below medium (`models.hazard_risk_level`). Hazards link to drawing items and requirements through `trace_links` with `source_type="hazard"` (`POST /trace-links`; same-project check as for requirements).
+
+Analyses (stored calculations, `app/api/analysis_routes.py`, `app/services/analysis.py`, table `analyses`, migration `0017`):
+
+- `POST /analysis/preview` (`{kind, inputs}`; computes without storing; open to viewers)
+- `GET /projects/{project_id}/analyses`
+- `POST /projects/{project_id}/analyses` (`{kind, name, inputs, drawing_id?, status?}`)
+- `GET /analyses/{analysis_id}`
+- `PUT /analyses/{analysis_id}` (always recomputes the results from the stored or new inputs)
+- `DELETE /analyses/{analysis_id}`
+
+Results are computed on the server by pure functions and stored next to the validated inputs (defaults filled in) with a `calc_version`, so a stored analysis is reproducible. Invalid inputs return 422 with one readable line per field. Kinds:
+
+- `pressure_drop`: incompressible flow through line segments in series. Darcy-Weisbach with f = 64/Re below Re 2300 and the Swamee-Jain correlation from Re 4000 (the larger of the two in between, with a warning); minor losses K rho v^2/2 per segment; elevation head rho g dz; valves and components by US Cv (US gal/min of 60 degF water at 1 psi, specific gravity referred to 999.0 kg/m^3; Cv = 1.156 Kv). Inputs carry their unit in the name (`density_kg_m3`, `viscosity_mpa_s`, `mass_flow_kg_s` or `volumetric_flow_l_min`, `inner_diameter_mm`, `length_m`, `roughness_mm`, `k_sum`, `elevation_change_m`, `cv_items`); results are pressure drops in kPa per segment and in total, with velocity, Reynolds number, regime, and friction factor, plus warnings (velocity above the limit, transitional flow, correlation range).
+- `relief_sizing`: API Standard 520 Part I preliminary sizing in SI units. Gas or vapour, critical flow: A = W / (C Kd P1 Kb Kc) sqrt(T Z / M) with C = 0.03948 sqrt(k (2/(k+1))^((k+1)/(k-1))); subcritical flow: A = 17.9 W / (F2 Kd Kc) sqrt(Z T / (M P1 (P1 - P2))). Liquid (certified valves): A = 11.78 Q / (Kd Kw Kc Kv) sqrt(G / (P1 - P2)), with the 10th-edition viscosity correction Kv = (1 + 170/Re)^-0.5 when a viscosity is given, else Kv = 1 with a warning. A in mm^2, W in kg/h, Q in L/min, pressures in kPa, T in K, M in kg/kmol. The result names the next API 526 orifice letter (D to T) and lists its assumptions; steam, two-phase flow, the relief scenario itself, and inlet and outlet piping are out of scope.
+
+`backend/tests/test_analysis_service.py` checks every formula against a hand calculation, a first-principles derivation, or the published API 520 example values.
+
+Search:
+
+- `GET /search?q=...&project_id=...&limit=...`: tags, line numbers, drawings, parts,
+  requirements, systems, and projects across all projects. Hits are ranked exact, then
+  prefix, then substring; `project_id` only orders hits of that project first; `limit`
+  caps hits per kind. Each hit carries the ids needed to open it (project, drawing,
+  sheet, item). The frontend's Ctrl+K palette is built on it.
+
+Reuse:
+
+- `POST /drawings/{drawing_id}/copy` with optional `project_id`, `system_id`, `number`,
+  `title`: copies a drawing (released ones included) with all sheets into a new draft at
+  its first revision, in the same or another project. Tags, part assignments, and line
+  data are copied; approvals, revision history, DRC waivers, and trace links are not.
+  Sheets with content are flagged stale so they are re-indexed and re-checked against
+  the destination project's tag scheme, line classes, and requirements: by the server
+  right after the copy when `FSDP_ENGINE_CLI` is set, else when the copy is opened.
+
+Server-side index (see "Server-side index and DRC" below):
+
+- `GET /engine/status`: `{enabled, available}` — whether this server runs the engine
+  itself (`FSDP_ENGINE_CLI` set, bundle present).
+- `POST /projects/{project_id}/reindex` (writers): re-indexes and re-checks every stale
+  sheet of the project's unreleased drawings; returns `drawings`, `stale`, `indexed`,
+  `skipped`, `failed`, `errors` (per sheet), and the `stale_sheets` that remain.
+- `POST /drawings/{drawing_id}/reindex` (writers): the same for one drawing; 409 for a
+  released drawing. Both return 503 when the engine is not configured.
+
+Project access (see `backend/app/core/access.py`):
+
+- `GET /projects/{project_id}/access`: the restriction, the members, and what the caller
+  may do (`can_write`, `can_manage`).
+- `PUT /projects/{project_id}/access` (`restricted`), `PUT` and `DELETE
+  /projects/{project_id}/members/{user_id}` (`role`: viewer, engineer, owner): owners and
+  administrators only. A members-only project keeps at least one owner.
+- `GET /users/directory`: active accounts, for picking members (writers).
+- Every data route is checked by one router-level dependency, `enforce_project_access`,
+  which resolves the project from the path parameter names (`project_id`, `system_id`,
+  `drawing_id`, `sheet_id`, `revision_id`, `requirement_id`, `snapshot_id`,
+  `line_class_id`, `diagram_id`, `link_id`, `hazard_id`, `analysis_id`). **A new route for a project-owned object
+  must use one of these names or register its own with `register_path_resolver`**;
+  handlers that take a project in the body, or return rows from several projects, call
+  `require_project_write` / `hidden_project_ids` themselves. A project the caller may not
+  see answers 404.
+
+Lineage:
+
+- `GET /drawings/{drawing_id}/lineage`: the source a drawing was copied from (omitted if
+  deleted or not visible to the caller; the number and revision at the time of the copy
+  stay on the drawing) and the copies taken of it.
+- `GET /drawings/{drawing_id}/lineage/diff`: added, removed, and changed items and lines
+  of a copy against its source as both stand now, matched by sheet number and document
+  id, with the sheets whose index is stale named.
+
+Paging:
+
+- `GET /parts` accepts `limit` (up to 2000), `offset`, and `sort` (a column name, `-` for
+  descending) next to its filters and reports the number of matches in `X-Total-Count`.
+- `GET /changes` accepts `limit`, `offset`, and `project_id`, with `X-Total-Count`.
+
+Single sign-on:
+
+- `GET /auth/config` (public): whether SSO is on and what the button says.
+- `GET /auth/sso/login` redirects to the provider (authorization code flow with PKCE,
+  state, and nonce held in a short-lived signed cookie); `GET /auth/sso/callback` verifies
+  the ID token against the provider's keys, issuer, audience, and nonce, matches or
+  creates the account by verified email, and starts the same cookie session as a
+  password sign-in. Failures return to the frontend with `?sso_error=`.
+
+API tokens and sign-in:
+
+- `GET /auth/tokens`, `POST /auth/tokens` (`name`, optional `expires_in_days`),
+  `DELETE /auth/tokens/{token_id}`: personal access tokens for scripts and integrations.
+  The secret (`fsdp_pat_...`) is returned once and stored only as a SHA-256 hash. Send
+  it as `Authorization: Bearer <token>`; the request then runs as the token's owner with
+  that user's role, and stops working when the token is revoked or expires, or the user
+  is deactivated.
+- `POST /auth/login` locks an account for `FSDP_LOGIN_LOCK_MINUTES` after
+  `FSDP_LOGIN_MAX_FAILURES` consecutive failures (429 while locked). An admin password
+  reset or reactivation lifts the lock.
+
 ### Validation and Error Handling
 
 Current explicit validations:
@@ -183,6 +289,8 @@ Current explicit validations:
 - Duplicate part numbers return `409`.
 - Duplicate requirement keys within a project return `409`.
 - Trace links validate that both endpoints exist and belong to the same project (catalog parts are shared).
+- Duplicate hazard keys within a project return `409`; hazard category, status, severity, and likelihood are validated (`422`).
+- Analysis inputs are validated per kind (ranges, required fields, unknown fields refused) and return `422` with the field path.
 
 Future validation should add stronger field constraints, engineering-unit validation, and object-type validation for trace links.
 
@@ -209,6 +317,8 @@ The current page supports this workflow:
 7. Trace a requirement to a tagged drawing item or a whole drawing.
 8. Generate drawing BoM snapshots and download CSV/XLSX.
 9. Inspect the change impact of a part or requirement and open affected tags in Drafting.
+10. Record hazards on the Safety page (`pages/SafetyPage.tsx`): a sortable, filterable, inline-editable register, a severity x likelihood risk matrix, and links from a hazard to tagged drawing items (opening them in Drafting) and requirements.
+11. Run the calculators on the Analysis page (`pages/AnalysisPage.tsx`): pressure drop over a table of line segments (optionally filled from a drawing's line list) and relief valve sizing, with a live server-side preview, units, warnings, stated assumptions, and stored analyses.
 
 ### Legacy Diagrams
 
@@ -262,8 +372,14 @@ Frontend:
 ```powershell
 cd frontend
 npm test
+npm run lint
 npm run build
+npm run build:engine   # bundles the engine CLI to dist-engine/engine-cli.mjs
 ```
+
+`backend/tests/test_server_index.py` runs the real engine when Node and
+`frontend/dist-engine/engine-cli.mjs` exist (build it first; the tests are skipped
+otherwise, and CI builds it and sets `FSDP_REQUIRE_ENGINE=1` so they cannot skip there).
 
 Current backend tests cover:
 
@@ -276,21 +392,51 @@ Current backend tests cover:
 
 ## Current Limitations
 
-- The frontend is still a single-page MVP workspace, not a production navigation model.
-- There is no authentication, authorization, or role-based approval workflow.
-- Change impact is shallow and only follows direct trace links plus part/component BoM usage.
-- Engineering analysis modules are not implemented yet.
-- Configuration baselines, branches, and releases are not implemented yet.
-- Certification package generation is not implemented beyond BoM CSV export and future-oriented stubs.
+Status as of 2026-11. The single-project workflow (draft, check, release, BoM, change
+impact) is complete; the gaps below are what stands between it and use by a large
+organization with many projects and hundreds of engineers.
+
+- **Single tenant.** One organization per deployment; SSO is OpenID Connect only (no
+  SAML), and accounts are not provisioned or removed by SCIM. Group claims from the
+  identity provider are not mapped to roles or project membership.
+- **Access is per project, not per drawing or per field.** The shared parts catalog and
+  symbol library are visible to every signed-in user.
+- **The parts catalog is still held in the browser.** It is fetched in pages of 1,000 and
+  the API sorts and pages (`limit`, `offset`, `sort`), but the catalog grid, the part
+  pickers in Drafting, and the DRC work on the whole list in memory. A catalog well beyond
+  roughly 50k parts needs the grid and pickers to query the server instead.
+- **Search is a substring scan** (`ILIKE`) across seven tables. Add trigram indexes
+  (`pg_trgm`) or a search service before the index tables reach millions of rows.
+- **One editor per sheet at a time.** Saves are versioned, so a second writer gets a
+  conflict rather than overwriting, but there is no presence, locking, or merge.
+- **The server-side index is opt-in and partial.** With `FSDP_ENGINE_CLI` set, new,
+  copied, and revised drawings are indexed and checked by the server; sheets flagged
+  stale by a part or requirement change still wait for `POST /projects/{id}/reindex`
+  (the "Re-index project" action) or for someone to open the drawing. Without the
+  setting everything is computed in the browser, as before.
+- **Lineage compares, it does not merge.** A copy records its source and can be
+  compared with it, but changes are carried over by hand; there is no "update from
+  template".
+- **Tag uniqueness is per drawing**, not per project.
+- **Sign-in lockout is per account**, with no per-IP throttling; put the API behind a
+  rate-limiting proxy when it is exposed to the internet.
+- **Engineering analysis is a first slice.** Pressure drop covers liquids in series
+  segments (no networks or compressible line flow); relief sizing covers the API 520
+  orifice equations for gas and liquid (no steam, two-phase flow, or calculation of the
+  required relieving rate); the trapped-volume rule is topological (it ignores valve
+  positions and the fluid). Certification packages are not implemented.
 
 ## Recommended Next Implementation Areas
 
-1. Add pressure-drop analysis for simple incompressible line networks.
-2. Introduce hazard objects linked to components, lines, and requirements.
-3. Add trapped-volume detection from valve states and graph connectivity.
-4. Add relief valve sizing with stored assumptions and calculation reports.
-5. Add verification matrix views from requirements and trace links.
-6. Add release/baseline snapshots for diagrams, BoMs, requirements, and analyses.
+1. Map identity-provider groups to project membership; SCIM provisioning.
+2. A server-backed catalog grid and part pickers (the API already pages and sorts).
+3. Re-index on the server after part and requirement changes too, and make the engine
+   the default, so lists, search, and checks never depend on a browser.
+4. Apply selected changes from a template to its copies.
+5. Pressure drop for branched networks and compressible gas flow.
+6. Hazards linked to lines and analyses, shown on the drawing and in change impact.
+7. Valve states (normally open, locked open) and line fluid in trapped-volume detection.
+8. Relief scenarios (required relieving rate), steam and two-phase sizing, and printable calculation reports.
 
 ## Schematic Engine (Drafting page)
 
@@ -314,7 +460,7 @@ The Drafting page is the first slice of the [P&ID professional upgrade plan](pid
 
 **Drawing BoM and parts** (`POST /drawings/{id}/bom`, `app/services/bom.py`; `components/schematic/AssignPartModal.tsx`, `engine/parts.ts`): BoM snapshots from the sheet index roll tagged items up by assigned part (`SymbolItem.partId`), list DNP items without counting them, add spares, and add tubing/fitting/tee bulk rows from lines; readiness issues carry codes and severities. Parts are assigned from the inspector with warn-only checks; the canvas shows part badges (not exported) and the catalog's where-used panel lists drawing placements. XLSX export uses openpyxl.
 
-**Design rule checks and requirements** (`frontend/src/engine/drc.ts`, `sizes.ts`, `drcSheet.ts`; `components/schematic/DrcPanel.tsx`; `app/services/drc.py`, migration `0012`): the engine checks connectivity, tags, line data, port sizes, spec continuity, part status and rating, relief coverage of isolable volumes, and requirement constraints (`requirements.constraint`). Findings carry a stable key; saving a sheet stores them and the per-item requirement checks (`drc_results`, `drc_requirement_checks`); waivers by key live in `drc_waivers` (`PUT/DELETE /sheets/{id}/drc/waivers`). `GET /sheets/{id}/drc`, `GET /drawings/{id}/drc`, and `GET /projects/{id}/verification-matrix` serve counts, findings, and the requirement verdicts; trace links accept `drawing`, `sheet_item`, and `sheet_line` targets. The PDF export accepts extra SVG pages (merged with pypdf) for the findings sheet.
+**Design rule checks and requirements** (`frontend/src/engine/drc.ts`, `sizes.ts`, `drcSheet.ts`; `components/schematic/DrcPanel.tsx`; `app/services/drc.py`, migration `0012`): the engine checks connectivity, tags, line data, port sizes, spec continuity, part status and rating, relief coverage of isolable volumes, trapped volumes, and requirement constraints (`requirements.constraint`). The `trapped_volume` rule (warning, waivable) reports a process line section whose every way out ends at a closable isolation valve or at the outlet of a check valve, bounded by at least two valves, with no relief device, vent, drain, or connector on it; it stays silent when a boundary is a regulator, a multi-way or custom valve, when a line end or port is left open, and for dead legs behind a single valve, and it ignores valve positions and the fluid (see `trappedVolumes` in `drc.ts`). Findings carry a stable key; saving a sheet stores them and the per-item requirement checks (`drc_results`, `drc_requirement_checks`); waivers by key live in `drc_waivers` (`PUT/DELETE /sheets/{id}/drc/waivers`). `GET /sheets/{id}/drc`, `GET /drawings/{id}/drc`, and `GET /projects/{id}/verification-matrix` serve counts, findings, and the requirement verdicts; trace links accept `drawing`, `sheet_item`, and `sheet_line` targets. The PDF export accepts extra SVG pages (merged with pypdf) for the findings sheet.
 
 **Export** (`POST /sheets/{id}/export`): the browser renders the sheet SVG with the shared renderer and the server converts it with Cairo (`app/services/export.py`) to PDF at paper size or PNG at a DPI; the image installs `libcairo2`.
 
@@ -337,6 +483,94 @@ A drawing and its current revision move through three states, changed only by ex
 - **Released drawings are locked.** Sheet create/update/delete, drawing metadata, revisions, and waivers return 409 until a new revision is started. Release stores an immutable snapshot of every sheet (document, index rows, DRC findings and waivers) on the revision, served by `GET /revisions/{id}/snapshot`; Drafting's "View" opens it read-only with a sheet preview and SVG download.
 - **Read-only editing.** For released drawings and for viewers the canvas runs the editor in read-only mode (`Editor.setReadOnly`, `SchematicCanvas readOnly`): every document command, undo/redo, paste, and drawing tool is dropped, while select, pan, zoom, find, copy, and measure keep working. The inspector, toolbar, and drawing form are disabled, and released drawings show a "Released — start a new revision to edit" banner.
 
-**Staleness.** A sheet's stored index and DRC are stale when its document changed without them (a new or converted sheet with content), when an assigned part changes, or when a project requirement changes (`app/services/sheet_index.py`). List, BoM, and verification-matrix responses carry `stale_sheets`, BoM snapshots record the sheets that were stale when they were generated, and exports print a warning row. When a writer opens a drawing that is not released, Drafting re-indexes its stale sheets in the background (`components/schematic/useStaleReindex.ts`): one sheet at a time, from the stored document, through the same `deriveSheetData` (`engine/derived.ts`) that save uses (registry, tag scheme, parts, requirement constraints, waivers, reserved tags and connector targets from the other sheets), then `PUT /sheets/{id}` with document, index, and DRC. The run stops when the drawing changes, and the open sheet is left alone while it has unsaved edits (its save indexes it). Saves are versioned (`DocumentStore.markSaved(version)`), so edits made while a save is in flight stay unsaved.
+**Staleness.** A sheet's stored index and DRC are stale when its document changed without them (a new or converted sheet with content), when an assigned part changes, or when a project requirement changes (`app/services/sheet_index.py`). List, BoM, and verification-matrix responses carry `stale_sheets`, BoM snapshots record the sheets that were stale when they were generated, and exports print a warning row. When the server runs the engine itself (`FSDP_ENGINE_CLI`, see "Server-side index and DRC" below) it refreshes new, copied, and revised drawings on its own and any project on request. Otherwise, and for whatever is still stale, when a writer opens a drawing that is not released, Drafting re-indexes its stale sheets in the background (`components/schematic/useStaleReindex.ts`): one sheet at a time, from the stored document, through the same `computeSheetPayload` (`engine/sheetPayload.ts`, over `deriveSheetData` in `engine/derived.ts`) that save uses (registry, tag scheme, parts, requirement constraints, waivers, reserved tags and connector targets from the other sheets), then `PUT /sheets/{id}` with document, index, and DRC. The run stops when the drawing changes, and the open sheet is left alone while it has unsaved edits (its save indexes it). Saves are versioned (`DocumentStore.markSaved(version)`), so edits made while a save is in flight stay unsaved.
+
+### Server-side index and DRC
+
+The index rows and DRC results are always computed by the TypeScript engine; the server
+can run that same engine under Node, so a sheet does not have to wait for a browser.
+
+- **One function.** `computeSheetPayload` (`frontend/src/engine/sheetPayload.ts`) turns
+  plain data — the sheet document, the drawing's frame template and other sheets, custom
+  symbol rows, the stored tag scheme, parts, requirements with constraints, waivers —
+  into the `index` and `drc` of `PUT /sheets/{id}`. It is a thin adapter over
+  `deriveSheetData` and has no DOM, React, or network dependency. The Drafting page's
+  save and background re-index call it, and so does the server, through the CLI.
+  Custom symbols need a DOM parser only to sanitize their SVG for painting
+  (`sanitizeSvgInner` returns `""` without one); the index and DRC read their ports,
+  category, tag prefix, and size, so under Node they are registered without markup.
+- **CLI.** `frontend/src/engine/cli.ts` reads one JSON request on stdin
+  (`engineRequest.ts`: `{context: {customSymbols, tagScheme, parts, requirements},
+  drawings: [{frameTemplate, sheets: [{sheetId, sheetNo, document, waivers, compute}]}]}`)
+  and writes `{protocol, results: [{sheetId, ok, index, drc, counts} | {sheetId, ok:
+  false, error}]}` on stdout. A sheet that fails reports its error and the others go on;
+  exit code 2 means the request itself was unreadable. `npm run build:engine`
+  (`vite.engine.config.ts`) bundles it into one dependency-free file,
+  `frontend/dist-engine/engine-cli.mjs` (about 100 kB, Node 18 or later).
+- **Service.** `backend/app/services/server_index.py` gathers the request from the
+  database (all sheets of the drawing, the project's tag scheme and requirements, the
+  parts and custom symbols the documents reference, the sheet's waivers), runs
+  `node <bundle>` with `subprocess` (argument list, no shell, a minimal environment, a
+  timeout, a 32 MB request cap, stderr logged; one engine process at a time per API
+  process), validates each result through `SheetIndexIn` / `DrcIn`, and stores it with
+  `replace_sheet_index` / `replace_sheet_drc`, clearing `index_stale` and setting
+  `indexed_at` as a save does. It writes a change-log entry ("Re-indexed sheet … on the
+  server"). The stored document is not rewritten.
+- **Safety.** Released drawings are never touched. No transaction is open while Node
+  runs; the write then takes row locks on the drawing and its sheets and stores a sheet
+  only if it is still stale, its `updated_at` is the one read before the run, and no
+  sheet document of the drawing changed. Otherwise the sheet is counted as `skipped`
+  and left to whoever changed it (a save indexes it; anything else leaves it stale for
+  the next run). `PUT /sheets/{id}` takes the same row lock, so a save and a server
+  re-index of one sheet never interleave.
+- **Triggers.** `POST /projects/{project_id}/reindex` and `POST
+  /drawings/{drawing_id}/reindex`; and, as FastAPI background tasks with a database
+  session of their own, after creating a drawing or sheet from a document (conversion
+  included), `POST /drawings/{id}/copy`, `POST /drawings/{id}/revise`, and a
+  `PUT /sheets/{id}` that stores a document without its index (an API client). The
+  background runs are best effort: a failure is logged and the sheet stays stale.
+- **Browser.** The Drafting page's background re-index refetches each sheet and skips
+  one the server has refreshed meanwhile, so the two do not rewrite each other's work.
+  Where a page warns about stale sheets (BoM page), writers get "Re-index project",
+  hidden when `GET /engine/status` reports the engine off.
+- **Configuration** (`backend/app/core/config.py`): `FSDP_ENGINE_CLI` (path to the
+  bundle; empty, the default, turns all of the above off), `FSDP_ENGINE_NODE` (default
+  `node`), `FSDP_ENGINE_TIMEOUT_SECONDS` (default 60, per drawing). The API Docker image
+  builds the bundle, ships Node, and sets `FSDP_ENGINE_CLI`.
+- **Parity tests.** `frontend/src/engine/cli.bundle.test.mjs` builds the bundle, runs it
+  under Node, and compares with the same request computed in jsdom (as in the browser);
+  it also keeps `frontend/src/engine/testdata/engine-parity.json` (request and expected
+  response) in step. `backend/tests/test_server_index.py` loads that request into a
+  database, runs the real engine through the service, and expects the stored rows to
+  equal the expected response; fake CLI scripts cover timeout, non-zero exit, bad JSON,
+  per-sheet errors, and schema violations.
+- **Not covered.** Sheets flagged stale by part or requirement changes are not
+  re-indexed automatically (use the endpoint); line classes are not an engine input
+  (neither the index nor the DRC reads them today).
 
 **BoM release.** `PUT /bom/{id}/status` with `released` is refused (409, `detail.issues`) while readiness has blocking issues: rows without a catalog part, obsolete or restricted parts, or a snapshot generated from stale sheets. It stamps `released_by/at`; released BoMs are immutable (no return to draft; generate a new snapshot instead). The BoM page lists a drawing's snapshots, splits readiness into blocking issues and warnings, diffs two snapshots of the same drawing, and exports CSV and XLSX (`GET /bom/{id}/xlsx`, with a header block for project, drawing, revision, and status). Legacy diagram BoMs stay visible there as read-only history.
+
+### Symbol drawing conventions
+
+- **Pipe weight.** A symbol outline is drawn at 0.35 mm and a process line at 0.5 mm.
+  The straight runs inside a built-in symbol that end on a process port are pipe, so
+  they are marked (`data-stub`, by `markProcessStubs`) and drawn at pipe weight: a valve
+  sits in its line without a visible step in thickness.
+- **Outline.** Every built-in symbol carries `ink`, the box around what is actually
+  drawn (`svgInkBounds`), next to its nominal origin-centred `width`/`height`, which the
+  editor still selects and snaps by.
+- **Captions.** A tag goes a fixed gap below the outline; if a line leaves from below it
+  moves above, then right, then left (`captionSideFor`), so it never sits on a connected
+  line. A symbol with ports on every side gets its tag at the lower right corner, or
+  lettered inside when it is a vessel large enough to hold it. Flag terminators carry
+  their text inside.
+- **Lettering** inside a symbol (the S of a solenoid) stays upright when the symbol is
+  rotated or mirrored, and long instrument function letters are set smaller.
+- **Scale.** Symbols are authored on the 2.5 mm module (valve bodies 12 x 7 mm, bubbles
+  10 mm, text 2.5 mm). Vessels are small by default and meant to be scaled per item
+  (`scale`; the demo uses 4 for its run tanks): ports stay on the grid and line weights
+  and text do not scale.
+- **Line labels.** A line prints its number and size on its longest segment;
+  `showNumberLabel: false` (and `showSpecLabel: false`) keep the data for lists and checks
+  without printing it, so a run drawn in several pieces between components is labelled
+  once.

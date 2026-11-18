@@ -39,7 +39,10 @@ type SelectOptions = {
 
 export type WorkspaceContextValue = {
   user: User;
+  /** May change the selected project (account role and, in a members-only project, membership). */
   canWrite: boolean;
+  /** May change the shared catalog (parts, symbols): the account role alone. */
+  canWriteCatalog: boolean;
   isAdmin: boolean;
 
   busy: boolean;
@@ -258,12 +261,35 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
   }, [selectedSystemId]);
 
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null;
+
+  // In a members-only project a member may be read-only; ask the server once per project.
+  // Open projects and administrators need no request.
+  const [memberAccess, setMemberAccess] = useState<{ projectId: string; canWrite: boolean } | null>(null);
+  const needsAccessCheck = Boolean(selectedProject?.restricted) && user.role !== "admin";
+  useEffect(() => {
+    if (!needsAccessCheck || !selectedProjectId) return;
+    let cancelled = false;
+    api
+      .getProjectAccess(selectedProjectId)
+      .then((access) => {
+        if (!cancelled) setMemberAccess({ projectId: selectedProjectId, canWrite: access.can_write });
+      })
+      .catch(() => {
+        if (!cancelled) setMemberAccess({ projectId: selectedProjectId, canWrite: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [needsAccessCheck, selectedProjectId]);
+  // Read-only until the answer for this project is in.
+  const projectWritable = !needsAccessCheck || (memberAccess?.projectId === selectedProjectId && memberAccess.canWrite);
   const selectedSystem = systems.find((system) => system.id === selectedSystemId) ?? null;
 
   const value = useMemo<WorkspaceContextValue>(
     () => ({
       user,
-      canWrite: user.role !== "viewer",
+      canWrite: user.role !== "viewer" && projectWritable,
+      canWriteCatalog: user.role !== "viewer",
       isAdmin: user.role === "admin",
       busy,
       message,
@@ -296,6 +322,7 @@ export function WorkspaceProvider({ user, children }: { user: User; children: Re
     }),
     [
       user,
+      projectWritable,
       busy,
       message,
       error,

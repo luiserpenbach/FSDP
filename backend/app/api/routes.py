@@ -4,12 +4,28 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, defer, selectinload
 
-from app.core.security import require_admin, require_writer
+from app.core.access import (
+    GLOBAL_CHANGE_TYPES,
+    hidden_project_ids,
+    object_project_id,
+    require_object_read,
+    require_project_write,
+)
+from app.core.security import get_current_user, require_admin, require_writer
 from app.db import get_db
 from app.models import (
     BomSnapshot,
@@ -20,9 +36,11 @@ from app.models import (
     Drawing,
     DrawingSheet,
     FluidSystem,
+    Hazard,
     Part,
     PidSymbolDef,
     Project,
+    ProjectMember,
     Requirement,
     SheetItem,
     SheetLine,
@@ -110,6 +128,14 @@ def record_change(
     summary: str,
     actor: str | None = None,
 ) -> None:
+    # The project comes from the request's access check (core/access.py); events about
+    # catalog objects stay project-less even when recorded from a project route.
+    if object_type == "project":
+        project_id = object_id
+    elif object_type in GLOBAL_CHANGE_TYPES:
+        project_id = None
+    else:
+        project_id = db.info.get("project_id")
     db.add(
         ChangeEvent(
             object_type=object_type,
@@ -117,6 +143,7 @@ def record_change(
             action=action,
             summary=summary,
             actor=actor,
+            project_id=project_id,
         )
     )
 
@@ -155,6 +182,8 @@ def _project_trace_endpoints(db: Session, project_id: str) -> list[tuple[str, st
         endpoints.extend(_system_trace_endpoints(db, system.id))
     for requirement in db.scalars(select(Requirement).where(Requirement.project_id == project_id)):
         endpoints.append(("requirement", requirement.id))
+    for hazard_id in db.scalars(select(Hazard.id).where(Hazard.project_id == project_id)):
+        endpoints.append(("hazard", hazard_id))
     drawing_ids = db.scalars(select(Drawing.id).where(Drawing.project_id == project_id))
     endpoints.extend(drawing_trace_endpoints(db, drawing_ids))
     return endpoints
@@ -183,6 +212,8 @@ def create_project(
     project = Project(**{**payload.model_dump(), "name": clean_name})
     db.add(project)
     db.flush()
+    # The creator owns the project, so they can restrict it and manage its members.
+    db.add(ProjectMember(project_id=project.id, user_id=user.id, role="owner"))
     record_change(
         db, "project", project.id, "created", f"Created project {project.name}", actor=user.email
     )
@@ -192,8 +223,14 @@ def create_project(
 
 
 @router.get("/projects", response_model=list[ProjectRead])
-def list_projects(db: Session = Depends(get_db)) -> list[Project]:
-    return list(db.scalars(select(Project).order_by(Project.created_at.desc())))
+def list_projects(
+    db: Session = Depends(get_db), user: User = Depends(get_current_user)
+) -> list[Project]:
+    stmt = select(Project).order_by(Project.created_at.desc())
+    hidden = hidden_project_ids(db, user)
+    if hidden:
+        stmt = stmt.where(Project.id.notin_(hidden))
+    return list(db.scalars(stmt))
 
 
 @router.get("/projects/{project_id}", response_model=ProjectRead)
@@ -491,6 +528,20 @@ def create_part(
     return part
 
 
+PARTS_PAGE_MAX = 2000
+PART_SORT_COLUMNS = {
+    "part_number": Part.part_number,
+    "description": Part.description,
+    "manufacturer": Part.manufacturer,
+    "part_type": Part.part_type,
+    "material": Part.material,
+    "pressure_rating_bar": Part.pressure_rating_bar,
+    "lifecycle_status": Part.lifecycle_status,
+    "qualification_status": Part.qualification_status,
+    "updated_at": Part.updated_at,
+}
+
+
 @router.get("/parts", response_model=list[PartRead])
 def list_parts(
     q: str | None = None,
@@ -501,8 +552,25 @@ def list_parts(
     lifecycle_status: str | None = None,
     preferred: bool | None = None,
     min_pressure_bar: float | None = None,
+    sort: str = "part_number",
+    limit: int | None = Query(default=None, ge=1, le=PARTS_PAGE_MAX),
+    offset: int = Query(default=0, ge=0),
+    response: Response = None,
     db: Session = Depends(get_db),
 ) -> list[Part]:
+    """The catalog, filtered and sorted on the server.
+
+    Without `limit` every match is returned (small catalogs, older clients). With
+    it, one page is returned and `X-Total-Count` carries the number of matches;
+    `sort` is a column name, prefixed with `-` for descending.
+    """
+    descending = sort.startswith("-")
+    column = PART_SORT_COLUMNS.get(sort.lstrip("-"))
+    if column is None:
+        raise HTTPException(
+            status_code=422,
+            detail="Unknown sort column. Use one of: " + ", ".join(sorted(PART_SORT_COLUMNS)),
+        )
     stmt = select(Part)
     if q and q.strip():
         term = f"%{q.strip()}%"
@@ -527,7 +595,13 @@ def list_parts(
         stmt = stmt.where(Part.preferred.is_(preferred))
     if min_pressure_bar is not None:
         stmt = stmt.where(Part.pressure_rating_bar >= min_pressure_bar)
-    return list(db.scalars(stmt.order_by(Part.part_number)))
+    total = db.scalar(select(func.count()).select_from(stmt.subquery()))
+    response.headers["X-Total-Count"] = str(total or 0)
+    # The id breaks ties, so pages never repeat or skip a part.
+    stmt = stmt.order_by(column.desc() if descending else column.asc(), Part.id)
+    if limit is not None:
+        stmt = stmt.offset(offset).limit(limit)
+    return list(db.scalars(stmt))
 
 
 @router.get("/parts/{part_id}", response_model=PartRead)
@@ -691,8 +765,13 @@ def obsolete_part(
 
 
 @router.get("/parts/{part_id}/usage", response_model=PartUsageRead)
-def get_part_usage(part_id: str, db: Session = Depends(get_db)) -> PartUsageRead:
+def get_part_usage(
+    part_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> PartUsageRead:
     part = require_model(db, Part, part_id)
+    hidden = hidden_project_ids(db, user)
     components = list(
         db.scalars(select(ComponentInstance).where(ComponentInstance.part_id == part.id))
     )
@@ -702,7 +781,7 @@ def get_part_usage(part_id: str, db: Session = Depends(get_db)) -> PartUsageRead
         diagram = db.get(Diagram, component.diagram_id)
         system = db.get(FluidSystem, diagram.system_id) if diagram else None
         project = db.get(Project, system.project_id) if system else None
-        if diagram is None or system is None or project is None:
+        if diagram is None or system is None or project is None or project.id in hidden:
             continue
         diagram_ids.add(diagram.id)
         usage_components.append(
@@ -731,7 +810,7 @@ def get_part_usage(part_id: str, db: Session = Depends(get_db)) -> PartUsageRead
         select(SheetItem, DrawingSheet, Drawing)
         .join(DrawingSheet, SheetItem.sheet_id == DrawingSheet.id)
         .join(Drawing, DrawingSheet.drawing_id == Drawing.id)
-        .where(SheetItem.part_id == part.id)
+        .where(SheetItem.part_id == part.id, Drawing.project_id.notin_(hidden))
         .order_by(Drawing.number, DrawingSheet.sheet_no, SheetItem.tag)
     ).all()
     drawing_ids = {drawing.id for _, _, drawing in drawing_rows}
@@ -918,6 +997,8 @@ def create_requirement(
     if existing:
         raise HTTPException(status_code=409, detail="Requirement key already exists in project")
 
+    require_project_write(db, user, payload.project_id)
+    db.info["project_id"] = payload.project_id
     requirement = Requirement(**payload.model_dump())
     db.add(requirement)
     db.flush()
@@ -1002,6 +1083,19 @@ def delete_requirement(
     return Response(status_code=204)
 
 
+def _visible_links(db: Session, user: User, links: list[TraceLink]) -> list[TraceLink]:
+    """Drop links that reach into a project the user may not see."""
+    hidden = hidden_project_ids(db, user)
+    if not hidden:
+        return links
+    return [
+        link
+        for link in links
+        if object_project_id(db, link.source_type, link.source_id) not in hidden
+        and object_project_id(db, link.target_type, link.target_id) not in hidden
+    ]
+
+
 TRACE_OBJECT_MODELS: dict[str, type] = {
     "project": Project,
     "fluid_system": FluidSystem,
@@ -1010,6 +1104,7 @@ TRACE_OBJECT_MODELS: dict[str, type] = {
     "sheet_line": SheetLine,
     "part": Part,
     "requirement": Requirement,
+    "hazard": Hazard,
 }
 
 # Legacy diagram objects: existing links to them still read and delete; new ones are refused.
@@ -1020,7 +1115,7 @@ def _trace_object_project_id(obj: object) -> str | None:
     """Project a trace endpoint belongs to; None for catalog parts, which are shared."""
     if isinstance(obj, Project):
         return obj.id
-    if isinstance(obj, FluidSystem | Drawing | Requirement):
+    if isinstance(obj, FluidSystem | Drawing | Requirement | Hazard):
         return obj.project_id
     if isinstance(obj, SheetItem | SheetLine):
         return obj.sheet.drawing.project_id
@@ -1056,7 +1151,11 @@ def create_trace_link(
                     + ", ".join(sorted(TRACE_OBJECT_MODELS))
                 ),
             )
-        project_ids.append(_trace_object_project_id(require_model(db, model, object_id)))
+        project_id = _trace_object_project_id(require_model(db, model, object_id))
+        if project_id:
+            require_project_write(db, user, project_id)
+            db.info["project_id"] = project_id
+        project_ids.append(project_id)
     if None not in project_ids and project_ids[0] != project_ids[1]:
         raise HTTPException(
             status_code=400, detail="Trace link endpoints belong to different projects"
@@ -1112,9 +1211,13 @@ def delete_trace_link(
 
 @router.get("/objects/{object_type}/{object_id}/trace", response_model=list[TraceLinkRead])
 def object_trace(
-    object_type: str, object_id: str, db: Session = Depends(get_db)
+    object_type: str,
+    object_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ) -> list[TraceLink]:
-    return get_trace_links(db, object_type, object_id)
+    require_object_read(db, user, object_type, object_id)
+    return _visible_links(db, user, get_trace_links(db, object_type, object_id))
 
 
 @router.get("/diagrams/{diagram_id}/bom", response_model=list[BomSnapshotRead])
@@ -1451,17 +1554,78 @@ def export_bom_xlsx(snapshot_id: str, db: Session = Depends(get_db)) -> Response
 
 
 @router.get("/changes/impact", response_model=ImpactRead)
-def change_impact(object_type: str, object_id: str, db: Session = Depends(get_db)) -> dict:
-    return get_change_impact(db, object_type, object_id)
+def change_impact(
+    object_type: str,
+    object_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> dict:
+    require_object_read(db, user, object_type, object_id)
+    impact = get_change_impact(db, object_type, object_id)
+    hidden = hidden_project_ids(db, user)
+    if not hidden:
+        return impact
+    # A catalog part is used across projects: report only what this user may see.
+    drawings = [row for row in impact["affected_drawings"] if row["project_id"] not in hidden]
+    drawing_ids = {row["id"] for row in drawings}
+    return {
+        **impact,
+        "direct_links": _visible_links(db, user, impact["direct_links"]),
+        "affected_drawings": drawings,
+        "affected_sheet_items": [
+            row for row in impact["affected_sheet_items"] if row["drawing_id"] in drawing_ids
+        ],
+        "affected_requirements": [
+            row for row in impact["affected_requirements"] if row["project_id"] not in hidden
+        ],
+        "affected_bom_snapshots": [
+            snapshot
+            for snapshot in impact["affected_bom_snapshots"]
+            if object_project_id(db, "bom_snapshot", snapshot.id) not in hidden
+        ],
+        "affected_components": [
+            component
+            for component in impact["affected_components"]
+            if object_project_id(db, "component", component.id) not in hidden
+        ],
+    }
 
 
 @router.get("/changes", response_model=list[ChangeEventRead])
-def list_changes(limit: int = 50, db: Session = Depends(get_db)) -> list[ChangeEvent]:
+def list_changes(
+    response: Response,
+    limit: int = 50,
+    offset: int = 0,
+    project_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[ChangeEvent]:
+    """Change history, newest first. `X-Total-Count` carries the number of matching events."""
     capped = max(1, min(limit, 200))
+    conditions = []
+    if project_id:
+        conditions.append(ChangeEvent.project_id == project_id)
+    hidden = hidden_project_ids(db, user)
+    if hidden:
+        # Events recorded before changes carried a project cannot be attributed, so
+        # users who are shut out of some project only see attributed and catalog events.
+        conditions.append(
+            or_(
+                ChangeEvent.project_id.notin_(hidden),
+                and_(
+                    ChangeEvent.project_id.is_(None),
+                    ChangeEvent.object_type.in_(GLOBAL_CHANGE_TYPES),
+                ),
+            )
+        )
+    total = db.scalar(select(func.count()).select_from(ChangeEvent).where(*conditions))
+    response.headers["X-Total-Count"] = str(total or 0)
     return list(
         db.scalars(
             select(ChangeEvent)
+            .where(*conditions)
             .order_by(ChangeEvent.created_at.desc(), ChangeEvent.id)
+            .offset(max(0, offset))
             .limit(capped)
         )
     )

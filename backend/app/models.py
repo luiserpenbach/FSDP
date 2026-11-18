@@ -14,6 +14,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
     true,
 )
@@ -46,6 +47,31 @@ class User(TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[str] = mapped_column(String(40), nullable=False, default="engineer")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Consecutive failed sign-ins and the resulting temporary lock (see auth_routes.login).
+    failed_logins: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ApiToken(TimestampMixin, Base):
+    """Personal access token for scripts and integrations.
+
+    Only the SHA-256 of the secret is stored; the token acts with its owner's role.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # First characters of the secret, shown so the owner can tell tokens apart.
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Project(TimestampMixin, Base):
@@ -57,6 +83,10 @@ class Project(TimestampMixin, Base):
     owner: Mapped[str | None] = mapped_column(String(160))
     part_name_prefix: Mapped[str | None] = mapped_column(String(40))
     part_name_next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Restricted projects are visible to their members (and administrators) only.
+    restricted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     systems: Mapped[list[FluidSystem]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
@@ -64,6 +94,24 @@ class Project(TimestampMixin, Base):
     requirements: Mapped[list[Requirement]] = relationship(
         back_populates="project", cascade="all, delete-orphan"
     )
+
+
+class ProjectMember(TimestampMixin, Base):
+    """Membership of a user in a project, with a per-project role (see core/access.py)."""
+
+    __tablename__ = "project_members"
+    __table_args__ = (UniqueConstraint("project_id", "user_id", name="uq_project_member"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(40), nullable=False, default="engineer")
+
+    user: Mapped[User] = relationship()
 
 
 class FluidSystem(TimestampMixin, Base):
@@ -235,6 +283,13 @@ class Drawing(TimestampMixin, Base):
     # Title-block extras (company, bldg/sys, area, scale) and general notes.
     fields: Mapped[dict] = mapped_column(JSON, default=dict)
     notes: Mapped[list] = mapped_column(JSON, default=list)
+    # Lineage: the drawing this one was copied from. The number and revision are kept
+    # as text so the origin stays readable after the source is deleted or revised.
+    copied_from_id: Mapped[str | None] = mapped_column(
+        ForeignKey("drawings.id", ondelete="SET NULL"), index=True
+    )
+    copied_from_number: Mapped[str | None] = mapped_column(String(80))
+    copied_from_revision: Mapped[str | None] = mapped_column(String(16))
 
     sheets: Mapped[list[DrawingSheet]] = relationship(
         back_populates="drawing",
@@ -566,6 +621,9 @@ class ChangeEvent(TimestampMixin, Base):
     action: Mapped[str] = mapped_column(String(80), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     actor: Mapped[str | None] = mapped_column(String(160))
+    # Project the change belongs to; null for catalog-wide objects (parts, symbols).
+    # Not a foreign key: the history outlives a deleted project.
+    project_id: Mapped[str | None] = mapped_column(String(36), index=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -619,3 +677,87 @@ class CatalogDocument(TimestampMixin, Base):
     uploaded_by: Mapped[str | None] = mapped_column(String(160))
 
     part: Mapped[Part] = relationship()
+
+
+HAZARD_CATEGORIES = (
+    "overpressure",
+    "backflow",
+    "ignition",
+    "contamination",
+    "single_point_failure",
+    "trapped_fluid",
+    "other",
+)
+HAZARD_STATUSES = ("open", "mitigated", "accepted", "closed")
+
+
+def hazard_risk_level(severity: int, likelihood: int) -> str:
+    """Risk level from the severity (1-4) x likelihood (1-5) score.
+
+    Score 1-4 is low, 5-9 medium, 10-20 high; a severity 4 hazard is never
+    rated below medium, however unlikely.
+    """
+    score = severity * likelihood
+    if score >= 10:
+        return "high"
+    if score >= 5 or severity >= 4:
+        return "medium"
+    return "low"
+
+
+class Hazard(TimestampMixin, Base):
+    """Entry of a project's safety register; linked to drawing items via trace_links."""
+
+    __tablename__ = "hazards"
+    __table_args__ = (
+        UniqueConstraint("project_id", "key", name="uq_hazards_project_key"),
+        Index("ix_hazards_project_id", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(String(40), nullable=False, default="other")
+    # 1 negligible, 2 marginal, 3 critical, 4 catastrophic.
+    severity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # 1 improbable, 2 remote, 3 occasional, 4 probable, 5 frequent.
+    likelihood: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    mitigation: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="open")
+    owner: Mapped[str | None] = mapped_column(String(160))
+
+    @property
+    def risk_score(self) -> int:
+        return self.severity * self.likelihood
+
+    @property
+    def risk_level(self) -> str:
+        return hazard_risk_level(self.severity, self.likelihood)
+
+
+class Analysis(TimestampMixin, Base):
+    """A stored calculation: the inputs and the results computed from them."""
+
+    __tablename__ = "analyses"
+    __table_args__ = (
+        Index("ix_analyses_project_id", "project_id"),
+        Index("ix_analyses_drawing_id", "drawing_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_str)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    drawing_id: Mapped[str | None] = mapped_column(
+        ForeignKey("drawings.id", ondelete="SET NULL")
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    inputs: Mapped[dict] = mapped_column(JSON, default=dict)
+    results: Mapped[dict] = mapped_column(JSON, default=dict)
+    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
+    created_by: Mapped[str | None] = mapped_column(String(160))

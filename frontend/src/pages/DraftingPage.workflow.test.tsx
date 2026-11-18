@@ -11,7 +11,8 @@ const apiMock = vi.hoisted(() => ({
   listLineClasses: vi.fn(),
   getSheetDrc: vi.fn(),
   updateDrawing: vi.fn(),
-  listProjectDiagrams: vi.fn()
+  listProjectDiagrams: vi.fn(),
+  getLineage: vi.fn()
 }));
 const workflowMock = vi.hoisted(() => ({
   submitDrawing: vi.fn(),
@@ -136,6 +137,7 @@ describe("DraftingPage release workflow", () => {
     apiMock.getTagScheme.mockResolvedValue({ project_id: "p1", scheme: null });
     apiMock.listLineClasses.mockResolvedValue([]);
     apiMock.listProjectDiagrams.mockResolvedValue([]);
+    apiMock.getLineage.mockImplementation(async (id: string) => ({ drawing_id: id, source: null, copied_from_number: null, copied_from_revision: null, source_revision_changed: false, copies: [] }));
     apiMock.getSheetDrc.mockImplementation(async (id: string) => ({ sheet_id: id, sheet_no: 1, counts: { error: 0, warning: 0, info: 0, waived: 0 }, findings: [], waivers: [], checks: [] }));
     apiMock.updateSheet.mockImplementation(async (id: string, body: { document?: unknown }) => ({ ...sheets[id], document: body.document ?? sheets[id].document }));
   });
@@ -240,6 +242,24 @@ describe("DraftingPage release workflow", () => {
     await waitFor(() => expect(apiMock.updateSheet).toHaveBeenCalledTimes(2));
     expect(apiMock.updateSheet.mock.calls[1][0]).toBe("sh1");
     await waitFor(() => expect(screen.getByText("Index up to date")).toBeInTheDocument());
+  });
+
+  it("does not re-index a sheet the server has refreshed since the drawing list was loaded", async () => {
+    apiMock.listDrawings.mockResolvedValue([
+      makeDrawing({
+        sheets: [
+          { id: "sh1", sheet_no: 1, title: null, source_diagram_id: null, index_stale: true, indexed_at: null },
+          { id: "sh2", sheet_no: 2, title: "Vent", source_diagram_id: null, index_stale: true, indexed_at: null }
+        ]
+      })
+    ]);
+    // The server's own engine run (POST /projects/{id}/reindex, or its background task) got to sheet 2 first.
+    apiMock.getSheet.mockImplementation(async (id: string) => ({ ...sheets[id], index_stale: id === "sh1", indexed_at: id === "sh1" ? null : "2026-09-10T11:00:00Z" }));
+    renderPage();
+    await openCanvas();
+    await waitFor(() => expect(screen.getByText("Index up to date")).toBeInTheDocument());
+    expect(apiMock.updateSheet.mock.calls.map(([id]) => id)).toEqual(["sh1"]);
+    expect(screen.getByRole("tab", { name: "2" }).className).not.toContain("stale");
   });
 
   it("keeps edits made while a save is in flight unsaved", async () => {

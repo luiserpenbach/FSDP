@@ -1,4 +1,14 @@
 import type {
+  ApiToken,
+  ApiTokenCreated,
+  AuthConfig,
+  Lineage,
+  LineageDiff,
+  MemberRole,
+  Page,
+  ProjectAccess,
+  UserDirectoryEntry,
+  SearchResults,
   BomDiff,
   BomReadiness,
   BomSnapshot,
@@ -11,6 +21,7 @@ import type {
   Drawing,
   DrawingRevision,
   DrawingSheet,
+  EngineStatus,
   FluidSystem,
   Impact,
   LineClass,
@@ -25,6 +36,7 @@ import type {
   Project,
   ProjectBom,
   ProjectSheetItem,
+  ReindexResult,
   Requirement,
   SchematicRead,
   TagSchemeRead,
@@ -37,6 +49,8 @@ import type {
 // VITE_API_BASE_URL at build time when needed.
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.PROD ? "/api" : "http://localhost:8000");
+
+const PARTS_PAGE_SIZE = 1000;
 
 let unauthorizedHandler: (() => void) | null = null;
 
@@ -88,12 +102,34 @@ async function requestNoContent(path: string, init?: RequestInit): Promise<void>
   await rawRequest(path, init);
 }
 
+/** Where the browser goes to start single sign-on (a full-page navigation, not a fetch). */
+export const SSO_LOGIN_URL = `${API_BASE_URL}/auth/sso/login`;
+
 export const api = {
   login: (email: string, password: string) =>
     request<User>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   logout: () => requestNoContent("/auth/logout", { method: "POST" }),
   me: () => request<User>("/auth/me"),
-  listChanges: (limit = 50) => request<ChangeEvent[]>(`/changes?limit=${limit}`),
+  authConfig: () => request<AuthConfig>("/auth/config"),
+  /** One page of the change history, newest first, optionally for one project. */
+  listChanges: async (options: { limit?: number; offset?: number; projectId?: string } = {}): Promise<Page<ChangeEvent>> => {
+    const params = new URLSearchParams({ limit: String(options.limit ?? 50), offset: String(options.offset ?? 0) });
+    if (options.projectId) params.set("project_id", options.projectId);
+    const response = await rawRequest(`/changes?${params.toString()}`);
+    const rows = (await response.json()) as ChangeEvent[];
+    const total = Number(response.headers?.get("X-Total-Count"));
+    return { rows, total: Number.isFinite(total) && total > 0 ? total : rows.length + (options.offset ?? 0) };
+  },
+  getProjectAccess: (projectId: string) => request<ProjectAccess>(`/projects/${projectId}/access`),
+  setProjectRestricted: (projectId: string, restricted: boolean) =>
+    request<ProjectAccess>(`/projects/${projectId}/access`, { method: "PUT", body: JSON.stringify({ restricted }) }),
+  setProjectMember: (projectId: string, userId: string, role: MemberRole) =>
+    request<ProjectAccess>(`/projects/${projectId}/members/${userId}`, { method: "PUT", body: JSON.stringify({ role }) }),
+  removeProjectMember: (projectId: string, userId: string) =>
+    requestNoContent(`/projects/${projectId}/members/${userId}`, { method: "DELETE" }),
+  userDirectory: () => request<UserDirectoryEntry[]>("/users/directory"),
+  getLineage: (drawingId: string) => request<Lineage>(`/drawings/${drawingId}/lineage`),
+  getLineageDiff: (drawingId: string) => request<LineageDiff>(`/drawings/${drawingId}/lineage/diff`),
   listProjects: () => request<Project[]>("/projects"),
   createProject: (body: { name: string; description?: string; owner?: string }) =>
     request<Project>("/projects", { method: "POST", body: JSON.stringify(body) }),
@@ -142,7 +178,15 @@ export const api = {
   getDrawing: (drawingId: string) => request<Drawing>(`/drawings/${drawingId}`),
   updateDrawing: (drawingId: string, body: Partial<Omit<Drawing, "id" | "project_id" | "sheets" | "revisions" | "created_at" | "updated_at">>) =>
     request<Drawing>(`/drawings/${drawingId}`, { method: "PUT", body: JSON.stringify(body) }),
+  /** Copy a drawing with all sheets into a new draft, in this or another project. */
+  copyDrawing: (drawingId: string, body: { project_id?: string; system_id?: string | null; number?: string; title?: string }) =>
+    request<Drawing>(`/drawings/${drawingId}/copy`, { method: "POST", body: JSON.stringify(body) }),
   deleteDrawing: (drawingId: string) => requestNoContent(`/drawings/${drawingId}`, { method: "DELETE" }),
+  /** Whether the server runs the engine itself (FSDP_ENGINE_CLI). */
+  getEngineStatus: () => request<EngineStatus>("/engine/status"),
+  /** Re-index every stale sheet of the project's unreleased drawings on the server (503 when it has no engine). */
+  reindexProject: (projectId: string) => request<ReindexResult>(`/projects/${projectId}/reindex`, { method: "POST" }),
+  reindexDrawing: (drawingId: string) => request<ReindexResult>(`/drawings/${drawingId}/reindex`, { method: "POST" }),
   createSheet: (drawingId: string, body: { title?: string | null; source_diagram_id?: string | null; document?: unknown }) =>
     request<DrawingSheet>(`/drawings/${drawingId}/sheets`, { method: "POST", body: JSON.stringify(body) }),
   getSheet: (sheetId: string) => request<DrawingSheet>(`/sheets/${sheetId}`),
@@ -199,19 +243,29 @@ export const api = {
   updateSymbol: (symbolId: string, body: Partial<Omit<PidSymbolDef, "id">>) =>
     request<PidSymbolDef>(`/symbols/${symbolId}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteSymbol: (symbolId: string) => requestNoContent(`/symbols/${symbolId}`, { method: "DELETE" }),
-  listParts: (params?: {
+  /**
+   * The catalog matching the filters, fetched in pages so a large catalog never
+   * arrives as one response.
+   */
+  listParts: async (params?: {
     q?: string;
     part_type?: string;
     lifecycle_status?: string;
     qualification_status?: string;
   }) => {
-    const query = new URLSearchParams();
-    if (params?.q) query.set("q", params.q);
-    if (params?.part_type) query.set("part_type", params.part_type);
-    if (params?.lifecycle_status) query.set("lifecycle_status", params.lifecycle_status);
-    if (params?.qualification_status) query.set("qualification_status", params.qualification_status);
-    const suffix = query.size ? `?${query.toString()}` : "";
-    return request<Part[]>(`/parts${suffix}`);
+    const parts: Part[] = [];
+    for (;;) {
+      const query = new URLSearchParams();
+      if (params?.q) query.set("q", params.q);
+      if (params?.part_type) query.set("part_type", params.part_type);
+      if (params?.lifecycle_status) query.set("lifecycle_status", params.lifecycle_status);
+      if (params?.qualification_status) query.set("qualification_status", params.qualification_status);
+      query.set("limit", String(PARTS_PAGE_SIZE));
+      query.set("offset", String(parts.length));
+      const page = await request<Part[]>(`/parts?${query.toString()}`);
+      parts.push(...page);
+      if (page.length < PARTS_PAGE_SIZE) return parts;
+    }
   },
   createPart: (body: Partial<Part> & { part_number: string; description: string; part_type: string }) =>
     request<Part>("/parts", { method: "POST", body: JSON.stringify(body) }),
@@ -288,6 +342,16 @@ export const api = {
   getBomReadiness: (snapshotId: string) => request<BomReadiness>(`/bom/${snapshotId}/readiness`),
   getBomDiff: (snapshotId: string, againstId: string) =>
     request<BomDiff>(`/bom/${snapshotId}/diff?against_id=${againstId}`),
+  search: (query: string, options: { projectId?: string; limit?: number; signal?: AbortSignal } = {}) => {
+    const params = new URLSearchParams({ q: query });
+    if (options.projectId) params.set("project_id", options.projectId);
+    if (options.limit) params.set("limit", String(options.limit));
+    return request<SearchResults>(`/search?${params.toString()}`, { signal: options.signal });
+  },
+  listApiTokens: () => request<ApiToken[]>("/auth/tokens"),
+  createApiToken: (body: { name: string; expires_in_days?: number }) =>
+    request<ApiTokenCreated>("/auth/tokens", { method: "POST", body: JSON.stringify(body) }),
+  revokeApiToken: (tokenId: string) => requestNoContent(`/auth/tokens/${tokenId}`, { method: "DELETE" }),
   listUsers: () => request<User[]>("/auth/users"),
   createUser: (body: { email: string; name: string; password: string; role: string }) =>
     request<User>("/auth/users", { method: "POST", body: JSON.stringify(body) }),
@@ -540,3 +604,42 @@ export function bulkDeleteRequirements(projectId: string, ids: string[]): Promis
     body: JSON.stringify({ ids })
   });
 }
+
+/* ---------- Hazards and analyses ---------- */
+
+type Hazard = import("./types").Hazard;
+type HazardInput = import("./types").HazardInput;
+type Analysis = import("./types").Analysis;
+type AnalysisKind = import("./types").AnalysisKind;
+type AnalysisPreview = import("./types").AnalysisPreview;
+type AnalysisStatus = import("./types").AnalysisStatus;
+
+/** Loose input payload: the server validates it and fills in defaults. */
+export type AnalysisInputPayload = Record<string, unknown>;
+
+export const hazardApi = {
+  list: (projectId: string) => request<Hazard[]>(`/projects/${projectId}/hazards`),
+  create: (projectId: string, body: HazardInput) =>
+    request<Hazard>(`/projects/${projectId}/hazards`, { method: "POST", body: JSON.stringify(body) }),
+  update: (hazardId: string, body: Partial<HazardInput>) =>
+    request<Hazard>(`/hazards/${hazardId}`, { method: "PUT", body: JSON.stringify(body) }),
+  remove: (hazardId: string) => requestNoContent(`/hazards/${hazardId}`, { method: "DELETE" })
+};
+
+export const analysisApi = {
+  list: (projectId: string) => request<Analysis[]>(`/projects/${projectId}/analyses`),
+  get: (analysisId: string) => request<Analysis>(`/analyses/${analysisId}`),
+  /** Compute without storing. */
+  preview: (kind: AnalysisKind, inputs: AnalysisInputPayload, signal?: AbortSignal) =>
+    request<AnalysisPreview>("/analysis/preview", { method: "POST", body: JSON.stringify({ kind, inputs }), signal }),
+  create: (
+    projectId: string,
+    body: { kind: AnalysisKind; name: string; inputs: AnalysisInputPayload; drawing_id?: string | null; status?: AnalysisStatus }
+  ) => request<Analysis>(`/projects/${projectId}/analyses`, { method: "POST", body: JSON.stringify(body) }),
+  /** Saving always recomputes the results on the server. */
+  update: (
+    analysisId: string,
+    body: { name?: string; inputs?: AnalysisInputPayload; drawing_id?: string | null; status?: AnalysisStatus }
+  ) => request<Analysis>(`/analyses/${analysisId}`, { method: "PUT", body: JSON.stringify(body) }),
+  remove: (analysisId: string) => requestNoContent(`/analyses/${analysisId}`, { method: "DELETE" })
+};

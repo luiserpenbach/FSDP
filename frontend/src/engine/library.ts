@@ -145,6 +145,11 @@ export class SymbolRegistry {
     return symbolBounds(item, this.resolve(item.symbol), this.actuatorOf(item));
   }
 
+  /** Box around the drawn geometry of a placed symbol, for caption placement. */
+  inkBoundsOf(item: SymbolItem): Rect {
+    return symbolInkBounds(item, this.resolve(item.symbol), this.actuatorOf(item));
+  }
+
   listActuators(): SymbolDef[] {
     return this.list().filter((definition) => definition.category === "actuator");
   }
@@ -202,6 +207,42 @@ export function composedExtent(definition: SymbolDef, actuatorDef?: SymbolDef | 
   const minX = Math.min(body.x, mount.x - actuatorDef.width / 2);
   const maxX = Math.max(body.x + body.width, mount.x + actuatorDef.width / 2);
   return { x: minX, y: minY, width: maxX - minX, height: body.y + body.height - minY };
+}
+
+/** Unrotated box around the drawn geometry of a body plus its actuator (falls back to the footprint). */
+export function composedInk(definition: SymbolDef, actuatorDef?: SymbolDef | null): Rect {
+  const body = definition.ink ?? { x: -definition.width / 2, y: -definition.height / 2, width: definition.width, height: definition.height };
+  if (!actuatorDef || !definition.actuatorMount) return body;
+  const mount = definition.actuatorMount;
+  const actuator = actuatorDef.ink ?? { x: -actuatorDef.width / 2, y: -actuatorDef.height, width: actuatorDef.width, height: actuatorDef.height };
+  const minX = Math.min(body.x, mount.x + actuator.x);
+  const minY = Math.min(body.y, mount.y + actuator.y);
+  const maxX = Math.max(body.x + body.width, mount.x + actuator.x + actuator.width);
+  const maxY = Math.max(body.y + body.height, mount.y + actuator.y + actuator.height);
+  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+}
+
+function placedRect(item: SymbolItem, extent: Rect): Rect {
+  const scale = item.scale ?? 1;
+  const corners = [
+    { x: extent.x, y: extent.y },
+    { x: extent.x + extent.width, y: extent.y },
+    { x: extent.x, y: extent.y + extent.height },
+    { x: extent.x + extent.width, y: extent.y + extent.height }
+  ].map((corner) => {
+    const mirrored = item.mirror ? { x: -corner.x, y: corner.y } : corner;
+    return rotateOffset({ x: mirrored.x * scale, y: mirrored.y * scale }, item.rotation);
+  });
+  const xs = corners.map((corner) => corner.x);
+  const ys = corners.map((corner) => corner.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  return { x: item.position.x + minX, y: item.position.y + minY, width: Math.max(...xs) - minX, height: Math.max(...ys) - minY };
+}
+
+/** Box around the drawn geometry of a placed symbol in sheet coordinates (what captions sit against). */
+export function symbolInkBounds(item: SymbolItem, definition: SymbolDef, actuatorDef?: SymbolDef | null): Rect {
+  return placedRect(item, composedInk(definition, actuatorDef));
 }
 
 /** Axis-aligned bounds of a placed symbol in sheet coordinates. */

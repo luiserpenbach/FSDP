@@ -7,12 +7,20 @@ services:
     name: fsdp-api
     runtime: docker
     plan: free
-    dockerContext: ./backend
+    # The image is built from the repository root: it bundles the schematic engine
+    # from frontend/ and runs it under Node to index and check sheets
+    # (FSDP_ENGINE_CLI is set in the image; set it to "" here to turn that off).
+    dockerContext: .
     dockerfilePath: ./backend/Dockerfile
     healthCheckPath: /health
     buildFilter:
       paths:
         - backend/**
+        - frontend/src/engine/**
+        - frontend/src/types.ts
+        - frontend/package.json
+        - frontend/package-lock.json
+        - frontend/vite.engine.config.ts
     envVars:
       # Postgres connection string, e.g. from Neon (postgres:// URLs are accepted).
       - key: FSDP_DATABASE_URL

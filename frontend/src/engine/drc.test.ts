@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isolableVolumes, runDrc, type RequirementRef } from "./drc";
+import { isolableVolumes, runDrc, trappedVolumes, type RequirementRef } from "./drc";
 import { findingsDocument, renderFindingsSheet } from "./drcSheet";
 import { lineThrough, symbolAt } from "./fixtures";
 import { SymbolRegistry } from "./library";
@@ -194,5 +194,115 @@ describe("design rule checks", () => {
     expect(svg).toContain("WAIVED: future tie-in");
     expect(svg).toContain("PT-3204 port process has no line");
     expect(svg).toContain("DESIGN RULE CHECK FINDINGS");
+  });
+});
+
+describe("trapped volume rule", () => {
+  // Inline symbols have their ports 10 mm either side of the centre: a valve at
+  // x = 50 spans 40..60. The section under test is the line between x = 60 and 100.
+  function section(left: string, right: string, extra: SchematicDocument["items"] = []): SchematicDocument {
+    const doc = createEmptyDocument();
+    doc.sheet = makeSheet("A3");
+    doc.items = [
+      symbolAt("left", left, { x: 50, y: 100 }, { tag: "HV-1" }),
+      symbolAt("right", right, { x: 110, y: 100 }, { tag: "HV-2" }),
+      symbolAt("src", "terminator_in", { x: 5, y: 100 }),
+      symbolAt("dst", "terminator", { x: 155, y: 100 }),
+      lineThrough("up", [{ x: 20, y: 100 }, { x: 40, y: 100 }], { lineNumber: "100" }),
+      lineThrough("mid", [{ x: 60, y: 100 }, { x: 100, y: 100 }], { lineNumber: "101" }),
+      lineThrough("down", [{ x: 120, y: 100 }, { x: 140, y: 100 }], { lineNumber: "102" }),
+      ...extra
+    ];
+    return doc;
+  }
+  const trapped = (doc: SchematicDocument) => runDrc({ doc, registry, tagScheme: DEFAULT_TAG_SCHEME }).findings.filter((finding) => finding.rule === "trapped_volume");
+  const tee = (id: string, to: { x: number; y: number }) => lineThrough(id, [{ x: 80, y: 100 }, { x: 80, y: to.y }, to], { lineNumber: "103" });
+
+  it("flags a section closed in by two isolation valves", () => {
+    const findings = trapped(section("hand_valve", "ball_valve"));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ key: "trapped_volume:mid", severity: "warning", itemId: "mid", subject: "101" });
+    expect(findings[0].message).toBe(
+      "Section (101) can be closed in by HV-1, HV-2 and has no relief device or vent; fluid trapped there can overpressure as it warms"
+    );
+    expect(findings[0].zone).toMatch(/^[A-Z]-\d$/);
+  });
+
+  it("follows the section through inline components and instruments", () => {
+    // HV-1 - line - filter - line (with a PT teed off) - solenoid valve.
+    const doc = section("hand_valve", "solenoid_valve", [
+      symbolAt("f", "filter", { x: 80, y: 100 }, { tag: "F-1" }),
+      symbolAt("pt", "instrument", { x: 80, y: 75 }, { tag: "PT-1" }),
+      lineThrough("m1", [{ x: 60, y: 100 }, { x: 70, y: 100 }], { lineNumber: "101" }),
+      lineThrough("m2", [{ x: 90, y: 100 }, { x: 100, y: 100 }], { lineNumber: "104" }),
+      lineThrough("branch", [{ x: 95, y: 100 }, { x: 95, y: 80 }, { x: 80, y: 80 }], { lineNumber: "103" })
+    ]);
+    doc.items = doc.items.filter((entry) => entry.id !== "mid");
+    const volumes = trappedVolumes(doc, registry, computeConnectivity(doc, registry));
+    expect(volumes).toHaveLength(1);
+    expect(new Set(volumes[0].lineIds)).toEqual(new Set(["m1", "m2", "branch"]));
+    expect(new Set(volumes[0].valveIds)).toEqual(new Set(["left", "right"]));
+    expect(volumes[0].itemIds).toEqual(expect.arrayContaining(["f", "pt"]));
+    expect(trapped(doc)[0].message).toContain("Section (101, 104, 103, F-1, PT-1) can be closed in by HV-1, HV-2");
+  });
+
+  it("is satisfied by a relief device, a rupture disc, or a vent on the section", () => {
+    expect(trapped(section("hand_valve", "hand_valve", [symbolAt("psv", "relief_valve", { x: 90, y: 80 }, { tag: "PSV-1" }), tee("branch", { x: 80, y: 80 })]))).toEqual([]);
+    expect(trapped(section("hand_valve", "hand_valve", [symbolAt("psv", "safety_valve", { x: 90, y: 80 }, { tag: "PSV-1" }), tee("branch", { x: 80, y: 80 })]))).toEqual([]);
+    expect(trapped(section("hand_valve", "hand_valve", [symbolAt("pse", "rupture_disc", { x: 90, y: 80 }, { tag: "PSE-1" }), tee("branch", { x: 80, y: 80 })]))).toEqual([]);
+    expect(trapped(section("hand_valve", "hand_valve", [symbolAt("vent", "vent_atmosphere", { x: 90, y: 80 }), tee("branch", { x: 80, y: 80 })]))).toEqual([]);
+  });
+
+  it("treats a check valve as closed against reverse flow only", () => {
+    // Outlet on the section: fluid cannot leave backwards, so it is a boundary.
+    const outletSide = trapped(section("check_valve", "hand_valve"));
+    expect(outletSide).toHaveLength(1);
+    expect(outletSide[0].message).toContain("can be closed in by HV-1, HV-2");
+    // Inlet on the section: fluid can leave through the check valve.
+    expect(trapped(section("hand_valve", "check_valve"))).toEqual([]);
+    expect(trapped(section("hand_valve", "check_valve_swing"))).toEqual([]);
+  });
+
+  it("stays quiet when a boundary is not a positive isolation valve", () => {
+    for (const key of ["regulator", "back_pressure_regulator", "three_way_valve", "excess_flow_valve"]) {
+      expect(trapped(section("hand_valve", key))).toEqual([]);
+    }
+    const custom = section("hand_valve", "hand_valve");
+    (custom.items[1] as SymbolItem).symbol = { library: "custom", key: "my_valve", version: 1 };
+    expect(trapped(custom)).toEqual([]);
+  });
+
+  it("stays quiet when the drawing leaves an end open or unknown", () => {
+    // A dangling stub.
+    expect(trapped(section("hand_valve", "hand_valve", [lineThrough("stub", [{ x: 80, y: 100 }, { x: 80, y: 80 }], { lineNumber: "103" })]))).toEqual([]);
+    // A tee to an off-page connector: the section continues on another sheet.
+    expect(trapped(section("hand_valve", "hand_valve", [symbolAt("opc", "off_page_connector", { x: 95, y: 80 }), tee("branch", { x: 80, y: 80 })]))).toEqual([]);
+    // A pass-through component with an unconnected port.
+    expect(trapped(section("hand_valve", "hand_valve", [symbolAt("f", "filter", { x: 90, y: 80 }, { tag: "F-1" }), tee("branch", { x: 80, y: 80 })]))).toEqual([]);
+    // A quick disconnect can be opened.
+    expect(trapped(section("hand_valve", "quick_disconnect"))).toEqual([]);
+  });
+
+  it("ignores dead legs behind a single valve and capped stubs count as closed", () => {
+    const deadLeg = section("hand_valve", "cap");
+    deadLeg.items = deadLeg.items.filter((entry) => entry.id !== "down" && entry.id !== "dst");
+    expect(trapped(deadLeg)).toEqual([]);
+    // A capped branch on a two-valve section does not open it.
+    const capped = section("hand_valve", "hand_valve", [symbolAt("cap", "cap", { x: 90, y: 80 }), tee("branch", { x: 80, y: 80 })]);
+    expect(trapped(capped)).toHaveLength(1);
+  });
+
+  it("ignores signal lines and can be waived by key", () => {
+    const doc = section("hand_valve", "hand_valve");
+    (doc.items.find((entry) => entry.id === "mid") as LineItem).lineType = "signal_electric";
+    expect(trapped(doc)).toEqual([]);
+    const waived = runDrc({ doc: section("hand_valve", "hand_valve"), registry, tagScheme: DEFAULT_TAG_SCHEME, waivers: [{ key: "trapped_volume:mid", reason: "Gas service, vented by procedure" }] });
+    expect(waived.findings.some((finding) => finding.rule === "trapped_volume")).toBe(false);
+    expect(waived.waived.map((finding) => finding.key)).toContain("trapped_volume:mid");
+  });
+
+  it("does not fire on the clean reference sheet", () => {
+    const doc = cleanDocument();
+    expect(trappedVolumes(doc, registry, computeConnectivity(doc, registry))).toEqual([]);
   });
 });

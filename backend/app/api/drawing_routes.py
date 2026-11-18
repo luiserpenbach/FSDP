@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 import io
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Response
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.routes import record_change, require_model
+from app.core.access import require_project_write
 from app.core.security import require_writer
 from app.db import get_db
 from app.models import (
@@ -30,6 +32,7 @@ from app.models import (
 )
 from app.schemas import (
     BomSnapshotRead,
+    DrawingCopyIn,
     DrawingCreate,
     DrawingDrcRead,
     DrawingRead,
@@ -71,6 +74,7 @@ from app.services.lists import (
     rows_to_xlsx,
 )
 from app.services.release import next_revision_label, release_blockers, release_snapshot
+from app.services.server_index import schedule_reindex
 from app.services.sheet_index import (
     document_needs_index,
     mark_drawing_sheets_stale,
@@ -181,6 +185,7 @@ def _sheet_source_document(
 def create_drawing(
     project_id: str,
     payload: DrawingCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> Drawing:
@@ -231,6 +236,8 @@ def create_drawing(
         db, "drawing", drawing.id, "created", f"Created drawing {number}", actor=user.email
     )
     db.commit()
+    # A first sheet with content is stale until the engine indexes it.
+    schedule_reindex(background_tasks, [drawing.id], user.email)
     return _load_drawing(db, drawing.id)
 
 
@@ -313,12 +320,102 @@ def delete_drawing(
     return Response(status_code=204)
 
 
+@drawing_router.post("/drawings/{drawing_id}/copy", response_model=DrawingRead, status_code=201)
+def copy_drawing(
+    drawing_id: str,
+    background_tasks: BackgroundTasks,
+    payload: DrawingCopyIn = Body(default_factory=DrawingCopyIn),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_writer),
+) -> Drawing:
+    """Copy a drawing with all its sheets into a new draft, in this or another project.
+
+    The reuse path: a released drawing serves as a template for the next vehicle,
+    stand, or subsystem. Tags, part assignments, and line data come along; approvals,
+    revision history, DRC waivers, and trace links do not, so the copy is reviewed on
+    its own. Its sheets are flagged stale and are re-indexed and re-checked against
+    the target project's tag scheme, line classes, and requirements.
+    """
+    source = _load_drawing(db, drawing_id)
+    options = payload
+    # The path check covered the source; a copy only needs to read it, and to
+    # write the destination.
+    project = require_project_write(db, user, options.project_id or source.project_id)
+    db.info["project_id"] = project.id
+    same_project = project.id == source.project_id
+    system_id = options.system_id or (source.system_id if same_project else None)
+    if system_id:
+        system = require_model(db, FluidSystem, system_id)
+        if system.project_id != project.id:
+            raise HTTPException(status_code=422, detail="System belongs to another project")
+    number = options.number or _next_drawing_number(db, project)
+    duplicate = db.scalar(
+        select(Drawing.id).where(Drawing.project_id == project.id, Drawing.number == number)
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Drawing number already exists in project")
+    title = options.title
+    if not title:
+        lines = source.title.split("\n")
+        lines[0] = f"{lines[0]} (copy)"
+        title = "\n".join(lines)
+
+    drawing = Drawing(
+        project_id=project.id,
+        system_id=system_id,
+        number=number,
+        title=title,
+        size=source.size,
+        units=source.units,
+        discipline=source.discipline,
+        frame_template=source.frame_template,
+        fields=copy.deepcopy(source.fields or {}),
+        notes=list(source.notes or []),
+        copied_from_id=source.id,
+        copied_from_number=source.number,
+        copied_from_revision=source.current_revision.label if source.current_revision else None,
+    )
+    for sheet in source.sheets:
+        document = copy.deepcopy(sheet.document or {})
+        drawing.sheets.append(
+            DrawingSheet(
+                sheet_no=sheet.sheet_no,
+                title=sheet.title,
+                document=document,
+                index_stale=document_needs_index(document),
+            )
+        )
+    drawing.revisions.append(
+        DrawingRevision(
+            sequence=1,
+            description=f"Copied from {source.number}",
+            drawn_by=user.name,
+            drawn_date=_now().date().isoformat(),
+        )
+    )
+    db.add(drawing)
+    db.flush()
+    origin = source.number if same_project else f"{source.number} (another project)"
+    record_change(
+        db,
+        "drawing",
+        drawing.id,
+        "created",
+        f"Created drawing {number} as a copy of {origin}",
+        actor=user.email,
+    )
+    db.commit()
+    schedule_reindex(background_tasks, [drawing.id], user.email)
+    return _load_drawing(db, drawing.id)
+
+
 @drawing_router.post(
     "/drawings/{drawing_id}/sheets", response_model=DrawingSheetRead, status_code=201
 )
 def create_sheet(
     drawing_id: str,
     payload: DrawingSheetCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> DrawingSheet:
@@ -345,6 +442,8 @@ def create_sheet(
     )
     db.commit()
     db.refresh(sheet)
+    if sheet.index_stale:
+        schedule_reindex(background_tasks, [drawing.id], user.email)
     return sheet
 
 
@@ -357,10 +456,14 @@ def get_sheet(sheet_id: str, db: Session = Depends(get_db)) -> DrawingSheet:
 def update_sheet(
     sheet_id: str,
     payload: DrawingSheetUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
 ) -> DrawingSheet:
     sheet = require_model(db, DrawingSheet, sheet_id)
+    # Take the row lock first: a save and the server-side re-index of the same sheet
+    # (services/server_index.py) then run one after the other, never interleaved.
+    db.refresh(sheet, with_for_update={"key_share": True})
     drawing = _editable_sheet_drawing(db, sheet)
     data = payload.model_dump(exclude_unset=True)
     if "title" in data:
@@ -389,6 +492,9 @@ def update_sheet(
     )
     db.commit()
     db.refresh(sheet)
+    if sheet.index_stale:
+        # Saved without its index (an API client, not the editor): the server derives it.
+        schedule_reindex(background_tasks, [drawing.id], user.email)
     return sheet
 
 
@@ -610,6 +716,7 @@ def release_drawing(
 @drawing_router.post("/drawings/{drawing_id}/revise", response_model=DrawingRead)
 def revise_drawing(
     drawing_id: str,
+    background_tasks: BackgroundTasks,
     payload: DrawingReviseIn | None = Body(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(require_writer),
@@ -645,6 +752,7 @@ def revise_drawing(
         actor=user.email,
     )
     db.commit()
+    schedule_reindex(background_tasks, [drawing.id], user.email)
     return _load_drawing(db, drawing.id)
 
 

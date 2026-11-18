@@ -8,7 +8,7 @@
  * renderer and lets the server turn the SVG into PDF or PNG.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api, releaseDrawing, reviseDrawing, submitDrawing, withdrawDrawing, WorkflowConflictError } from "../api";
 import { AssignPartModal } from "../components/schematic/AssignPartModal";
 import { DrcPanel, useDrc, type DrcInputs } from "../components/schematic/DrcPanel";
@@ -22,9 +22,8 @@ import { SchematicCanvas, useEditorSnapshot, type SchematicCanvasHandle, type Vi
 import { SymbolEditorModal } from "../components/schematic/SymbolEditorModal";
 import { useStaleReindex, type ReindexOutcome } from "../components/schematic/useStaleReindex";
 import { convertLegacyGraph } from "../engine/convert";
-import { deriveSheetData } from "../engine/derived";
 import { Editor, READ_ONLY_TOOLS, type AlignMode, type ToolId } from "../engine/editor";
-import { FRAME_TEMPLATE_LABELS, type DrawingContext, type FrameTemplateId } from "../engine/frames";
+import { FRAME_TEMPLATE_LABELS, withFrameTemplate, type DrawingContext, type FrameTemplateId } from "../engine/frames";
 import { polylineLength } from "../engine/geometry";
 import { runDrc, type DrcResult, type DrcWaiver, type RequirementRef } from "../engine/drc";
 import { renderFindingsSheet } from "../engine/drcSheet";
@@ -35,14 +34,16 @@ import { CUSTOM_LIBRARY, SymbolRegistry } from "../engine/library";
 import { LINE_TYPE_LABELS, renderDocumentSvg, type PartBadge } from "../engine/render";
 import { SHEET_SIZES, makeSheet, zoneAt } from "../engine/sheet";
 import { DocumentStore } from "../engine/store";
+import { computeSheetPayload } from "../engine/sheetPayload";
 import { DEFAULT_TAG_SCHEME, normalizeScheme, tagIssues, tagsOf, validateTag, type TagScheme } from "../engine/tags";
 import { resolveConnectorTargets, type SheetDoc } from "../engine/connectors";
 import { lineEndpoints, lineLegendEntries } from "../engine/lines";
 import type { EquipmentItem, Item, LineAnnotation, LineItem, LineType, Nozzle, Point, Rotation, SchematicDocument, SheetSizeId, Side, SymbolDef, SymbolItem } from "../engine/types";
-import type { BomReadiness, BomSnapshot, DiagramSummary, Drawing, DrawingRead, DrawingRevision, DrawingSheet, FluidSystem, LineClass, Part, PidSymbolDef, ReleaseBlocker, ReleaseSnapshotSheet, Requirement, RevisionSnapshot, User } from "../types";
+import type { BomReadiness, BomSnapshot, DiagramSummary, Drawing, DrawingRead, DrawingRevision, DrawingSheet, FluidSystem, LineClass, Part, PidSymbolDef, Project, ReleaseBlocker, ReleaseSnapshotSheet, Requirement, RevisionSnapshot, User } from "../types";
 import { useUnsavedChanges } from "../unsavedChanges";
 import { useWorkspace } from "../workspace/WorkspaceContext";
-import { parseDraftingTarget, type DraftingTarget } from "./draftingLinks";
+import { DrawingLineage } from "../components/schematic/DrawingLineage";
+import { draftingHref, parseDraftingTarget, type DraftingTarget } from "./draftingLinks";
 import { PageLayout } from "./PageLayout";
 
 type Props = {
@@ -63,6 +64,10 @@ type Props = {
   notify: (message: string, error?: boolean) => void;
   /** Drawing, sheet, and item to open once the project's drawings load (a deep link). */
   target?: DraftingTarget | null;
+  /** All projects, as copy destinations; without them a drawing is copied within its project. */
+  projects?: Project[];
+  /** Follow a drafting link, e.g. to a copy made in another project. */
+  onOpenTarget?: (target: DraftingTarget) => void;
 };
 
 const TOOLS: Array<{ id: ToolId; label: string; key: string }> = [
@@ -172,13 +177,6 @@ function unassignedItems(doc: SchematicDocument, registry: SymbolRegistry): Arra
   return result;
 }
 
-function withFrameTemplate(document: SchematicDocument, template: string): SchematicDocument {
-  const frameTemplate = (template as FrameTemplateId) ?? "basic";
-  const kind = frameTemplate === "none" ? "none" : "basic";
-  if (document.sheet.frame.template === frameTemplate && document.sheet.frame.kind === kind) return document;
-  return { ...document, sheet: { ...document.sheet, frame: { ...document.sheet.frame, kind, template: frameTemplate } } };
-}
-
 /** Symbol families used on the sheet, for the generated legend. */
 export function usedSymbols(document: SchematicDocument, registry: SymbolRegistry): Array<{ definition: SymbolDef; count: number }> {
   const counts = new Map<string, { definition: SymbolDef; count: number }>();
@@ -277,7 +275,7 @@ function DrawingCanvas({
   return <SchematicCanvas ref={canvasRef} editor={editor} showGrid={showGrid} context={context} connectorTargets={connectorTargets} partBadges={partBadges} readOnly={readOnly} onCursor={onCursor} onViewport={onViewport} />;
 }
 
-export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify, target = null }: Props) {
+export function DraftingPage({ projectId, projectName, systems, selectedSystemId, customSymbols, refreshSymbols, parts = [], requirements = [], user, canWrite, notify, target = null, projects = [], onOpenTarget }: Props) {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingId, setDrawingId] = useState("");
   const [sheetId, setSheetId] = useState("");
@@ -292,6 +290,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
   const [showGrid, setShowGrid] = useState(true);
   const [showDrawingPanel, setShowDrawingPanel] = useState(false);
   const [creating, setCreating] = useState<null | { mode: "new" | "convert" }>(null);
+  const [copying, setCopying] = useState(false);
   // Legacy diagrams of the project (conversion sources) and whether their hint was dismissed.
   const [legacyDiagrams, setLegacyDiagrams] = useState<DiagramSummary[]>([]);
   const [legacyHintDismissed, setLegacyHintDismissed] = useState<Record<string, boolean>>({});
@@ -620,7 +619,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       const doc = editor.store.doc;
       // The index rows and the DRC (open and waived findings, requirement checks) travel with the
       // document so lists, BoM, where-used, and release read the saved state.
-      const { index, drc, payload } = deriveSheetData({
+      const { index, drc, payload } = computeSheetPayload({
         doc,
         sheetId,
         sheetNo,
@@ -675,9 +674,15 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       if (!latestDrawing) return "skipped";
       const own = sheets.find((entry) => entry.id === targetId);
       if (!own) return "skipped";
-      const doc = withFrameTemplate(own.document as unknown as SchematicDocument, latestDrawing.frame_template);
-      const { drc, payload } = deriveSheetData({
-        doc,
+      // Already refreshed elsewhere (another tab, or the server's own engine run): nothing to write.
+      if (own.index_stale === false) {
+        markSheetIndexed(latestDrawing.id, targetId, stored.counts.error);
+        return "skipped";
+      }
+      // The same engine function the server runs under Node (POST /projects/{id}/reindex).
+      const { doc, drc, payload } = computeSheetPayload({
+        doc: own.document as unknown as SchematicDocument,
+        frameTemplate: latestDrawing.frame_template,
         sheetId: targetId,
         sheetNo: own.sheet_no,
         otherSheets: sheets.map((entry) => ({ sheetId: entry.id, sheetNo: entry.sheet_no, doc: entry.document as unknown as SchematicDocument })),
@@ -990,7 +995,17 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
 
   // Deep link: once the project's drawings are listed (and the loader has picked one),
   // open the target drawing and sheet, and centre the item when its editor is ready.
+  // A link that arrives while the page is open (search, a copy in another project) is
+  // followed the same way.
   const deepLink = useRef(target);
+  const [linkTick, setLinkTick] = useState(0);
+  const seenTarget = useRef(target);
+  useEffect(() => {
+    if (seenTarget.current === target) return;
+    seenTarget.current = target;
+    deepLink.current = target;
+    setLinkTick((current) => current + 1);
+  }, [target]);
   useEffect(() => {
     const link = deepLink.current;
     if (!link || !drawingId) return;
@@ -998,10 +1013,17 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
     if (!targetDrawing) return;
     deepLink.current = null;
     const targetSheet = targetDrawing.sheets.find((entry) => entry.id === link.sheetId)?.id ?? targetDrawing.sheets[0]?.id ?? "";
+    const open = sessionRef.current;
+    if (open && open.sheetId === targetSheet) {
+      // Already on the sheet: only centre the item.
+      if (link.itemId) focusItem(link.itemId);
+      return;
+    }
+    if (open?.editor.store.dirty && !window.confirm("Discard unsaved drafting changes?")) return;
     if (link.itemId && targetSheet) pendingLocate.current = { drawingId: targetDrawing.id, sheetId: targetSheet, itemId: link.itemId };
     setDrawingId(targetDrawing.id);
     setSheetId(targetSheet);
-  }, [drawings, drawingId]);
+  }, [drawings, drawingId, linkTick, focusItem]);
 
   async function exportSheet(format: "pdf" | "png" | "svg") {
     if (!editor || !sheetId || !context) return;
@@ -1108,6 +1130,33 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
       await refreshDrawings(drawing.id);
     } catch (error) {
       notify(error instanceof Error ? error.message : "Could not delete the sheet.", true);
+    }
+  }
+
+  async function copyDrawing(form: CopyDrawingForm) {
+    if (!drawing) return;
+    const elsewhere = Boolean(form.projectId) && form.projectId !== projectId;
+    // A copy in this project opens in place of the current sheet.
+    if (!elsewhere && !confirmDiscard()) return;
+    try {
+      const created = await api.copyDrawing(drawing.id, {
+        project_id: form.projectId || undefined,
+        number: form.number.trim() || undefined,
+        title: form.title.trim() || undefined
+      });
+      setCopying(false);
+      if (elsewhere) {
+        const destination = projects.find((entry) => entry.id === created.project_id)?.name ?? "the other project";
+        notify(`Copied ${drawing.number} to ${destination} as ${created.number}.`);
+        if (onOpenTarget && window.confirm(`Copied to ${destination} as ${created.number}. Open it now?`)) {
+          onOpenTarget({ projectId: created.project_id, drawingId: created.id });
+        }
+      } else {
+        await refreshDrawings(created.id);
+        notify(`Created ${created.number} as a copy of ${drawing.number}.`);
+      }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Could not copy the drawing.", true);
     }
   }
 
@@ -1272,6 +1321,15 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
           </button>
         </div>
       )}
+      {copying && drawing && (
+        <CopyDrawingDialog
+          drawing={drawing}
+          projects={projects}
+          projectId={projectId}
+          onSubmit={(form) => void copyDrawing(form)}
+          onCancel={() => setCopying(false)}
+        />
+      )}
       {creating && (
         <NewDrawingForm
           mode={creating.mode}
@@ -1414,6 +1472,7 @@ export function DraftingPage({ projectId, projectName, systems, selectedSystemId
                     onViewRevision={setSnapshotRevision}
                     onDeleteSheet={drawing.sheets.length > 1 ? () => void removeSheet() : undefined}
                     onDeleteDrawing={() => void removeDrawing()}
+                    onCopy={canWrite ? () => setCopying(true) : undefined}
                   >
                     <WorkflowPanel
                       status={status}
@@ -1629,6 +1688,93 @@ function NewDrawingForm({
   );
 }
 
+type CopyDrawingForm = { projectId: string; number: string; title: string };
+
+/** Where a copy of the drawing goes: project, number (blank = next free), and title. */
+function CopyDrawingDialog({
+  drawing,
+  projects,
+  projectId,
+  onSubmit,
+  onCancel
+}: {
+  drawing: Drawing;
+  projects: Project[];
+  projectId: string;
+  onSubmit: (form: CopyDrawingForm) => void;
+  onCancel: () => void;
+}) {
+  const [form, setForm] = useState<CopyDrawingForm>({ projectId, number: "", title: `${drawing.title.split("\n")[0]} (copy)` });
+  const elsewhere = form.projectId !== projectId;
+  return (
+    <div className="modalBackdrop" role="presentation" onClick={onCancel}>
+      <form
+        className="modal copyDrawingDialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="copy-drawing-title"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onCancel();
+        }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          const titleLines = drawing.title.split("\n");
+          titleLines[0] = form.title.trim() || `${titleLines[0]} (copy)`;
+          onSubmit({ ...form, title: titleLines.join("\n") });
+        }}
+      >
+        <div className="modalHeader">
+          <h2 id="copy-drawing-title">Duplicate {drawing.number}</h2>
+          <button type="button" className="modalClose" aria-label="Close" onClick={onCancel}>
+            ×
+          </button>
+        </div>
+        <div className="copyDrawingBody">
+          <p className="hint">
+            Copies all {drawing.sheets.length} sheet(s) with their tags, part assignments, and line data into a new draft at its first revision.
+            Approvals, waivers, and requirement links stay with the original.
+          </p>
+          {projects.length > 1 && (
+            <label>
+              Into project
+              <select value={form.projectId} onChange={(event) => setForm({ ...form, projectId: event.target.value })} autoFocus>
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                    {project.id === projectId ? " (this project)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label>
+            Title
+            <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+          </label>
+          <label>
+            Drawing number
+            <input value={form.number} onChange={(event) => setForm({ ...form, number: event.target.value })} placeholder="Next free number" />
+          </label>
+          {elsewhere && (
+            <p className="hint">
+              The copy is checked against the destination project's tag scheme, line classes, and requirements when it is first opened.
+            </p>
+          )}
+        </div>
+        <div className="buttonRow modalActions">
+          <button type="button" className="quiet" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="primary">
+            Duplicate
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function drawingForm(drawing: Drawing) {
   const legends = legendFlags(drawing);
   return {
@@ -1658,6 +1804,7 @@ function DrawingPanel({
   onViewRevision,
   onDeleteSheet,
   onDeleteDrawing,
+  onCopy,
   children
 }: {
   drawing: Drawing;
@@ -1671,6 +1818,8 @@ function DrawingPanel({
   onViewRevision: (revision: DrawingRevision) => void;
   onDeleteSheet?: () => void;
   onDeleteDrawing: () => void;
+  /** Writers can copy any drawing, released ones included (that is the template path). */
+  onCopy?: () => void;
   /** Release workflow controls, always shown. */
   children?: React.ReactNode;
 }) {
@@ -1809,6 +1958,11 @@ function DrawingPanel({
                 Delete sheet
               </button>
             )}
+            {onCopy && (
+              <button type="button" onClick={onCopy} title="Copy this drawing and all its sheets into a new draft, here or in another project">
+                Duplicate…
+              </button>
+            )}
             <button type="button" className="danger" disabled={!canEdit} onClick={onDeleteDrawing}>
               Delete drawing
             </button>
@@ -1817,6 +1971,7 @@ function DrawingPanel({
             <strong>Revisions</strong> · {sheetCount} sheet(s)
           </p>
           <RevisionTable revisions={drawing.revisions} onView={onViewRevision} />
+          <DrawingLineage drawing={drawing} />
           <p className="hint">Signatures are stamped by the workflow: drawn when a revision opens, submitted on review, approved on release.</p>
         </>
       )}
@@ -2305,6 +2460,10 @@ function Inspector({
               <input type="checkbox" checked={item.showSpecLabel !== false} onChange={(event) => update({ showSpecLabel: event.target.checked })} disabled={!canWrite} />
               <span>Print size and spec on the line</span>
             </label>
+            <label className="checkRow">
+              <input type="checkbox" checked={item.showNumberLabel !== false} onChange={(event) => update({ showNumberLabel: event.target.checked })} disabled={!canWrite} />
+              <span>Print the line number on the line</span>
+            </label>
             {(() => {
               const ends = lineEndpoints(doc, connectivity, item);
               return (
@@ -2652,8 +2811,14 @@ function StatusBar({ editor, cursor, viewport, drcInputs }: { editor: Editor; cu
  */
 export function DraftingRoutePage() {
   const { user, canWrite, notify, projects, selectedProjectId, selectProject, selectedProject, systems, selectedSystemId, customSymbols, refreshSymbols, parts, requirements } = useWorkspace();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const [target] = useState(() => parseDraftingTarget(searchParams));
+  // Keyed by the query string and the navigation, so opening the same link twice
+  // (e.g. the same search hit again) is followed again.
+  const { key: locationKey } = useLocation();
+  const query = searchParams.toString();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const target = useMemo(() => parseDraftingTarget(new URLSearchParams(query)), [query, locationKey]);
   useEffect(() => {
     const projectId = target?.projectId;
     if (projectId && projectId !== selectedProjectId && projects.some((project) => project.id === projectId)) selectProject(projectId);
@@ -2674,6 +2839,8 @@ export function DraftingRoutePage() {
       canWrite={canWrite}
       notify={notify}
       target={target}
+      projects={projects}
+      onOpenTarget={(next) => navigate(draftingHref(next))}
     />
   );
 }

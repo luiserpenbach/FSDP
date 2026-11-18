@@ -13,6 +13,7 @@ export type ChangeEvent = {
   action: string;
   summary: string;
   actor?: string | null;
+  project_id?: string | null;
   created_at: string;
 };
 
@@ -22,6 +23,8 @@ export type Project = {
   description?: string | null;
   owner?: string | null;
   part_name_prefix?: string | null;
+  /** Members-only project: other users cannot see it. */
+  restricted?: boolean;
 };
 
 export type FluidSystem = {
@@ -172,6 +175,10 @@ export type Drawing = {
   sheets: DrawingSheetSummary[];
   revisions: DrawingRevision[];
   current_revision?: DrawingRevision | null;
+  /** Lineage: the drawing this one was copied from (number and revision at that time). */
+  copied_from_id?: string | null;
+  copied_from_number?: string | null;
+  copied_from_revision?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -425,6 +432,23 @@ export type StaleSheet = {
   drawing_number: string;
 };
 
+/** GET /engine/status: whether the server can index and check sheets itself. */
+export type EngineStatus = { enabled: boolean; available: boolean };
+
+/** Result of a server-side re-index (POST /projects/{id}/reindex, /drawings/{id}/reindex). */
+export type ReindexResult = {
+  drawings: number;
+  /** Sheets that were stale when the run started. */
+  stale: number;
+  indexed: number;
+  /** Saved or changed while the engine ran; left to that writer or the next run. */
+  skipped: number;
+  failed: number;
+  errors: Array<StaleSheet & { message: string }>;
+  /** Sheets still stale after the run. */
+  stale_sheets: StaleSheet[];
+};
+
 export type DrawingRevisionRead = Omit<DrawingRevision, "status" | "submitted_by" | "submitted_at" | "approved_at"> & {
   status: DrawingStatus;
   submitted_by: string | null;
@@ -583,3 +607,277 @@ export type BulkDeleteResult = {
   refused: number;
   results: Array<{ id: string; deleted: boolean; reason: string | null }>;
 };
+
+export type ApiToken = {
+  id: string;
+  name: string;
+  prefix: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+};
+
+/** A new token with its secret, which the server returns only once. */
+export type ApiTokenCreated = ApiToken & { token: string };
+
+export type SearchHitKind = "tag" | "line" | "drawing" | "part" | "requirement" | "system" | "project";
+
+export type SearchHit = {
+  kind: SearchHitKind;
+  id: string;
+  title: string;
+  subtitle: string;
+  status: string | null;
+  project_id: string | null;
+  project_name: string | null;
+  system_id: string | null;
+  drawing_id: string | null;
+  sheet_id: string | null;
+  /** Document item id on the sheet (what Drafting centres on). */
+  item_id: string | null;
+};
+
+export type SearchResults = { query: string; hits: SearchHit[] };
+
+export type MemberRole = "viewer" | "engineer" | "owner";
+
+export type ProjectMember = {
+  user_id: string;
+  email: string;
+  name: string;
+  role: MemberRole;
+  /** The account's own role; a viewer account stays read-only whatever its membership. */
+  account_role: string;
+  is_active: boolean;
+};
+
+export type ProjectAccess = {
+  project_id: string;
+  restricted: boolean;
+  members: ProjectMember[];
+  can_manage: boolean;
+  can_write: boolean;
+};
+
+export type UserDirectoryEntry = { id: string; email: string; name: string; role: string };
+
+export type AuthConfig = { sso_enabled: boolean; sso_label: string; password_login_enabled: boolean };
+
+export type LineageDrawing = {
+  id: string;
+  number: string;
+  title: string;
+  status: string;
+  revision: string | null;
+  project_id: string;
+  project_name: string;
+  created_at: string;
+};
+
+export type Lineage = {
+  drawing_id: string;
+  source: LineageDrawing | null;
+  copied_from_number: string | null;
+  copied_from_revision: string | null;
+  source_revision_changed: boolean;
+  copies: LineageDrawing[];
+};
+
+export type LineageRowDiff = {
+  kind: "item" | "line";
+  change: "added" | "removed" | "changed";
+  sheet_no: number;
+  item_id: string;
+  label: string;
+  description: string;
+  changes: Array<{ field: string; source: string | null; copy: string | null }>;
+};
+
+export type LineageDiff = {
+  drawing_id: string;
+  source_id: string;
+  source_number: string;
+  counts: { added: number; removed: number; changed: number };
+  rows: LineageRowDiff[];
+  sheets_added: number[];
+  sheets_removed: number[];
+  stale: string[];
+};
+
+/** One page of a list, with the size of the whole list. */
+export type Page<T> = { rows: T[]; total: number };
+
+/* ---------- Hazards (safety register) ---------- */
+
+export type HazardCategory =
+  | "overpressure"
+  | "backflow"
+  | "ignition"
+  | "contamination"
+  | "single_point_failure"
+  | "trapped_fluid"
+  | "other";
+
+export type HazardStatus = "open" | "mitigated" | "accepted" | "closed";
+
+export type RiskLevel = "low" | "medium" | "high";
+
+export type Hazard = {
+  id: string;
+  project_id: string;
+  key: string;
+  title: string;
+  description: string | null;
+  category: HazardCategory;
+  /** 1 negligible … 4 catastrophic. */
+  severity: number;
+  /** 1 improbable … 5 frequent. */
+  likelihood: number;
+  /** Derived by the server: severity × likelihood, and its level. */
+  risk_score: number;
+  risk_level: RiskLevel;
+  mitigation: string | null;
+  status: HazardStatus;
+  owner: string | null;
+  /** Trace links with this hazard as source. */
+  links: TraceLink[];
+  created_at: string;
+  updated_at: string;
+};
+
+export type HazardInput = {
+  /** Omit or leave blank for the next free HAZ-nnn. */
+  key?: string | null;
+  title: string;
+  description?: string | null;
+  category?: HazardCategory;
+  severity?: number;
+  likelihood?: number;
+  mitigation?: string | null;
+  status?: HazardStatus;
+  owner?: string | null;
+};
+
+/* ---------- Analyses (stored calculations) ---------- */
+
+export type AnalysisKind = "pressure_drop" | "relief_sizing";
+
+export type AnalysisStatus = "draft" | "checked" | "approved" | "superseded";
+
+export type PressureDropSegmentInput = {
+  name: string;
+  inner_diameter_mm: number;
+  length_m: number;
+  roughness_mm: number;
+  k_sum: number;
+  elevation_change_m: number;
+  /** US flow coefficient (US gal/min of water at 1 psi). */
+  cv_items: Array<{ name: string; cv: number }>;
+};
+
+export type PressureDropInputs = {
+  fluid_name: string;
+  density_kg_m3: number;
+  viscosity_mpa_s: number;
+  mass_flow_kg_s: number | null;
+  volumetric_flow_l_min: number | null;
+  velocity_limit_m_s: number;
+  segments: PressureDropSegmentInput[];
+};
+
+export type PressureDropSegmentResult = {
+  name: string;
+  velocity_m_s: number;
+  reynolds: number;
+  flow_regime: "laminar" | "transitional" | "turbulent";
+  relative_roughness: number;
+  friction_factor: number;
+  dp_friction_kpa: number;
+  dp_minor_kpa: number;
+  dp_components_kpa: number;
+  dp_elevation_kpa: number;
+  dp_total_kpa: number;
+};
+
+export type PressureDropResults = {
+  calc_version: number;
+  kind: "pressure_drop";
+  flow: { mass_flow_kg_s: number; volumetric_flow_l_min: number };
+  segments: PressureDropSegmentResult[];
+  totals: {
+    dp_friction_kpa: number;
+    dp_minor_kpa: number;
+    dp_components_kpa: number;
+    dp_elevation_kpa: number;
+    dp_total_kpa: number;
+    dp_total_bar: number;
+    head_loss_m: number;
+  };
+  warnings: string[];
+  assumptions: string[];
+};
+
+export type ReliefSizingInputs = {
+  service: "gas" | "liquid";
+  fluid_name: string;
+  set_pressure_kpag: number;
+  overpressure_pct: number;
+  back_pressure_kpag: number;
+  atmospheric_pressure_kpa: number;
+  /** null: API 520 preliminary value (0.975 gas, 0.65 liquid). */
+  kd: number | null;
+  kc: number;
+  mass_rate_kg_h: number | null;
+  relieving_temperature_c: number | null;
+  molar_mass_kg_kmol: number | null;
+  k: number | null;
+  z: number;
+  kb: number;
+  volume_rate_l_min: number | null;
+  density_kg_m3: number | null;
+  viscosity_mpa_s: number | null;
+  kw: number;
+};
+
+export type ReliefSizingResults = {
+  calc_version: number;
+  kind: "relief_sizing";
+  service: "gas" | "liquid";
+  flow_regime: "critical" | "subcritical" | "liquid";
+  relieving_pressure_kpag: number;
+  relieving_pressure_kpa_abs?: number;
+  back_pressure_kpa_abs?: number;
+  relieving_temperature_k?: number;
+  critical_flow_pressure_kpa_abs?: number;
+  coefficient_c?: number;
+  coefficient_f2?: number;
+  specific_gravity?: number;
+  preliminary_area_mm2?: number;
+  reynolds?: number | null;
+  factors: Record<string, number | null>;
+  required_area_mm2: number;
+  required_area_in2: number;
+  /** Next API 526 orifice; null when the area exceeds the largest (T). */
+  orifice: { letter: string; area_mm2: number; area_in2: number } | null;
+  warnings: string[];
+  assumptions: string[];
+};
+
+export type AnalysisInputs = PressureDropInputs | ReliefSizingInputs;
+export type AnalysisResults = PressureDropResults | ReliefSizingResults;
+
+export type Analysis = {
+  id: string;
+  project_id: string;
+  drawing_id: string | null;
+  kind: AnalysisKind;
+  name: string;
+  inputs: AnalysisInputs;
+  results: AnalysisResults;
+  status: AnalysisStatus;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AnalysisPreview = { kind: AnalysisKind; inputs: AnalysisInputs; results: AnalysisResults };

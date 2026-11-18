@@ -31,6 +31,10 @@ docker compose exec api python -m app.seed   # optional demo data
 - API direct (debugging): `http://127.0.0.1:8000` — bound to loopback only.
 - Postgres: `127.0.0.1:5432` — loopback only.
 - Migrations run automatically when the api container starts.
+- The api image is built from the repository root (`context: .`, `dockerfile:
+  backend/Dockerfile`): it bundles the schematic engine from `frontend/` and ships Node
+  to run it, so the server indexes and checks sheets itself (see "Server-side sheet
+  index" below).
 - Local frontend dev (`npm run dev` on :5173) still works against the compose db+api.
 
 ## 2. Internal server on Tailscale
@@ -109,9 +113,11 @@ takes ~1 minute), and its disk is ephemeral, so uploaded part documents do not s
 a redeploy. Use a paid instance with a persistent disk (mount it at
 `FSDP_CATALOG_FILES_DIR`) for real use.
 
-**Other hosts** (Fly.io, Railway, …): deploy `backend/` with its Dockerfile and set the
-same variables, plus a strong `FSDP_SECRET_KEY` and `FSDP_SESSION_COOKIE_SECURE=true`.
-The container listens on `$PORT` (default 8000).
+**Other hosts** (Fly.io, Railway, …): build `backend/Dockerfile` with the **repository
+root** as the build context (`docker build -f backend/Dockerfile .`; the image bundles
+the engine from `frontend/`) and set the same variables, plus a strong
+`FSDP_SECRET_KEY` and `FSDP_SESSION_COOKIE_SECURE=true`. The container listens on
+`$PORT` (default 8000). The Render Blueprint already uses the root context.
 
 ### 3.3 Frontend — Vercel
 
@@ -127,10 +133,41 @@ Because the API requires login, the public demo URL exposes nothing without an
 account — hand out demo credentials as needed, or create per-person accounts via
 `POST /auth/users`.
 
+## Server-side sheet index
+
+Lists, BoMs, search, and release gates read each sheet's stored index and DRC. The
+browser computes them on save; the API can also compute them itself by running the same
+TypeScript engine under Node, so copied, converted, and revised drawings do not wait for
+someone to open them.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FSDP_ENGINE_CLI` | empty (off); `/opt/fsdp/engine-cli.mjs` in the Docker image | Path to the engine bundle. Empty turns the feature off. |
+| `FSDP_ENGINE_NODE` | `node` | Node executable (18 or later). |
+| `FSDP_ENGINE_TIMEOUT_SECONDS` | `60` | Time limit of one engine run (one drawing). |
+
+- **Docker / Render:** nothing to configure. `backend/Dockerfile` builds the bundle in a
+  Node stage, copies it and the Node binary into the API image, and sets
+  `FSDP_ENGINE_CLI`. Set `FSDP_ENGINE_CLI=""` on the service to turn it off.
+- **Without Docker:** `cd frontend && npm ci && npm run build:engine`, then start the API
+  with `FSDP_ENGINE_CLI=<repo>/frontend/dist-engine/engine-cli.mjs` and Node on `PATH`.
+  Rebuild the bundle whenever the frontend is updated, so browser and server run the
+  same engine.
+- **Check:** `GET /api/engine/status` (signed in) returns `{"enabled": true, "available":
+  true}`. `POST /api/projects/{id}/reindex` refreshes every stale sheet of a project and
+  reports per-sheet errors; writers have it as "Re-index project" on the BoM page.
+- Failures never block a request: the sheet stays flagged stale and is refreshed by the
+  next run or when it is opened in Drafting. Engine errors are logged by
+  `app.services.server_index` with Node's stderr.
+- A project-wide re-index runs inside one request (one engine run per drawing); behind a
+  proxy with a 60 s read timeout (nginx default) a very large project may need the call
+  repeated, which continues where the last one stopped.
+
 ## Notes
 
 - `/docs` (OpenAPI) is currently public on the backend; if that matters for the demo
   host, restrict it at the platform level or gate it in a follow-up.
 - The api container serves a single uvicorn process; raise `--workers` in
   `backend/docker-entrypoint.sh` if it ever becomes a bottleneck.
-- CI (`.github/workflows/ci.yml`) runs ruff + pytest and lint + vitest + build on PRs.
+- CI (`.github/workflows/ci.yml`) runs ruff + pytest and lint + vitest + build on PRs; the
+  backend job builds the engine bundle first so the server-side index tests run the real engine.

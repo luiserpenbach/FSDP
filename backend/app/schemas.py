@@ -93,6 +93,7 @@ class UserRead(OrmModel):
 
 class ChangeEventRead(OrmModel):
     id: str
+    project_id: str | None = None
     object_type: str
     object_id: str
     action: str
@@ -117,6 +118,7 @@ class ProjectUpdate(BaseModel):
 
 class ProjectRead(ProjectCreate, OrmModel):
     id: str
+    restricted: bool = False
     created_at: datetime
     updated_at: datetime
     part_name_next_sequence: int = 1
@@ -946,6 +948,33 @@ class StaleSheetRead(BaseModel):
     drawing_number: str
 
 
+class EngineStatusRead(BaseModel):
+    """Whether the server can index and check sheets itself (FSDP_ENGINE_CLI)."""
+
+    enabled: bool
+    # Enabled and the bundle exists at the configured path.
+    available: bool
+
+
+class ReindexErrorRead(StaleSheetRead):
+    message: str
+
+
+class ReindexRead(BaseModel):
+    """Result of a server-side re-index run."""
+
+    # Drawings that had stale sheets, and how many sheets were stale when the run started.
+    drawings: int
+    stale: int
+    indexed: int
+    # Left alone: saved, re-flagged, or changed while the engine ran.
+    skipped: int
+    failed: int
+    errors: list[ReindexErrorRead] = []
+    # Sheets of those drawings that are still stale after the run.
+    stale_sheets: list[StaleSheetRead] = []
+
+
 class ListColumnRead(BaseModel):
     key: str
     label: str
@@ -1210,6 +1239,9 @@ class DrawingRead(OrmModel):
     sheets: list[DrawingSheetSummary]
     revisions: list[DrawingRevisionRead]
     current_revision: DrawingRevisionRead | None = None
+    copied_from_id: str | None = None
+    copied_from_number: str | None = None
+    copied_from_revision: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1507,3 +1539,378 @@ class ImpactRead(BaseModel):
     affected_sheet_items: list[ImpactSheetItemRead] = []
     affected_requirements: list[ImpactRequirementRead] = []
     affected_parts: list[ImpactPartRead] = []
+
+
+class ApiTokenCreate(BaseModel):
+    name: str
+    expires_in_days: int | None = Field(default=None, ge=1, le=3650)
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return clean_required_text(value)[:120]
+
+
+class ApiTokenRead(OrmModel):
+    id: str
+    name: str
+    prefix: str
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    created_at: datetime
+
+
+class ApiTokenCreated(ApiTokenRead):
+    # The secret itself: returned once at creation and never stored.
+    token: str
+
+
+class SearchHit(BaseModel):
+    """One search result with everything the client needs to open it."""
+
+    kind: Literal["tag", "line", "drawing", "part", "requirement", "system", "project"]
+    id: str
+    title: str
+    subtitle: str = ""
+    status: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
+    system_id: str | None = None
+    drawing_id: str | None = None
+    sheet_id: str | None = None
+    # Document item id on the sheet (what Drafting centres on).
+    item_id: str | None = None
+
+
+class SearchRead(BaseModel):
+    query: str
+    hits: list[SearchHit]
+
+
+class DrawingCopyIn(BaseModel):
+    # Defaults: same project, next free number, "<title> (copy)".
+    project_id: str | None = None
+    system_id: str | None = None
+    number: str | None = None
+    title: str | None = None
+
+    @field_validator("number", "title")
+    @classmethod
+    def _text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+
+MemberRole = Literal["viewer", "engineer", "owner"]
+
+
+class ProjectMemberRead(BaseModel):
+    user_id: str
+    email: str
+    name: str
+    role: MemberRole
+    # The account's own role; a viewer account stays read-only whatever its membership.
+    account_role: str
+    is_active: bool
+
+
+class ProjectAccessRead(BaseModel):
+    project_id: str
+    restricted: bool
+    members: list[ProjectMemberRead]
+    # Whether the caller may change the restriction and the member list.
+    can_manage: bool
+    # The caller's own access.
+    can_write: bool
+
+
+class ProjectAccessUpdate(BaseModel):
+    restricted: bool
+
+
+class ProjectMemberIn(BaseModel):
+    role: MemberRole
+
+
+class UserDirectoryEntry(OrmModel):
+    id: str
+    email: str
+    name: str
+    role: str
+
+
+class AuthConfigRead(BaseModel):
+    sso_enabled: bool
+    sso_label: str
+    password_login_enabled: bool
+
+
+class LineageDrawingRead(BaseModel):
+    id: str
+    number: str
+    title: str
+    status: str
+    revision: str | None
+    project_id: str
+    project_name: str
+    created_at: datetime
+
+
+class LineageRead(BaseModel):
+    drawing_id: str
+    # The drawing this one was copied from; null when it is not a copy, or when the
+    # source was deleted or is in a project the caller may not see (the number and
+    # revision at the time of the copy remain in copied_from_*).
+    source: LineageDrawingRead | None
+    copied_from_number: str | None
+    copied_from_revision: str | None
+    # Whether the source has been released again or revised since the copy was taken.
+    source_revision_changed: bool = False
+    copies: list[LineageDrawingRead]
+
+
+class LineageFieldChange(BaseModel):
+    field: str
+    source: str | None
+    copy_value: str | None = Field(serialization_alias="copy")
+
+
+class LineageRowDiff(BaseModel):
+    kind: Literal["item", "line"]
+    change: Literal["added", "removed", "changed"]
+    sheet_no: int
+    # Document id of the item or line; the same on both sides, as a copy keeps ids.
+    item_id: str
+    # Tag or line number: the copy's for added and changed rows, the source's for removed.
+    label: str
+    description: str = ""
+    changes: list[LineageFieldChange] = Field(default_factory=list)
+
+
+class LineageDiffRead(BaseModel):
+    drawing_id: str
+    source_id: str
+    source_number: str
+    counts: dict[str, int]
+    rows: list[LineageRowDiff]
+    # Sheets present on one side only (sheet numbers).
+    sheets_added: list[int]
+    sheets_removed: list[int]
+    # Sheets whose index is out of date, so their rows may be incomplete.
+    stale: list[str]
+
+# ---- Hazards (safety register) ----
+
+HazardCategory = Literal[
+    "overpressure",
+    "backflow",
+    "ignition",
+    "contamination",
+    "single_point_failure",
+    "trapped_fluid",
+    "other",
+]
+HazardStatus = Literal["open", "mitigated", "accepted", "closed"]
+
+
+class HazardCreate(BaseModel):
+    # Omit the key to get the next free HAZ-nnn of the project.
+    key: str | None = Field(default=None, max_length=80)
+    title: str = Field(max_length=200)
+    description: str | None = None
+    category: HazardCategory = "other"
+    severity: int = Field(default=1, ge=1, le=4)
+    likelihood: int = Field(default=1, ge=1, le=5)
+    mitigation: str | None = None
+    status: HazardStatus = "open"
+    owner: str | None = Field(default=None, max_length=160)
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, value: str) -> str:
+        return clean_required_text(value)
+
+    @field_validator("key")
+    @classmethod
+    def _key(cls, value: str | None) -> str | None:
+        return None if value is None or not value.strip() else value.strip()
+
+
+class HazardUpdate(BaseModel):
+    key: str | None = Field(default=None, max_length=80)
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = None
+    category: HazardCategory | None = None
+    severity: int | None = Field(default=None, ge=1, le=4)
+    likelihood: int | None = Field(default=None, ge=1, le=5)
+    mitigation: str | None = None
+    status: HazardStatus | None = None
+    owner: str | None = Field(default=None, max_length=160)
+
+    @field_validator("key", "title")
+    @classmethod
+    def _required_text(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+
+class HazardRead(OrmModel):
+    id: str
+    project_id: str
+    key: str
+    title: str
+    description: str | None
+    category: str
+    severity: int
+    likelihood: int
+    # Derived: severity x likelihood, and its level (low, medium, high).
+    risk_score: int
+    risk_level: str
+    mitigation: str | None
+    status: str
+    owner: str | None
+    # Trace links with this hazard as source (drawing items, requirements, ...).
+    links: list[TraceLinkRead] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+# ---- Analyses (stored calculations) ----
+
+AnalysisKind = Literal["pressure_drop", "relief_sizing"]
+AnalysisStatus = Literal["draft", "checked", "approved", "superseded"]
+
+
+class CvItemIn(BaseModel):
+    name: str = Field(default="", max_length=120)
+    # US flow coefficient: US gal/min of 60 degF water at 1 psi pressure drop.
+    cv: float = Field(gt=0, allow_inf_nan=False)
+
+
+class PressureDropSegmentIn(BaseModel):
+    name: str = Field(default="", max_length=120)
+    inner_diameter_mm: float = Field(gt=0, allow_inf_nan=False)
+    length_m: float = Field(default=0, ge=0, allow_inf_nan=False)
+    # Absolute roughness.
+    roughness_mm: float = Field(default=0, ge=0, allow_inf_nan=False)
+    # Sum of minor-loss K factors referred to this segment's velocity head.
+    k_sum: float = Field(default=0, ge=0, allow_inf_nan=False)
+    # Outlet height minus inlet height; positive when the line rises.
+    elevation_change_m: float = Field(default=0, allow_inf_nan=False)
+    cv_items: list[CvItemIn] = Field(default_factory=list, max_length=50)
+
+
+class PressureDropInputs(BaseModel):
+    """Inputs of `app.services.analysis.pressure_drop` (units are in the field names)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    fluid_name: str = Field(default="", max_length=120)
+    density_kg_m3: float = Field(gt=0, allow_inf_nan=False)
+    # Dynamic viscosity; 1 mPa.s = 1 cP.
+    viscosity_mpa_s: float = Field(gt=0, allow_inf_nan=False)
+    mass_flow_kg_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    volumetric_flow_l_min: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    velocity_limit_m_s: float = Field(default=3.0, gt=0, allow_inf_nan=False)
+    segments: list[PressureDropSegmentIn] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def _one_flow(self) -> "PressureDropInputs":
+        if (self.mass_flow_kg_s is None) == (self.volumetric_flow_l_min is None):
+            raise ValueError("give either mass_flow_kg_s or volumetric_flow_l_min, not both")
+        return self
+
+
+class ReliefSizingInputs(BaseModel):
+    """Inputs of `app.services.analysis.relief_sizing` (units are in the field names)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    service: Literal["gas", "liquid"]
+    fluid_name: str = Field(default="", max_length=120)
+    set_pressure_kpag: float = Field(gt=0, allow_inf_nan=False)
+    overpressure_pct: float = Field(default=10, ge=0, le=100, allow_inf_nan=False)
+    # Total back pressure at the valve outlet while relieving.
+    back_pressure_kpag: float = Field(default=0, ge=0, allow_inf_nan=False)
+    atmospheric_pressure_kpa: float = Field(default=101.325, gt=0, le=200, allow_inf_nan=False)
+    # None: API 520 preliminary value (0.975 gas, 0.65 liquid).
+    kd: float | None = Field(default=None, gt=0, le=1, allow_inf_nan=False)
+    kc: float = Field(default=1.0, gt=0, le=1, allow_inf_nan=False)
+    # Gas or vapour.
+    mass_rate_kg_h: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    relieving_temperature_c: float | None = Field(default=None, gt=-273.15, allow_inf_nan=False)
+    molar_mass_kg_kmol: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    k: float | None = Field(default=None, gt=1, le=3, allow_inf_nan=False)
+    z: float = Field(default=1.0, gt=0, le=3, allow_inf_nan=False)
+    kb: float = Field(default=1.0, gt=0, le=1, allow_inf_nan=False)
+    # Liquid.
+    volume_rate_l_min: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    density_kg_m3: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    viscosity_mpa_s: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    kw: float = Field(default=1.0, gt=0, le=1, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _service_fields(self) -> "ReliefSizingInputs":
+        required = (
+            ("mass_rate_kg_h", "relieving_temperature_c", "molar_mass_kg_kmol", "k")
+            if self.service == "gas"
+            else ("volume_rate_l_min", "density_kg_m3")
+        )
+        missing = [name for name in required if getattr(self, name) is None]
+        if missing:
+            raise ValueError(f"{self.service} service needs: {', '.join(missing)}")
+        return self
+
+
+ANALYSIS_INPUT_MODELS: dict[str, type[BaseModel]] = {
+    "pressure_drop": PressureDropInputs,
+    "relief_sizing": ReliefSizingInputs,
+}
+
+
+class AnalysisPreviewIn(BaseModel):
+    kind: AnalysisKind
+    inputs: dict[str, Any]
+
+
+class AnalysisPreviewRead(BaseModel):
+    kind: str
+    # Inputs as validated and normalized (defaults filled in).
+    inputs: dict[str, Any]
+    results: dict[str, Any]
+
+
+class AnalysisCreate(AnalysisPreviewIn):
+    name: str = Field(max_length=200)
+    drawing_id: str | None = None
+    status: AnalysisStatus = "draft"
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return clean_required_text(value)
+
+
+class AnalysisUpdate(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    drawing_id: str | None = None
+    status: AnalysisStatus | None = None
+    # When given, the results are recomputed from these inputs.
+    inputs: dict[str, Any] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        return clean_optional_text(value)
+
+
+class AnalysisRead(OrmModel):
+    id: str
+    project_id: str
+    drawing_id: str | None
+    kind: str
+    name: str
+    inputs: dict[str, Any]
+    results: dict[str, Any]
+    status: str
+    created_by: str | None
+    created_at: datetime
+    updated_at: datetime
