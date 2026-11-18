@@ -50,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 DEMO_PROJECT_NAME = "Amphora Demo Vehicle"
 TEST_STAND_FILE = Path(__file__).parent / "demo" / "test_stand_pid.json"
+BOOSTER_FILE = Path(__file__).parent / "demo" / "booster_pid.json"
 
 PARTS = [
     {
@@ -357,6 +358,63 @@ def seed_test_stand(db: Session, project: Project) -> bool:
     return True
 
 
+def seed_booster(db: Session) -> bool:
+    """Add the booster scale demo as its own project; False when it is already there.
+
+    A seven-sheet A0 drawing of about 4,600 items (`frontend/src/engine/demo/boosterPid.ts`),
+    there to show how large a drawing the tool carries.
+    """
+    demo = json.loads(BOOSTER_FILE.read_text(encoding="utf-8"))
+    if db.scalar(select(Project.id).where(Project.name == demo["project"]["name"])):
+        return False
+
+    project = Project(**demo["project"])
+    system = FluidSystem(project=project, **demo["system"])
+    db.add_all([project, system])
+    db.flush()
+    for line_class in demo["lineClasses"]:
+        db.add(LineClass(project_id=project.id, **line_class))
+
+    drawing = Drawing(
+        project_id=project.id,
+        system_id=system.id,
+        number=demo["number"],
+        title=demo["title"],
+        size=demo["size"],
+        units="mm",
+        frame_template="fsdp-standard",
+        fields={"company": "Amphora", "scale": "NO SCALE", "legends": "lines"},
+        notes=demo["notes"],
+    )
+    for sheet_no, sheet in enumerate(demo["sheets"], start=1):
+        drawing.sheets.append(
+            DrawingSheet(
+                sheet_no=sheet_no,
+                title=sheet["title"],
+                document=copy.deepcopy(sheet["document"]),
+                index_stale=True,
+            )
+        )
+    drawing.revisions.append(
+        DrawingRevision(
+            sequence=1,
+            label="A",
+            description="Issued for review",
+            drawn_by="FSDP demo",
+            drawn_date=date.today().isoformat(),
+        )
+    )
+    db.add(drawing)
+    db.commit()
+    logger.info(
+        "Seeded booster drawing %s (%d sheets, %d items)",
+        drawing.number,
+        len(demo["sheets"]),
+        sum(len(sheet["document"]["items"]) for sheet in demo["sheets"]),
+    )
+    return True
+
+
 def main() -> None:
     ensure_bootstrap_admin()
     with SessionLocal() as db:
@@ -368,6 +426,8 @@ def main() -> None:
             logger.info("Demo project already present.")
         if project is not None and not seed_test_stand(db, project):
             logger.info("Demo drawing already present; nothing to do.")
+        if not seed_booster(db):
+            logger.info("Booster drawing already present; nothing to do.")
 
 
 if __name__ == "__main__":
