@@ -1,9 +1,11 @@
 """Per-project access: restricted projects, members, and what leaks across them."""
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.main import app
 from tests.conftest import TEST_USER_EMAIL
+from tests.legacy import add_legacy_diagram
 
 PASSWORD = "member-password"
 
@@ -255,6 +257,70 @@ def test_copy_needs_write_access_to_the_destination_only(client: TestClient) -> 
     client.put(f"/projects/{other['id']}/access", json={"restricted": True})
     blocked = member.post(f"/drawings/{copied.json()['id']}/copy", json={"project_id": other["id"]})
     assert blocked.status_code == 404
+
+
+def test_convert_diagram_respects_project_access(
+    client: TestClient, session_factory: sessionmaker[Session]
+) -> None:
+    """Convert-from-diagram is reuse: it must not read a restricted project's schematic.
+
+    Path-level access only covers the destination drawing/project. Without a check on
+    body `source_diagram_id`, an outsider could POST that id into their own project and
+    receive the classified document — while `POST /drawings/{id}/copy` correctly 404s.
+    """
+    secret = client.post("/projects", json={"name": "Classified diagrams"}).json()
+    system = client.post(f"/projects/{secret['id']}/systems", json={"name": "Secret LOX"}).json()
+    schematic = {
+        "schemaVersion": 1,
+        "sheet": {"size": "A3", "orientation": "landscape"},
+        "layers": [],
+        "items": [{"id": "sym-1", "kind": "symbol", "tag": "HV-SECRET"}],
+        "meta": {"grid": 2.5},
+    }
+    diagram = add_legacy_diagram(
+        session_factory, system["id"], name="Secret P&ID", schematic=schematic
+    )
+    assert client.put(f"/projects/{secret['id']}/access", json={"restricted": True}).status_code == 200
+
+    outsider, _ = _user(client, "converter@fsdp.test")
+    assert outsider.get(f"/diagrams/{diagram.id}").status_code == 404
+    own = outsider.post("/projects", json={"name": "Mine"}).json()
+
+    stolen = outsider.post(
+        f"/projects/{own['id']}/drawings",
+        json={"title": "Stolen", "first_sheet": {"source_diagram_id": diagram.id}},
+    )
+    assert stolen.status_code == 404, stolen.text
+
+    empty = outsider.post(f"/projects/{own['id']}/drawings", json={"title": "Empty"}).json()
+    added = outsider.post(
+        f"/drawings/{empty['id']}/sheets",
+        json={"title": "From secret", "source_diagram_id": diagram.id},
+    )
+    assert added.status_code == 404, added.text
+
+    # Same-project convert still works for a member who can read the diagram.
+    open_project = client.post("/projects", json={"name": "Open convert"}).json()
+    open_system = client.post(
+        f"/projects/{open_project['id']}/systems", json={"name": "LOX"}
+    ).json()
+    open_diagram = add_legacy_diagram(
+        session_factory, open_system["id"], schematic=schematic
+    )
+    other = client.post("/projects", json={"name": "Other open"}).json()
+    cross = client.post(
+        f"/projects/{other['id']}/drawings",
+        json={"title": "Cross", "first_sheet": {"source_diagram_id": open_diagram.id}},
+    )
+    assert cross.status_code == 422
+    assert "another project" in cross.json()["detail"]
+    ok = client.post(
+        f"/projects/{open_project['id']}/drawings",
+        json={"title": "Converted", "first_sheet": {"source_diagram_id": open_diagram.id}},
+    )
+    assert ok.status_code == 201, ok.text
+    sheet = client.get(f"/sheets/{ok.json()['sheets'][0]['id']}").json()
+    assert sheet["document"]["items"][0]["tag"] == "HV-SECRET"
 
 
 def test_trace_links_respect_project_access(client: TestClient) -> None:
