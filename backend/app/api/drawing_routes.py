@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.routes import record_change, require_model
-from app.core.access import require_project_write
+from app.core.access import require_object_read, require_project_write
 from app.core.security import require_writer
 from app.db import get_db
 from app.models import (
@@ -164,20 +164,40 @@ def _document_for_size(document: dict | None, size: str) -> dict:
 
 
 def _sheet_source_document(
-    db: Session, sheet_in: DrawingSheetCreate | None, size: str
+    db: Session,
+    sheet_in: DrawingSheetCreate | None,
+    size: str,
+    *,
+    project_id: str,
+    user: User,
 ) -> tuple[dict, str | None]:
+    """Document for a new sheet, optionally converted from a legacy diagram.
+
+    `source_diagram_id` is a body field, so path-level project access does not
+    cover it: the caller must be allowed to read the diagram's project, and the
+    diagram must belong to the drawing's project (cross-project reuse is
+    `POST /drawings/{id}/copy`).
+    """
     if sheet_in is None:
         return _document_for_size(None, size), None
+    source_diagram_id = sheet_in.source_diagram_id
+    diagram: Diagram | None = None
+    if source_diagram_id:
+        diagram = require_model(db, Diagram, source_diagram_id)
+        # Restricted projects stay 404 here, matching GET /diagrams/{id}.
+        require_object_read(db, user, "diagram", diagram.id)
+        system = require_model(db, FluidSystem, diagram.system_id)
+        if system.project_id != project_id:
+            raise HTTPException(status_code=422, detail="Diagram belongs to another project")
     if sheet_in.document is not None:
-        return sheet_in.document, sheet_in.source_diagram_id
-    if sheet_in.source_diagram_id:
-        diagram = require_model(db, Diagram, sheet_in.source_diagram_id)
-        if diagram.schematic:
-            return diagram.schematic, diagram.id
-        raise HTTPException(
-            status_code=422,
-            detail="Diagram has no schematic document yet; convert it in the browser first",
-        )
+        return sheet_in.document, source_diagram_id
+    if diagram is not None:
+        if not diagram.schematic:
+            raise HTTPException(
+                status_code=422,
+                detail="Diagram has no schematic document yet; convert it in the browser first",
+            )
+        return diagram.schematic, diagram.id
     return _document_for_size(None, size), None
 
 
@@ -201,7 +221,9 @@ def create_drawing(
     if duplicate:
         raise HTTPException(status_code=409, detail="Drawing number already exists in project")
 
-    document, source_diagram_id = _sheet_source_document(db, payload.first_sheet, payload.size)
+    document, source_diagram_id = _sheet_source_document(
+        db, payload.first_sheet, payload.size, project_id=project_id, user=user
+    )
     drawing = Drawing(
         project_id=project_id,
         system_id=payload.system_id,
@@ -421,7 +443,9 @@ def create_sheet(
 ) -> DrawingSheet:
     drawing = _load_drawing(db, drawing_id)
     _ensure_editable(drawing)
-    document, source_diagram_id = _sheet_source_document(db, payload, drawing.size)
+    document, source_diagram_id = _sheet_source_document(
+        db, payload, drawing.size, project_id=drawing.project_id, user=user
+    )
     sheet_no = max((sheet.sheet_no for sheet in drawing.sheets), default=0) + 1
     sheet = DrawingSheet(
         drawing_id=drawing.id,
